@@ -70,9 +70,12 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
   写成 `;enabled=false`。
 - `ParticleEmitter`：`count=<每次爆发的粒子数>`、`rate=<粒子/秒，0=只爆发>`、`speed`、`life`、
   `size`、`size_end`、`color=r,g,b,a`、`color_end`、`gravity=x,y`、`drag`、`rotation`、
-  `rotation_speed`、`mode=cpu|gpu`、`seed=<u64>`。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
+  `rotation_speed`、`mode=cpu|gpu`、`seed=<u64>`、`area_x`/`area_y`/`area_z`（出生盒半边
+  长，默认 0）。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
   `rate > 0` 时发射器按 `rate × dt` **连续**发射，位置取实体的世界位置（父链下会跟着父一起动）；
   累计器保留分数部分，因此帧率变化不改变平均发射量，长帧最多补发 512 个（不会一步倾泻）。
+  `area_x/y/z` 抖的是**出生位置**（盒内均匀落点），`spread_z` 抖的是**初速 z 分量**；两者
+  默认 0 时都不抽随机数，旧序列逐位不变。雨幕/雪幕/雾团用 `area_*` 让一个流覆盖体积。
   未知键与非法数值一律报错，不静默忽略。
 - **`mode` 与 `seed`（P3-R07-1）**：`mode` 决定粒子**在哪一侧模拟**——`cpu`（默认）是玩法可读
   的那一侧，`gpu` 是纯视觉层（粒子只活在显存里，Lua 与玩法**读不到**它们的位置）。取值必须**逐字**

@@ -58,10 +58,59 @@
   互相打架。这两个约定由单测
   `host::renderer::tests::shadow_camera_sits_on_the_light_side_of_the_documented_direction`
   与像素门 `engine/crates/engine/examples/wp0_lighting_golden.rs` 同时钉住。
+- **四级方向光 CSM + 边界混合 + 平移稳定化（P3-R12/R13/R15）**：`write_light_uniforms` 用 `scene.camera.target` 作为焦点，
+  把一张 `2048² × 4 层` 的 `texture_depth_2d_array` 铺成近/中/远/超远四级。前三级保持
+  半宽 `clamp(distance*0.16, 20, 40)` m、`clamp(distance*0.34, 45, 85)` m、
+  `clamp(distance*0.58, 85, 150)` m；第四级只兜远端，半宽
+  `clamp(distance*0.90, 160, 260)` m。上帝视角 270 m 时覆盖
+  **80 m 近景 + 170 m 中景 + 300 m 远景 + 486 m 超远景**。片元依次试
+  近→中→远→超远，仍在四级裁剪体外才视为无阴影。**平移稳定化（P3-R15）**：焦点在
+  光源平面的 `right/up/forward` 三轴上各按 `2*half/2048` 纹素 snap，再重建焦点；
+  斜射光下只 snap 世界 x/z 仍会逐帧抖，三轴对齐后小于一个纹素的相机平移得到
+  逐字节相同的阴影矩阵。单测 `focused_shadow_camera_centers_on_the_camera_target`、
+  `shadow_extent_tracks_camera_distance_with_clamps`、
+  `far_shadow_cascade_covers_beyond_the_near_cascade`、
+  `ultra_shadow_cascade_covers_beyond_the_far_cascade` 与
+  `shadow_projection_is_stable_under_sub_texel_focus_motion` 钉住焦点、伸缩、
+  逐级覆盖与亚纹素稳定。
+  **级联边界混合（P3-R13）**：每级 UV 的 `max(|2u-1|)` 超过 `0.86` 时，对下一级再采一次，
+  用 `smoothstep(0.86, 1.0, edge)` 混合，消掉级接缝；中心区域仍只采一级。
+  单测 `shadow_cascades_blend_at_their_edges` 钉住两套着色器都有边界函数、三处接缝
+  `mix` 和四层采样。仍是单方向光；平移稳定化、**P3-R17 的 2 m 级联缩放量化**与
+  **P3-R18 的 PCSS-lite** 已做（连续距离变化时半宽按档跳，纹素尺寸不逐帧漂；
+  软阴影按遮挡距离做接触硬化）。**P3-R24 已补 ESM filtered shadow**：`RenderSettings.filtered_shadows`
+  （默认 false）打开后，`esm_shadow.wgsl` 把四级 **2048² 深度原分辨率**写成
+  `2048² × 4` 的 `R16Float` **exp(depth·10)** 滤波图（32 MiB）；主着色器对 3×3 邻域求平均，
+  再乘 `exp(−10·receiver_depth)` 得可见度。CPU 侧 `PointShadow`/`Light` 布局不变，
+  开关在 `Light.params.z`；`RenderFrameMetrics.filtered_shadows_active` 区分开关与本帧
+  真生成。仍无跨帧复用/跨帧 VSM，点光源阴影见下一条。
+- **前八盏点光的六面阴影 + 3×3 PCF（P3-R11/R14/R16/R19/R21）**：
+  `RenderSettings.point_shadows`（默认 false）打开后，`Scene3d.point_lights` 的前八盏
+  （即全部 8 盏）各用 6 层，合计 `1024² × 48` 的 `texture_depth_cube_array`（192 MiB）渲染
+  +X/−X/+Y/−Y/+Z/−Z 六个 90° 面；远平面 `clamp(range*1.2, 5, 100)` m。
+  `PointShadow` 3200B = 48 个面矩阵 + 8 组 `xyz=位置 / w=远平面`；面矩阵只用于
+  生成 pass 与参考深度，采样走 **cube array 方向**，由硬件在 6 个面之间做跨面过滤，
+  消掉手工选面 + UV clamp 的面边界接缝。槽位由光源位置与 `params[].xyz` 匹配，
+  `w=0` 表示未用。默认单次 `textureSampleCompare`；`soft_shadows` 打开后
+  `sample_point_shadow` 先做 5×5 遮挡体深度搜索，再按 `clamp((receiver−blocker)·48,1,3)`
+  放大 5×5 方向 PCF（开关复用 `Light.params.y`），与方向光 PCSS-lite 同一套接触硬化。
+  GPU 像素门 `point_shadow_darkens_only_the_occluded_ground` 覆盖硬/软路径，
+  `two_point_lights_cast_two_independent_shadow_sets` 覆盖两盏各丢自己的颜色，
+  `eight_point_lights_each_cast_a_shadow_set` 覆盖第 8 个槽位/48 层真的被写。
+- **方向光 PCSS-lite + 点光 3×3 PCF（P3-R05b/R18）**：
+  `RenderSettings.soft_shadows`（默认 false）打开后，Legacy/PBR 片元对方向光做
+  **PCSS-lite**：先在 5×5 邻域 `textureLoad` 原始深度求遮挡体平均深度，再按
+  `clamp((受光深度 − 平均遮挡深度) * 48, 1, 3)` 纹素放大 5×5 PCF 半径，得到
+  「贴地硬、离地软」的联系硬化；没有遮挡体时直接返回 1。点光仍做 3×3
+  `textureSampleCompare`，不改面选择/远平面。关闭时两路都是一次硬件比较，
+  旧像素逐字节不变。开关打包在 `Light.params.y`；声明 `Environment` 的宿主自动打开。
+  像素门 `directional_pcss_keeps_the_shadow_under_soft_shadows` 同时验硬/软方向光，
+  点光门仍由 `point_shadow_darkens_only_the_occluded_ground` 守。
 - 默认 `direction=0.4,-0.8,0.5`、`color=1,1,1`、`intensity=1`。
 - 未设置活动灯时回退到首个**方向光** `Light` 实体（点光源不会被选成这一盏）。
-- **点光源**：同一组件加 `type=point;position=x,y,z;range=<r>`（`range > 0`），最多 **8 盏**参与同一帧着色，
-  **不投射阴影**（阴影贴图只有方向光那一张）；`position` 是世界坐标，不跟实体 `Transform` 走。
+- **点光源**：同一组件加 `type=point;position=x,y,z;range=<r>`（`range > 0`），最多 **8 盏**参与同一帧着色；
+  **全部 8 盏**可在 `RenderSettings.point_shadows` 打开时各投六面阴影（详见上一条）；
+  `position` 是世界坐标，不跟实体 `Transform` 走。
   超出 8 盏的部分按实体顺序丢弃（帧同步两端必须看到同一份列表，所以不按距离裁剪）。
   PBR 与默认（非 PBR）着色路径都参与；方向光强度为 0 时即可做"纯点光"场景。
   像素门：`engine/crates/engine/examples/wp0_point_light_golden.rs`（两盏异色点光 + range 截断，
@@ -118,7 +167,9 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
       → Tonemap → Legacy2DOverlay → ScreenUI → VectorText → PostProcess
 ```
 
-1. **阴影 pass**（`SHADOW_SHADER`）：从**光源那一侧**（`-light.direction`）渲染深度到阴影贴图（`texture_depth_2d`）。
+1. **阴影 pass**（`SHADOW_SHADER`）：从**光源那一侧**（`-light.direction`）依次渲染近/中/远/超远四级
+   深度到 `texture_depth_2d_array` 的四层（各一个 render pass）。`point_shadows` 打开时，
+   同一段再对第一盏点光渲染 6 个 90° 面到 `1024² × 6` 深度数组。
 2. **3D pass**（`MESH3D_SHADER`）：
    - 逐实例模型矩阵只有一条语义、两种取法：有存储缓冲的设备走 `instance_models` storage 数组并按网格合批；
      没有存储缓冲的设备（WebGL2）把 binding 2 换成 **64 字节 uniform**，`instance_model` 每条 draw 一个，
@@ -127,21 +178,114 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
    - 材质 uniform（P3-R02 起 5×`vec4`）：`base_color`、`surface`（`x=metallic`、`y=roughness`、`z=skinned`）、
      `emissive`（已乘强度）、`params`（`x=有 MR 贴图`、`y=有 emissive 贴图`、`z=有 normal 贴图`、`w=normal_scale`）、
      `flags`（`x=有 occlusion 贴图`、`y=occlusion_strength`、`z=alpha_mode`（0=opaque/1=mask/2=blend）、`w=alpha_cutoff`）。旧 `mesh3d.wgsl` 只读前两个 `vec4`，缓冲区扩大不影响旧像素。
-   - 光照：方向光（`light.direction` 取反做漫反射）、`specular = pow(max(dot(reflect(-l,n), view),0), 2/(roughness^2))`、金属度混合镜面与漫反射；阴影贴图采样 `textureSampleCompare`，带 `0.002` 深度偏移。
+   - 光照：方向光（`light.direction` 取反做漫反射）、`specular = pow(max(dot(reflect(-l,n), view),0), 2/(roughness^2))`、金属度混合镜面与漫反射；阴影按级联层采样 `textureSampleCompare`（`texture_depth_2d_array`），带 `0.002` 深度偏移。
    - 骨骼蒙皮：按 draw 的 `skinned` 选 `SKIN` 变体；开启时用 `joint_palette`（128 骨骼调色板）做 GPU 蒙皮，关闭时顶点着色器不含权重求和。
    - 环境基础光 `0.15`，最终 `brightness = (0.15 + (diffuse*(1-metallic) + specular*mix(0.04,1,metallic)) * shadow) * intensity`。
 3. **世界 Sprite / 粒子**：与 3D 网格共用相机、视口与深度附件（docs/54 §8-③/④）。
 4. **Tonemap（P3-R01，可选）**：把 HDR 场景色映射回 LDR，见 §3.1。
 5. **2D / UI / 矢量文字**：Sprite/Tilemap/Text/UI（`TEXTURED_SHADER`，含 MSDF 字形），无深度；**始终画在 Tonemap 之后**。
-6. **后处理（可选）**：曝光/色调/暗角/最终输出。
+6. **后处理（可选）**：曝光/色调/暗角/最终输出；HDR 帧的泛光在 Tonemap 前叠加。
 
 ### 3.1 HDR 与 Tonemap（P3-R01）
 
-- **开关**：`rustlua_render::render_settings::RenderSettings` 是唯一配置源（`hdr/pbr/ibl/variants`），默认全关——旧 2D/3D 画面逐字节不变。
+- **开关**：`rustlua_render::render_settings::RenderSettings` 是唯一配置源（`hdr/pbr/ibl/variants/bloom/soft_shadows/filtered_shadows/fxaa/ssao/ssr/contact_shadows/fog/god_rays/dof`），默认全关——旧 2D/3D 画面逐字节不变。
 - **启用条件**（四件事同时成立，纯函数 `hdr_activation`）：策略允许（`Auto`/`On`）+ 设备探针通过（`Rgba16Float` 可渲染、可读回、可线性过滤）+ 本帧有 3D/世界内容 + `PostProcess.exposure == 1.0`（或无后处理）。纯 2D 帧不创建 HDR 目标。
 - **目标**：场景画进 `Rgba16Float` 线性附件（可保存 >1 的高光）；`Tonemap` 用 ACES（默认）或 Reinhard 先乘 `2^exposure_ev` 再映射到 8 位 sRGB 目标。UI/矢量文字/后处理仍写 LDR 目标，因此曲线不会改 UI 颜色。
 - **曝光归属**：HDR 帧的曝光只走 `PostProcess.exposure_ev`（`exposure` 必须为 `1.0`，否则该帧回退 LDR 并告警）；LDR 帧把 EV 折进后处理的曝光增益。
-- **降级留痕**：能力不足时 `hdr_active=false`、告警一次并给出 `hdr_unavailable_reason()`；`RenderFrameMetrics` 暴露 `hdr_active/scene_format/tonemap`，性能面板与「复制报告」可查。
+- **HDR 泛光（P3-R01b）**：`PostProcess.bloom`（0..1，默认 0）或场景级 `RenderSettings.bloom`（默认 false；声明 `Environment` 时自动开）在 Tonemap 前做 **3 个半径 × 8 方向**的亮部采样（近/中/远环加权，半径按 900 逻辑高缩放），只叠加 >1 的 HDR 能量；2D/UI 在 Tonemap 之后，不会被泛光。LDR 没有 Tonemap pass，因此不产生泛光。
+- **FXAA-lite（P3-R06）**：`RenderSettings.fxaa`（默认 false；声明 `Environment` 时自动开）
+  在 Tonemap 片元里做 5 采样边缘平滑：取上下左右四个已 Tonemap 的邻居，按亮度对比
+  选边方向并加权混合；只在 3D 的 Tonemap 阶段执行，UI 在其后绘制，不受影响。关闭时
+  走原单采样路径，旧像素不变。
+- **SSAO-lite（P3-R09/R30）**：`RenderSettings.ssao`（默认 false；声明 `Environment` 时自动开）
+  先由独立 `ssao.wgsl` pass 写**半分辨率 `R8Unorm` AO**：从深度重建世界坐标与法线，
+  沿切/副切/法线生成 **3 圈 × 4 方向共 12 个半球样本**，同时保留 8 方向近邻深度差作
+  **深度断层回退**；再走一遍**双边 3×3 模糊**（以深度差为权重，边缘两侧 AO 不互相
+  拖带），Tonemap 最后做 **5 抽头双线性升采样**后乘回颜色。深度纹理以
+  `Depth32Float + TEXTURE_BINDING` 创建，纯世界 Sprite 场景绑定独立的
+  `world_sprite_depth_view`；AO pass 不写 UI。它仍**不是**完整 HBAO/GTAO：没有屏幕
+  空间法线通道、逐像素几何法线与多半径积分的解析近似；`RenderFrameMetrics.ssao_active`
+  区分「开关打开」与「本帧真的执行」。法线半球由
+  `ssao_shader_builds_a_normal_oriented_hemisphere` 盯住，像素门仍是
+  `ssao_darkens_background_next_to_a_depth_discontinuity`。
+- **SSR-lite（P3-R20/R32）**：`RenderSettings.ssr`（默认 false；声明 `Environment` 时自动开）先由
+  独立 `ssr.wgsl` pass 写**半分辨率 `Rgba16Float` 反射图**（rgb=反射、a=命中）：用深度重建
+  世界坐标与法线，沿反射方向做 **10 步定长世界空间推进**，每步经 `view_projection` 投回
+  屏幕与深度图比较；命中后按菲涅耳 `0.12 + 0.88·F³` 衰减并写 HDR 场景颜色。随后
+  `ssr_blur.wgsl` 按深度差做**双边 3×3 去噪**，并用上一帧 `view_projection` 重投影
+  上一帧反射图做 **0.75 时序累积**，并用上一帧屏幕位置在当前深度图上的深度跳变
+  （`|Δdepth|>0.01`）拒绝去遮挡处的历史；Tonemap 再对反射图做 **5 抽头**升采样后叠回。
+  只反射屏幕内已有内容，不做屏幕外/未渲染几何的补全；相机跳变/尺寸变化时清历史。
+  `RenderFrameMetrics.ssr_active` 区分「开关打开」与「本帧真的执行」。定长循环是 FXC 的硬
+  约束（带 `break` 会 `unable to unroll loop`），已由
+  `tonemap_shader_reconstructs_world_space_ssr` 改读 `ssr.wgsl` 盯住。
+- **接触阴影（P3-R22）**：`RenderSettings.contact_shadows`（默认 false；声明 `Environment` 时自动开）
+  在 Tonemap 前沿**指向光**的方向做 **8 步定长屏幕空间推进**，每步投影回屏幕并把深度与当前
+  像素比较；被更近几何挡住就按 `1 − 0.12·命中数` 压暗（下限 0.55），补 CSM 分辨率不足时
+  物体根部/缝隙里丢掉的小尺度暗部。Tonemap uniform 因此从 176B 扩到 **192B**（新增
+  `light_direction`）；循环同样必须定长，已由
+  `tonemap_shader_marches_contact_shadows_toward_the_light` 盯住。
+- **距离雾/空气透视（P3-R27）**：`RenderSettings.fog`（默认 false；声明 `Environment` 时
+  自动开，密度 `fog_density=0.0015`）在 Tonemap 前用深度重建世界坐标，按相机距离
+  `1 − exp(−density·distance)` 把颜色混向雾色，天空像素直接跳过。Tonemap uniform 从
+  192B 扩到 **208B**（新增 `fog` 四元组），由
+  `tonemap_shader_reconstructs_distance_fog` 与 `distance_fog_tints_distant_pixels` 盯住。
+- **屏幕空间神光（P3-R28）**：`RenderSettings.god_rays`（默认 false；`Environment` 自动开）
+  把「相机 + 指向光 × 1000」投到屏幕得到太阳 UV，沿“像素 → 太阳”的 12 步定长方向累积
+  亮部，叠回 Tonemap；太阳在屏外/相机背后时直接返回 0。**P3-R29** 再补太阳盘：
+  屏幕内天空像素按 `smoothstep(0.045, 0.012, sun_distance)` 画实心盘，前景只留
+  `exp(-16·d)` 柔光。没有阴影图/体积散射，属于屏幕空间光晕，不生成屏外几何补全；由
+  `tonemap_shader_projects_sun_for_god_rays` 与 `god_rays_add_energy_when_the_sun_is_on_screen` 盯住。
+- **屏幕空间景深（P3-R37）**：`RenderSettings.dof`（默认 false）在 Tonemap 内用深度重建
+  世界距离，按 `clamp(|distance−focus|/range·strength,0,1)` 算 CoC，做 8 方向 10 px
+  半径的 HDR 采样后混回；Tonemap uniform 从 208B 扩到 **224B**（新增 `dof`），
+  `RenderFrameMetrics.dof_active` 区分开关与本帧执行。由
+  `tonemap_shader_reconstructs_depth_of_field` 与 `depth_of_field_blurs_off_focus_pixels` 盯住。
+- **地形贴图 splat（P3-R38）**：`__terrain__?...&detail=<世界单位/瓦片>`（默认 0 = 关闭）
+  在 `terrain_detail.rs` 里按 seed 生成 **2×2、512² 的可平铺地面图集**（草/苔/落叶/裸土：
+  周期值噪声 fBm + 环绕椭圆叶子/石子/草叶），作为内嵌 `GltfTextureImage` 塞进地形材质，
+  **不需要工程贴图文件**，所以 mesh path 仍是纯数字 spec、真机与打包产物一致。
+  贴图走 `mip_chain_rgba8` 生成完整 mip 链一次上传（albedo sampler 改三线性），
+  PBR 地形分支以 `world.xz / detail` 采样四层、按顶点 splat 权重混合，并按纹素足迹选
+  LOD（0..3、半纹素内缩防止图集邻层渗色）。另加 0.045/0.12 两档世界空间大尺度明暗，
+  远景 mip 平均后仍不会退成一整片纯色。`detail=0` 时保持原纯色路径逐字节不变。
+  契约门：`detail_atlas_is_opt_in_embedded_and_round_trips`、`tiles_wrap_seamlessly`、
+  `terrain_detail_atlas_is_sampled_in_world_space`，以及回读门
+  `embedded_material_texture_keeps_level0_pixels`、
+  `embedded_terrain_atlas_matches_cpu_pixels`（后者证明 512² 图集逐字节进 GPU）。
+  Myrmex 的 `ground.lua` 用 `detail=100`，并去掉旧的 480×480 草甸平面，让高度场成为可见地面。
+- **地形细节法线图集（P3-R41）**：`terrain_detail::normal_atlas` 从颜色图集亮度逐瓦片
+  （瓦片内环绕）求梯度，生成 512² 2×2 法线图集（R=n.x、G=n.z、B=n.y），内嵌为
+  `normal_texture`，线性上传并带 mip。PBR 地形分支用同一世界 UV / 四层权重混合法线，
+  直接替换 `n`（强度 2.0）；通用切线基法线路径加 `animation.x < 1.5` 跳过地形，避免拿
+  height/slope UV 采错。`detail=0` 不带法线。契约门：
+  `normal_atlas_is_derived_from_colour_luminance`、
+  `embedded_terrain_normal_atlas_matches_cpu_pixels`，shader 断言在
+  `terrain_detail_atlas_is_sampled_in_world_space` 内。
+- **连续水面与波法线（P3-R40）**：`__water__?...&bed=<地形 spec>` 仍是平面网格，但 Myrmex
+  不再沿河铺 19+10 块 10 单位水面，而是铺一张 480×480 的连续面：地形（不透明）先画，
+  水面在 y=-0.33 处只从河床低于水位的连续河道露出；`bed=` 给每个顶点烘水深，岸线/深浅/
+  泡沫按深度结算，**`has_bed` 时不再乘 UV 边缘淡出**（那是方块接缝的来源）。着色器补
+  **世界空间波法线 + 菲涅尔**：三组方向波求斜率扰动 `n`，直射高光、IBL 镜面反射和菲涅尔
+  朝向一起动；水材质 roughness 0.16、metallic 0。**P3-R42** 再补**逐像素河床深度图**：
+  `bed=` 存在时烘 256² RGBA8（R 通道，线性 `[-1,8]` 编码），通过 normal 槽位线性上传
+  （避免 sRGB 扭曲），`detail_scale=-1` 作片元标记；水片元优先读它算深浅/岸线/泡沫，
+  缺失时回退逐顶点 `splat.x`。通用切线基法线路径收紧到 `animation.x < 0.5`，避免把
+  水面深度图当法线。仍无平面反射/折射、体积、逐像素折射；视觉河宽由地形下切决定，
+  与玩法 `water_half` 尚未统一。契约门：
+  `water_shader_bends_normals_and_skips_tile_edges_for_bed`、
+  `bed_bakes_a_per_pixel_depth_texture`；`ui_probe` 的“三维水面”阶段断言
+  `count()==1` 且雨天 `flooded()` 为真。
+- **程序化天空（P3-R45）**：HDR Tonemap 对 `depth=1` 背景用逆视图投影重建相机射线，
+  地平线→天顶渐变 + 太阳盘/日晕；与距离雾同一开关（HDR + `fog` + 场景相机），
+  `Tonemap.Params` 224→240 B，新增 `sky_active` 指标。俯视 god view 主要看到地平线霾，
+  抬头/照片模式可见天空。像素门 `sky_fills_hdr_background_when_fog_is_on` 断言角像素偏蓝。
+- **程序化云影（P3-R46）**：`mesh3d_pbr.wgsl` 的地形/水面分支用
+  `cloud_shadow(world.xz, camera.position.w)`（两 octave `value_noise`、世界尺度 0.0035、
+  随时间漂移）压 base color；地形强度 0.65、水面 0.55。不占阴影贴图、不加 uniform，
+  与 CSM/点光/接触阴影叠加；白盒门
+  `terrain_cloud_shadows_use_world_space_and_camera_time`。云影只作用于地形/水面。
+- **降级留痕**：能力不足时 `hdr_active=false`、告警一次并给出 `hdr_unavailable_reason()`；`RenderFrameMetrics` 暴露 `hdr_active/scene_format/tonemap`，本轮起再暴露 `bloom_active/fxaa_active/soft_shadows_active/filtered_shadows_active/ssao_active/ssr_active/contact_shadows_active/fog_active/sky_active/god_rays_active/dof_active`，性能面板与「复制报告」可查。
 - **验收**：`cargo test -p engine hdr`；HDR golden 报告 `pre_tonemap_max>1`、`post_tonemap_max≤1`、`ui_delta≤1`（见 `baselines/p3/hdr`）。
 
 顶点格式（[mesh3d.rs](../engine/crates/rustlua-render/src/mesh3d.rs)）：

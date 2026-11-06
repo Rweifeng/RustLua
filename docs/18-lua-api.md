@@ -74,12 +74,12 @@ end
 | `sprite` | `set(id, 组件串)` | 设置/替换实体 Sprite 组件（`texture=...;size=...`，与场景组件串同格式）；`texture` 支持 `图集路径#区域名` 引用，装配期解析为图集纹理 + 区域 UV（`docs/63`） |
 | `transform` | `get/set/move` | 读取和修改位置、旋转、缩放 |
 | `health` | `get/set/damage` | Demo 用生命值与受伤 API |
-| `particles` | `burst(x,y,count)` | 在 `(x,y)` 爆发 count 个粒子（橙色，扩散速度 120、寿命 0.6s） |
+| `particles` | `burst/burst3d/set_wind/set_wind3d/set_wind_profile/set_wind_source/clear_wind_sources/wind/wind3d/wind_profile/count` | 在 2D 或 3D 世界坐标爆发 count 个粒子（缺省橙色，扩散速度 120、寿命 0.6s）；`set_wind`/`set_wind3d` 设 CPU/GPU 共用的全局风加速度（宿主每帧同步给 GPU burst），`set_wind_profile` 加高度剪切 + 空间阵风（`max(1+shear·h+gust·sin(h·hz+x·0.11),0)`，h=世界高度），`set_wind_source`/`clear_wind_sources` 管 4 个局部径向 + 上升风源；CPU/GPU 同一公式，非法值返回 `(false,原因)` |
 | `physics` | `overlap/raycast` | **碰撞体**圆形重叠与射线查询（与 `physics3d` 同义，可选 `{layer=N,mask=N}` 分组过滤）；实体位置宽相另有 `positions_in_radius(x,y,r)` |
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
-| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止。**M74-01** 加了空间化三个函数：`play_at(name,x,y[,z])` 按世界坐标播放（听者由宿主每帧从活动相机灌入；2D 工程省略 `z`）、`set_listener(x,y,z,fx,fy,fz)` 手设听者（只给无相机的纯逻辑用例）、`listener()` 读回位姿。逐个参数的细节与平台降级口径见 [`lua_api/doc/audio.md`](../engine/crates/engine/src/lua_api/doc/audio.md) |
+| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止。**M74-01** 加了空间化三个函数：`play_at(name,x,y[,z])` 按世界坐标播放（听者由宿主每帧从活动相机灌入；2D 工程省略 `z`）、`set_listener(x,y,z,fx,fy,fz)` 手设听者（只给无相机的纯逻辑用例）、`listener()` 读回位姿；**M74 欠项** 又加了三件无障碍音色：`set_mono(flag)`、`set_tone_cut(bass_db,treble_db)`（只允许 `-24..0`，非法返回 `(false,原因)`）、`tone()` 读回 `{mono,bass_db,treble_db}`。逐个参数的细节与平台降级口径见 [`lua_api/doc/audio.md`](../engine/crates/engine/src/lua_api/doc/audio.md) |
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` / `project_root` | `quit()` 请求退出应用；`project_root()` 返回**工程根目录的绝对路径**（正斜杠，未配置时为空串）——`io.open` 的相对路径按进程工作目录解析，而 `--check` 不 chdir 到工程根，因此"跨文件契约"校验器（要读 `scenes/*.scene`、`project.toml`）必须靠它拼绝对路径，否则会静默跳过检查 |
 
@@ -140,11 +140,11 @@ end
 | `audio` | `bus_volume(bus)` | 该总线的**独立**音量（不含主音量；`master` 即主音量） |
 | `audio` | `effective_volume(bus)` | 实际生效音量 = 主音量 × 分组音量（`master` 等于主音量） |
 | `audio` | `play_on(bus, name)` | 在指定总线播一次音效，返回 `ok, reason`；**无输出设备时静默降级**（返回 `true` 只记日志），缺文件/解码失败才返回 `false` |
-| `audio` | `settings_text()` | 四路音量的版本化文本（版本头 `rustlua-audio-v1`，逐行 `bus=0.000`） |
+| `audio` | `settings_text()` | 四路音量与音色键的版本化文本（版本头 `rustlua-audio-v1`，逐行 `bus=0.000`，另含 `mono/bass_db/treble_db`） |
 | `audio` | `apply_settings(text)` | 应用设置文本；版本头不符返回 `false, reason`，未知总线/非法数值忽略 |
 | `audio` | `settings_path()` | 设置文件绝对路径（无工程根返回 `nil`）；**发布包形态指向用户数据目录**（`%APPDATA%\<publish_name>\settings.toml`，`RUSTLUA_USER_DIR` 可覆盖），开发工程形态为 `<project>/settings.toml`（M31 起，见 `docs/50`） |
 | `audio` | `load_settings()` | 读取 `settings.toml` 的 `[audio]` 段并应用，返回 `ok, detail`；文件缺失返回 `false, "missing"`（不算错误） |
-| `audio` | `save_settings()` | 把当前四路音量**保序**写回 `settings.toml`（保留注释与其他段），返回 `ok, detail` |
+| `audio` | `save_settings()` | 把当前四路音量与 `mono/bass_db/treble_db` **保序**写回 `settings.toml`（保留注释与其他段），返回 `ok, detail` |
 
 `play/volume/music/stop_music` 语义不变：`play` 等价于 SFX 总线，`music` 使用 BGM 总线且改音量即时生效。
 
@@ -157,6 +157,9 @@ master = 1.0
 bgm = 1.0
 sfx = 1.0
 ui = 1.0
+mono = false
+bass_db = 0.0
+treble_db = 0.0
 
 [input]
 # 命名动作映射（M20-07；M22/W1 起为物理键格式 v2）。单行转义字符串，首行为版本头；
@@ -167,7 +170,7 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
 
 - 文件**可选**：缺失时全部使用默认值（音频 `1.0`、输入用引擎默认动作表），不影响启动；当前定义 `[audio]` 与 `[input]` 两段。
 - 解析宽松：未知段、未知键、非法数值一律忽略（保留默认），不 panic。
-- 写入保序：只替换/补齐 `[audio]` 段内的四个键与 `[input]` 段内的 `map` 键，注释与其他段原样保留。
+- 写入保序：只替换/补齐 `[audio]` 段内的四路音量键与 `mono/bass_db/treble_db`，以及 `[input]` 段内的 `map` 键，注释与其他段原样保留。
 - **读 v1、写 v2**（M22/W1）：`rustlua-actions-v1`（`key:e`/`key:1`/`key:up`/`key:+`/`key:other:1048577`）
   仍可读入并迁移成物理键，落盘即写 `rustlua-actions-v2`；有损换算（如 `key:+` 只能落到 `=` 那个
   物理键）会记进 `input.migration_notes()` 与 `input.diagnostics()`，不静默改键位。
@@ -334,6 +337,8 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 | `size` / `size_end` | 边长曲线：出生 → 消亡（世界单位）。只给 `size` 即恒定大小；`size` 加 `size_end` 可做收缩/膨胀 |
 | `color` / `color_end` | 颜色曲线（`{r,g,b,a}`，缺省通道为 1）。只给 `color` 即恒定颜色 |
 | `gravity_x` / `gravity_y` | 世界重力（单位/秒²） |
+| `gravity_z` / `speed_z` / `spread_z` | 3D 发射的 z 重力、z 初速与 z **初速**抖动半径（仅 `burst3d`；2D `burst` 也接受，z 非零时自动走世界通道） |
+| `area_x` / `area_y` / `area_z` | 出生盒半边长（世界单位，默认 0）：每个粒子在盒内均匀落点。与 `spread_z` 不同，它抖的是**位置**而不是初速；雨幕/雪幕用它让一个连续流覆盖体积（`particles.stream3d` 也接受） |
 | `drag` | 每秒速度衰减比例，`>= 0` |
 | `rotation` / `rotation_speed` | 初始弧度与每秒角速度 |
 | `mode` | `"cpu"`（默认）或 `"gpu"`（P3-R07-1 起可写，R07-2 起生效）。取值必须**逐字**命中，拼错（`"gpuu"`、`"GPU"`）**报错且不生成粒子**。`"gpu"` 是视觉层语义：设备有 compute 且参数允许（burst 语义、`rate=0`、粒子数在预算内）时，这批粒子由渲染器的 GPU 池接管，**Lua 读不到它们的位置**；不满足则用**同一份参数**照旧在 CPU 池里生成（不丢粒子，只多一行回退日志）。WebGL2/微信没有 compute ⇒ 一律回 CPU |
@@ -341,9 +346,21 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 
 另有只读的 `particles.count()` 返回当前存活粒子数——**只数 CPU 池**：被 GPU 池接走的那批不在其中
 （GPU 粒子是视觉层）。单帧里 `mode='gpu'` 的爆发超过 32 批时，溢出批次就地按 CPU 生成。
+Lua 的 `burst`/`burst3d` 没有 `rate` 选项，天然是 burst；持续发射用
+`particles.stream3d(key,x,y,z,rate,opts)`（本轮新增），它和**场景声明**的
+`ParticleEmitter{rate>0,mode=gpu}` 由宿主落到同一条连续流（CPU 每帧按 rate 抽样、
+GPU 积分），这条通道不在 Lua 里逐颗可查。`stream3d` 同 key 更新、`stop_stream3d`/
+`clear_streams3d` 显式停止；后端没有连续流时按 `rate × dt` 近似回退 CPU。
 
-参数非有限、`life <= 0`、`drag < 0` 一律**报错且不生成粒子**；粒子按固定步推进（`step_particles`），
-抖动/爆发用确定性 LCG，因此同一脚本序列可复现。
+`particles.burst3d(x, y, z, count [, opts])` 与 `burst` 共用同一份参数解析，额外把 `z` 作为
+发射原点并接受 `gravity_z/speed_z/spread_z`。z 非零时**即使宿主没有打开世界深度开关**，
+本帧的 CPU 粒子也会自动走世界 Sprite 通道（`frame_data` 的隐式 `particles_world`），
+GPU burst 则把 z 写进状态缓冲的 `position_z`，由顶点着色器按相机朝向铺四边形。
+`set_wind3d` 的三个分量同时作用于 CPU 池与 GPU burst 的 compute uniform（`Params.wind_z`）；
+宿主每帧调用 `set_particle_wind_3d` 统一同步，2D 粒子的 z 风默认为 0，积分结果不变。
+
+参数非有限、`life <= 0`、`drag < 0`、负 `speed_z/spread_z/area_*` 一律**报错且不生成粒子**；粒子按固定步推进
+（`step_particles`），抖动/爆发用确定性 LCG，因此同一脚本序列可复现。
 
 ### `transform` 统一 2D/3D 变换（WP9）
 
@@ -354,11 +371,17 @@ Lua 无法区分尘土、水花、落叶；`opts` 让每次爆发自带观感。
 | API | 说明 |
 | --- | --- |
 | `transform.get(id)` | `{space='2d'\|'3d', x, y[, z, rx, ry, rz, rw], scale_x, scale_y[, scale_z]}`；2D 另有 `rotation`（弧度）。**局部**值 |
+| `transform.position(id)` | 只读**局部**位置，返回 `x, y` 两个数，不建 table；热循环优先用它 |
 | `transform.world(id)` | 同形，但读**世界**值：开启空间继承（WP2）时是父链组合的结果，否则等于局部值。父子关系下这是唯一能拿到"屏幕上实际在哪"的接口 |
+| `transform.world_position(id)` | 只读**世界**位置，返回 `x, y` 两个数；语义同 `transform.world` |
 | `transform.set(id, x, y[, rotation, scale_x, scale_y])` | 位置必填；**3D 下只改 XY，Z 保留** |
 | `transform.move(id, dx, dy)` | 2D/3D 都按 XY 增量移动 |
 | `transform.space(id)` | 返回 `'2d'` / `'3d'` / `nil` |
 | `transform.attach(id, '2d'\|'3d')` | 缺组件时新建并返回 `true`，已存在返回 `false`（**不覆盖**）。新建走**统一的提升/压平**：2D→3D 保留旋转（转成绕 Z 四元数）与缩放；3D→2D 只在**真能无损压平**时才建（四元数只有 z/w 分量、z 位移为 0、z 缩放为 1），否则**报错并且不插入组件**——手抄一个 XY 会把旋转与缩放悄悄丢掉 |
+
+`transform3d` 另有 `position(id)` / `world_position(id)`，返回 `x, y, z`；只认 `Transform3D`。
+`position` / `world_position` 是**热路径标量 API**：比 `get` / `world` 少一张 6/10 字段表，
+不改变任何组件语义，错误文案与表版本一致。
 
 两处刻意报错而非猜测：**3D 下 `set` 带标量 `rotation`**（2D 的弧度与 3D 的四元数不是一回事，
 静默按绕 Z 处理属于语义近似），以及未知的 `space` 名。被拒绝的调用不留半写状态。

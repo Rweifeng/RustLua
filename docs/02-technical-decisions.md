@@ -42,7 +42,7 @@
 - [ ] 音频最终选型：Kira 或 rodio；
 - [ ] 编辑器进程模型：运行时内嵌或独立进程；
 - [ ] 项目场景主格式：RON 或 JSON；
-- [ ] Lua 运行时：Lua 5.4 或 LuaJIT 的性能评估。
+- [ ] Lua 运行时：Lua 5.4 或 LuaJIT 的性能评估（已补 PUC Lua 5.4.8 基线，见 [78](78-Lua脚本性能分析与优化.md)；LuaJIT 仍未接入）。
 ## ADR-0005：编辑器采用独立 crate，egui/eframe 起步
 
 - 状态：Accepted
