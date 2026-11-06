@@ -60,9 +60,12 @@
         "save_settings",
         "set_bus_volume",
         "set_listener",
+        "set_mono",
+        "set_tone_cut",
         "settings_path",
         "settings_text",
         "stop_music",
+        "tone",
         "volume"
       ],
       "name": "audio"
@@ -80,7 +83,8 @@
         "get",
         "get_active",
         "set",
-        "set_active"
+        "set_active",
+        "set_clip_plane"
       ],
       "name": "camera"
     },
@@ -267,6 +271,7 @@
     {
       "funcs": [
         "get",
+        "move",
         "set",
         "set_active"
       ],
@@ -298,7 +303,8 @@
       "funcs": [
         "clear",
         "get",
-        "set"
+        "set",
+        "set_material"
       ],
       "name": "mesh"
     },
@@ -336,7 +342,20 @@
     {
       "funcs": [
         "burst",
-        "count"
+        "burst3d",
+        "clear_streams3d",
+        "clear_wind_sources",
+        "count",
+        "set_wind",
+        "set_wind3d",
+        "set_wind_profile",
+        "set_wind_source",
+        "stop_stream3d",
+        "stream3d",
+        "stream_count",
+        "wind",
+        "wind3d",
+        "wind_profile"
       ],
       "name": "particles"
     },
@@ -446,6 +465,18 @@
     },
     {
       "funcs": [
+        "bounds",
+        "height_at",
+        "normal_at",
+        "raise",
+        "raycast",
+        "slope_at",
+        "splat_at"
+      ],
+      "name": "terrain3d"
+    },
+    {
+      "funcs": [
         "atlas_index",
         "autotile_mask",
         "clear_tint",
@@ -477,9 +508,11 @@
         "attach",
         "get",
         "move",
+        "position",
         "set",
         "space",
-        "world"
+        "world",
+        "world_position"
       ],
       "name": "transform"
     },
@@ -488,8 +521,10 @@
         "attach",
         "get",
         "move",
+        "position",
         "set",
-        "world"
+        "world",
+        "world_position"
       ],
       "name": "transform3d"
     },
@@ -561,6 +596,14 @@
         "set"
       ],
       "name": "visibility"
+    },
+    {
+      "funcs": [
+        "depth_at",
+        "height_at",
+        "level"
+      ],
+      "name": "water3d"
     },
     {
       "funcs": [

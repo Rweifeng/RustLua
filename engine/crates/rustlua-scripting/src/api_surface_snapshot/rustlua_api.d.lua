@@ -1,7 +1,7 @@
 ---@meta
 -- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。
 -- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。
--- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 61 个真的不收参数。两种声明不合并（合并 = 假诊断）。
+-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 66 个真的不收参数。两种声明不合并（合并 = 假诊断）。
 -- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则
 -- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。
 -- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，
@@ -128,7 +128,8 @@ function asset.load(path) end
 ---@return any
 function asset.release(token) end
 
---- audio：运行期 API 面基线里的 17 个函数
+--- `load_settings` / `save_settings` 读写 `project.toml` 的 `[audio]` 段；除四路音量外，
+--- audio：运行期 API 面基线里的 20 个函数
 audio = {}
 
 ---@param text string
@@ -192,6 +193,17 @@ function audio.set_bus_volume(bus, level) end
 ---@return any
 function audio.set_listener(x, y, z, fx, fy, fz) end
 
+--- 把后续所有播放（含 BGM 续播、空间音效）切到单声道；`true` 时空间音效退回普通 Sink，不再重新铺成立体声。
+---@param mono boolean
+---@return any
+function audio.set_mono(mono) end
+
+--- 设置低/高频衰减。两段都只允许 `[-24, 0]`，`0` 表示不切；**不做 boost**。
+---@param bass_db number
+---@param treble_db number
+---@return any
+function audio.set_tone_cut(bass_db, treble_db) end
+
 ---@return any
 function audio.settings_path() end
 
@@ -200,6 +212,10 @@ function audio.settings_text() end
 
 ---@return any
 function audio.stop_music() end
+
+--- 读回当前无障碍音色。
+---@return any
+function audio.tone() end
 
 ---@param level number
 ---@return any
@@ -223,7 +239,8 @@ function calendar.now() end
 ---@return any
 function calendar.set(day, season, year, minute) end
 
---- camera：运行期 API 面基线里的 4 个函数
+--- `camera` 是**透视相机 payload** 的读写与选择链：`set_active` 只认带 `Camera` 组件的
+--- camera：运行期 API 面基线里的 5 个函数
 camera = {}
 
 ---@param id integer
@@ -247,6 +264,15 @@ function camera.set(id, x, y, z, tx, ty, tz, fov) end
 ---@param id integer
 ---@return any
 function camera.set_active(id) end
+
+--- 设置/清除相机的**会话级世界空间裁剪平面**：保留 `n·x + d >= 0` 的一侧，负侧
+---@param id integer
+---@param nx number
+---@param ny number
+---@param nz number
+---@param d number
+---@return any
+function camera.set_clip_plane(id, nx, ny, nz, d) end
 
 --- camera2d：运行期 API 面基线里的 10 个函数
 camera2d = {}
@@ -426,6 +452,7 @@ function entity.spawn(name, persist_id) end
 --- event：运行期 API 面基线里的 5 个函数
 event = {}
 
+--- 同步调用 `name` 上的全部监听者，`data` 原样作为唯一参数（省略时是 `nil`）。
 ---@param name string
 ---@param data any?
 ---@return any
@@ -773,12 +800,20 @@ function item.def(id) end
 ---@return any
 function item.define(id, definition) end
 
---- light：运行期 API 面基线里的 3 个函数
+--- light：运行期 API 面基线里的 4 个函数
 light = {}
 
 ---@param id integer
 ---@return any
 function light.get(id) end
+
+--- 把**点光源**的世界坐标移到 `(x,y,z)`。方向光会报错；方向仍用 `light.set` 改。
+---@param id integer
+---@param x number
+---@param y number
+---@param z number
+---@return any
+function light.move(id, x, y, z) end
 
 ---@param id integer
 ---@param dx number
@@ -853,21 +888,31 @@ function map.state(name, value) end
 ---@return any
 function map.state_clear(name) end
 
---- mesh：运行期 API 面基线里的 3 个函数
+--- `mesh` 给实体挂/换 3D 网格与材质覆盖。网格路径来自 `.glb/.gltf`，或引擎哨兵
+--- mesh：运行期 API 面基线里的 4 个函数
 mesh = {}
 
+--- 移除实体的 `MeshRenderer`，3D 网格立刻不再绘制；之后 `mesh.get` 返回 `nil`。
 ---@param id integer
 ---@return any
 function mesh.clear(id) end
 
+--- 读当前网格路径；实体没有 `MeshRenderer` 时返回 `nil`，不是空串。
 ---@param id integer
 ---@return any
 function mesh.get(id) end
 
+--- 给实体挂/换 3D 网格。路径可以是项目相对 `.glb/.gltf`，也可以是内置哨兵；替换不会
 ---@param id integer
 ---@param path string
 ---@return any
 function mesh.set(id, path) end
+
+--- 给已有 `MeshRenderer` 的实体设置 `.material` 覆盖；这是 X-ray/半透明外壳一类
+---@param id integer
+---@param path string?
+---@return any
+function mesh.set_material(id, path) end
 
 --- nav：运行期 API 面基线里的 11 个函数
 nav = {}
@@ -1003,9 +1048,11 @@ function net.send(bytes) end
 ---@return any
 function net.status() end
 
---- particles：运行期 API 面基线里的 2 个函数
+--- 粒子是**视觉层**：`particles.count()` 只读得到 CPU 池；`mode="gpu"` 的 burst 交给渲染器后，
+--- particles：运行期 API 面基线里的 11 个函数
 particles = {}
 
+--- 在二维世界坐标 `(x, y)` 打一簇粒子。缺省参数保持历史行为（速度 120、寿命 0.6 秒、橙色）。
 ---@param x number
 ---@param y number
 ---@param count integer
@@ -1013,8 +1060,90 @@ particles = {}
 ---@return any
 function particles.burst(x, y, count, options) end
 
+--- 在三维世界坐标打一簇粒子；除 `burst` 的全部选项外，额外接受 `gravity_z`、`speed_z`、
+---@param x number
+---@param y number
+---@param z number
+---@param count integer
+---@param options table?
+---@return any
+function particles.burst3d(x, y, z, count, options) end
+
+--- 删除**全部** Lua 连续流（场景里声明的流不受影响），用于天气切换/场景重置。
+---@return any
+function particles.clear_streams3d() end
+
+--- 清空全部 4 个局部风源槽。
+---@return any
+function particles.clear_wind_sources() end
+
+--- 读回 CPU 粒子池里当前存活的粒子数（GPU 池不在这里计数，见模块说明）。
 ---@return any
 function particles.count() end
+
+--- 设置全局风加速度（世界单位/秒²）；CPU 粒子池与 GPU burst 共用同一份风，宿主每帧把它同步给 GPU 后端。
+---@param x number
+---@param y number
+---@return any
+function particles.set_wind(x, y) end
+
+--- 设置三分量全局风；`x/y` 与 `set_wind` 是同一份状态。`z` 同时进入 CPU 粒子池与 GPU
+---@param x number
+---@param y number
+---@param z number
+---@return any
+function particles.set_wind3d(x, y, z) end
+
+--- 在全局风之上加风场：高度剪切 + 空间阵风。倍率
+--- `max(1 + shear*z + gust*sin(z*gust_hz + x*0.11), 0)`，CPU/GPU 同一公式。
+---@param shear number
+---@param gust number
+---@param gust_hz number
+---@return any
+function particles.set_wind_profile(shear, gust, gust_hz) end
+
+--- 设置一个局部风源（4 槽）。坐标与 burst3d 一致：x/y 水平面（y=高度），z 深度；
+--- 半径内衰减 (1-d/radius)^2，radial 沿源→粒子三维方向外推，lift 沿世界高度向上推。
+---@param index integer
+---@param x number
+---@param y number
+---@param z number
+---@param radius number
+---@param radial number
+---@param lift number
+---@return any
+function particles.set_wind_source(index, x, y, z, radius, radial, lift) end
+
+--- 停止并按 key 删除一条 Lua 连续流。
+---@param key string
+---@return any
+function particles.stop_stream3d(key) end
+
+--- 声明/更新一条**持续 3D 发射器**（粒子/秒）。同一 `key` 再次调用只更新原点与参数；宿主每帧
+---@param key string
+---@param x number
+---@param y number
+---@param z number
+---@param rate number
+---@param options table?
+---@return any
+function particles.stream3d(key, x, y, z, rate, options) end
+
+--- 读回当前 Lua 连续流的条数（不是 GPU 粒子数，也不是场景流条数）。
+---@return any
+function particles.stream_count() end
+
+--- 读回当前全局风加速度。
+---@return any
+function particles.wind() end
+
+--- 读回三分量全局风（含 CPU 池的 z）。
+---@return any
+function particles.wind3d() end
+
+--- 读回当前风场 `(shear, gust, gust_hz)`。
+---@return any
+function particles.wind_profile() end
 
 --- physics：运行期 API 面基线里的 10 个函数
 physics = {}
@@ -1324,6 +1453,64 @@ function tag.get(id, key) end
 ---@return any
 function tag.set(id, key, value) end
 
+--- 地形是**程序化高度场**，不是资产：`spec` 就是 `MeshRenderer.mesh` 里的
+--- terrain3d：运行期 API 面基线里的 7 个函数
+terrain3d = {}
+
+--- 返回地形高度场的世界空间 AABB，供相机取景、裁剪和粗略拾取用。
+---@param spec string
+---@return any
+function terrain3d.bounds(spec) end
+
+--- 可见地面的高度查询；返回值和网格顶点来自同一个 [`TerrainSpec::height`]。
+---@param spec string
+---@param x number
+---@param z number
+---@return any
+function terrain3d.height_at(spec, x, z) end
+
+--- 返回单位表面法线，用于让道具、草叶沿坡面倾斜。
+---@param spec string
+---@param x number
+---@param z number
+---@return any
+function terrain3d.normal_at(spec, x, z) end
+
+--- 在高度场上加一个局部平滑土堆/坑，返回**新的地形 spec 字符串**；原 spec 不变。
+---@param spec string
+---@param x number
+---@param z number
+---@param radius number
+---@param delta number
+---@return any
+function terrain3d.raise(spec, x, z, radius, delta) end
+
+--- 把一条射线打到高度场上，返回最近命中点；给鼠标点地面、放挖掘工具与 `camera3d.ray` 配套使用。
+---@param spec string
+---@param ox number
+---@param oy number
+---@param oz number
+---@param dx number
+---@param dy number
+---@param dz number
+---@param max number
+---@return any
+function terrain3d.raycast(spec, ox, oy, oz, dx, dy, dz, max) end
+
+--- 返回坡度角（度，0 = 平地），常用于判断某点能不能筑巢/行走。
+---@param spec string
+---@param x number
+---@param z number
+---@return any
+function terrain3d.slope_at(spec, x, z) end
+
+--- 返回该点的 4 通道程序化地表权重（草 / 苔 / 落叶 / 裸土），可用于选植被、粒子颜色或
+---@param spec string
+---@param x number
+---@param z number
+---@return any
+function terrain3d.splat_at(spec, x, z) end
+
 --- tilemap：运行期 API 面基线里的 17 个函数
 tilemap = {}
 
@@ -1455,7 +1642,7 @@ time = {}
 ---@return any
 function time.delta() end
 
---- transform：运行期 API 面基线里的 6 个函数
+--- transform：运行期 API 面基线里的 8 个函数
 transform = {}
 
 ---@param id integer
@@ -1472,6 +1659,11 @@ function transform.get(id) end
 ---@param dy number
 ---@return any
 function transform.move(id, dx, dy) end
+
+--- 读取实体的**局部**位置，返回两个数 `x, y`，不创建 table。2D 实体走 `Transform`，
+---@param id integer
+---@return any
+function transform.position(id) end
 
 ---@param id integer
 ---@param x number
@@ -1490,7 +1682,12 @@ function transform.space(id) end
 ---@return any
 function transform.world(id) end
 
---- transform3d：运行期 API 面基线里的 5 个函数
+--- 读取实体的**世界**位置，返回两个数 `x, y`，不创建 table。语义与 `transform.world` 相同：
+---@param id integer
+---@return any
+function transform.world_position(id) end
+
+--- transform3d：运行期 API 面基线里的 7 个函数
 transform3d = {}
 
 ---@param id integer
@@ -1508,6 +1705,11 @@ function transform3d.get(id) end
 ---@return any
 function transform3d.move(id, dx, dy, dz) end
 
+--- 读取 3D 实体的**局部**位置，返回 `x, y, z` 三个数，不创建 table；只认 `Transform3D`，
+---@param id integer
+---@return any
+function transform3d.position(id) end
+
 ---@param ... any
 ---@return any
 function transform3d.set(...) end
@@ -1515,6 +1717,11 @@ function transform3d.set(...) end
 ---@param id integer
 ---@return any
 function transform3d.world(id) end
+
+--- 读取 3D 实体的**世界**位置，返回 `x, y, z` 三个数，不创建 table。已有传播结果时直接取；
+---@param id integer
+---@return any
+function transform3d.world_position(id) end
 
 --- ui：运行期 API 面基线里的 56 个函数
 ui = {}
@@ -1850,6 +2057,30 @@ function visibility.get(id) end
 ---@param layers integer
 ---@return any
 function visibility.set(id, layers) end
+
+--- 水面是**程序化透明片**，不是水体模拟：spec 就是 `MeshRenderer.mesh` 里那条
+--- water3d：运行期 API 面基线里的 3 个函数
+water3d = {}
+
+--- 计算某点“水面高度 - 地形高度”，正数表示有水，负数表示露出水面的干地。
+---@param water_spec string
+---@param terrain_spec string
+---@param x number
+---@param z number
+---@return any
+function water3d.depth_at(water_spec, terrain_spec, x, z) end
+
+--- 返回水面在该点的瞬时高度（静水面 + 低频涟漪），与水面网格顶点同源。
+---@param spec string
+---@param x number
+---@param z number
+---@return any
+function water3d.height_at(spec, x, z) end
+
+--- 返回静水面高度 `y`，适合做洪水线/岸线判定的基准，不含涟漪。
+---@param spec string
+---@return any
+function water3d.level(spec) end
 
 --- world_text：运行期 API 面基线里的 2 个函数
 world_text = {}

@@ -1,7 +1,7 @@
 //! Lua API 参考（**本文件与 `src/lua_api/doc/*.md` 由脚本生成，勿手改**）。
 //!
 //! - 事实源：运行期 `_G` 探针导出的 API 面基线（`rustlua-scripting` 的 api_surface_snapshot 快照门，
-//!   `lua_api_surface.json`，45 个模块表 / 344 个函数）；
+//!   `lua_api_surface.json`，47 个模块表 / 373 个函数）；
 //! - 再生成：`node scripts/docgen/gen-lua-api-docs.js`；说明文字写在各模块的 markdown 里
 //!   （`src/lua_api/doc/<模块>.md`），Lua 侧签名从绑定源码推断；
 //! - 门：`node scripts/docgen/gen-lua-api-docs.js --check`——再生成必须是 no-op、待补桩数不得
@@ -163,6 +163,10 @@ pub mod tag {
     #![doc = include_str!("lua_api/doc/tag.md")]
 }
 
+pub mod terrain3d {
+    #![doc = include_str!("lua_api/doc/terrain3d.md")]
+}
+
 pub mod tilemap {
     #![doc = include_str!("lua_api/doc/tilemap.md")]
 }
@@ -185,6 +189,10 @@ pub mod ui {
 
 pub mod visibility {
     #![doc = include_str!("lua_api/doc/visibility.md")]
+}
+
+pub mod water3d {
+    #![doc = include_str!("lua_api/doc/water3d.md")]
 }
 
 pub mod world_text {

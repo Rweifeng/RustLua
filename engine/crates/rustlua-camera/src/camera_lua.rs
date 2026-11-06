@@ -193,6 +193,10 @@ fn install_camera(lua: &Lua, state: &Handle<CameraState>, world: &Handle<World>)
             t.set("fov", camera.fov_y.to_degrees())?;
             t.set("near", camera.near)?;
             t.set("far", camera.far)?;
+            t.set("clip_x", camera.clip_plane[0])?;
+            t.set("clip_y", camera.clip_plane[1])?;
+            t.set("clip_z", camera.clip_plane[2])?;
+            t.set("clip_w", camera.clip_plane[3])?;
             Ok(t)
         })?,
     )?;
@@ -240,6 +244,39 @@ fn install_camera(lua: &Lua, state: &Handle<CameraState>, world: &Handle<World>)
                 Ok(true)
             },
         )?,
+    )?;
+    let w = world.clone();
+    camera.set(
+        "set_clip_plane",
+        lua.create_function(move |_, (id, nx, ny, nz, d): (i64, f32, f32, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let plane = [nx, ny, nz, d];
+            if plane.iter().any(|value| !value.is_finite()) {
+                return Err(api_error("camera.set_clip_plane must be finite"));
+            }
+            let length = (nx * nx + ny * ny + nz * nz).sqrt();
+            let plane = if length <= 1e-6 {
+                if d.abs() > 1e-6 {
+                    return Err(api_error(
+                        "camera.set_clip_plane zero normal needs zero offset",
+                    ));
+                }
+                [0.0; 4]
+            } else {
+                [nx / length, ny / length, nz / length, d / length]
+            };
+            let mut world = w.borrow_mut()?;
+            require_alive(&world, id)?;
+            let Some(camera) = world
+                .get_mut::<Camera>(id)
+                .map_err(world_error)?
+                .and_then(Camera::as_perspective_mut)
+            else {
+                return Err(api_error("entity has no camera3d"));
+            };
+            camera.clip_plane = plane;
+            Ok(true)
+        })?,
     )?;
     lua.globals().set("camera", camera)?;
     Ok(())
@@ -563,7 +600,7 @@ mod tests {
         (lua, state, world, pointer)
     }
 
-    /// 19 个函数一个不少（这是 Lua 面的**清单**，少一个脚本就会静默拿到 nil）。
+    /// 20 个函数一个不少（这是 Lua 面的**清单**，少一个脚本就会静默拿到 nil）。
     #[test]
     fn every_camera_function_is_installed() {
         let (lua, _state, _world, _pointer) = harness();
@@ -573,7 +610,7 @@ mod tests {
             let count = table.pairs::<mlua::Value, mlua::Value>().count();
             total += count;
         }
-        assert_eq!(total, 19, "camera/camera3d/camera2d 合计 19 个函数");
+        assert_eq!(total, 20, "camera/camera3d/camera2d 合计 20 个函数");
     }
 
     /// `camera2d` 的请求-回填交接：脚本写的只是 pending，宿主回填的才是 `get` 的答案。
