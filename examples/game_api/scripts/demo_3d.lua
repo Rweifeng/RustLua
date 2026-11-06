@@ -198,8 +198,14 @@ local steps = {
         id = "local_vs_world",
         title = "Local != world",
         claim = "transform3d.get 是局部值、world 是世界值：父实体滑动时子的局部值不变、世界值跟着父走",
-        api = { "transform3d.get", "transform3d.world", "transform3d.set" },
-        code = "transform3d.get(child); transform3d.world(child); transform3d.set(ground, ...)",
+        api = {
+            "transform3d.get",
+            "transform3d.world",
+            "transform3d.position",
+            "transform3d.world_position",
+            "transform3d.set",
+        },
+        code = "transform3d.position(child); transform3d.world_position(child); transform3d.set(ground, ...)",
         enter = function()
             reset_world()
         end,
@@ -212,17 +218,17 @@ local steps = {
                 transform3d.set(ground, math.sin(elapsed * 0.8) * 0.8, 0, 0, 0, 0, 0, 1, 1, 1, 1)
             end
             if child then
-                local local_t = transform3d.get(child)
-                local world_t = transform3d.world(child)
+                local lx, ly, lz = transform3d.position(child)
+                local wx, wy, wz = transform3d.world_position(child)
                 lab.note(
                     string.format(
                         "child local=(%.2f,%.2f,%.2f) world=(%.2f,%.2f,%.2f)",
-                        local_t.x,
-                        local_t.y,
-                        local_t.z,
-                        world_t.x,
-                        world_t.y,
-                        world_t.z
+                        lx,
+                        ly,
+                        lz,
+                        wx,
+                        wy,
+                        wz
                     )
                 )
             end
@@ -233,12 +239,12 @@ local steps = {
             if not child then
                 return { child = "missing" }
             end
-            local local_t = transform3d.get(child)
-            local world_t = transform3d.world(child)
+            local lx, ly, lz = transform3d.position(child)
+            local wx, wy, wz = transform3d.world_position(child)
             local ground_t = ground and transform3d.get(ground) or { x = 0, y = 0, z = 0 }
             return {
-                local_x = string.format("%.2f", local_t.x),
-                world_x = string.format("%.2f", world_t.x),
+                local_x = string.format("%.2f", lx),
+                world_x = string.format("%.2f", wx),
                 parent_x = string.format("%.2f", ground_t.x),
             }
         end,
@@ -251,7 +257,15 @@ local steps = {
             end
             local local_t = transform3d.get(child)
             local world_t = transform3d.world(child)
+            local lx, ly, lz = transform3d.position(child)
+            local wx, wy, wz = transform3d.world_position(child)
             local ground_t = transform3d.get(ground)
+            t:near(lx, local_t.x, 1e-3, "position x agrees with transform3d.get")
+            t:near(ly, local_t.y, 1e-3, "position y agrees with transform3d.get")
+            t:near(lz, local_t.z, 1e-3, "position z agrees with transform3d.get")
+            t:near(wx, world_t.x, 1e-3, "world_position x agrees with transform3d.world")
+            t:near(wy, world_t.y, 1e-3, "world_position y agrees with transform3d.world")
+            t:near(wz, world_t.z, 1e-3, "world_position z agrees with transform3d.world")
             t:near(local_t.x, CHILD_HOME.x, 1e-3, "child local x is untouched")
             t:near(world_t.x - local_t.x, ground_t.x, 1e-3, "world x = local x + parent x")
             t:near(world_t.y - local_t.y, ground_t.y, 1e-3, "world y = local y + parent y")
@@ -766,8 +780,43 @@ local steps = {
     },
 }
 
+-- 程序化地形/水面的采样面：与 `MeshRenderer.mesh` 用同一个 spec 串，保证
+-- 玩法放置与可见网格不会各算一套。这里在创建时各调用一次（有断言，不是空跑）。
+local TERRAIN_SPEC = "__terrain__?size=240&res=96&amp=2.4&seed=7"
+local WATER_SPEC = "__water__?size=10&res=8&y=0.06&amp=0.02&seed=3"
+
+local function probe_procedural_surfaces()
+    local height = terrain3d.height_at(TERRAIN_SPEC, 0, 0)
+    local bounds = terrain3d.bounds(TERRAIN_SPEC)
+    local nx, ny, nz = terrain3d.normal_at(TERRAIN_SPEC, 0, 0)
+    local slope = terrain3d.slope_at(TERRAIN_SPEC, 0, 0)
+    local grass, moss, litter, bare = terrain3d.splat_at(TERRAIN_SPEC, 0, 0)
+    local hit = terrain3d.raycast(TERRAIN_SPEC, 0, 50, 0, 0, -1, 0, 200)
+    local raised = terrain3d.raise(TERRAIN_SPEC, 0, 0, 6, 1.25)
+    local raised_height = terrain3d.height_at(raised, 0, 0)
+    assert(type(height) == "number" and #bounds == 6, "terrain sampling")
+    assert(nx * nx + ny * ny + nz * nz > 0.9, "terrain normal is unit-ish")
+    assert(slope >= 0 and slope <= 90, "terrain slope is in degrees")
+    assert(math.abs(grass + moss + litter + bare - 1) < 1e-4, "terrain splat is normalized")
+    assert(raised_height - height > 1.2, "terrain raise edits the height field")
+    assert(hit and #hit == 7, "terrain raycast hits the ground")
+    local level = water3d.level(WATER_SPEC)
+    local surface = water3d.height_at(WATER_SPEC, 0, 0)
+    local depth = water3d.depth_at(WATER_SPEC, TERRAIN_SPEC, 0, 0)
+    assert(type(level) == "number" and type(surface) == "number", "water sampling")
+    -- 深度是有符号的（地形高于水面时为负），这里只验证它能算出来。
+    assert(type(depth) == "number", "water depth is numeric")
+    -- 连续流：声明、读条数、停止、清空都要真的走一遍；探针不留流在 GPU 池里。
+    particles.stream3d("demo_3d_probe", 0, 2, 0, 5, {life=1, size=0.1})
+    assert(particles.stream_count() >= 1, "stream3d registers a continuous emitter")
+    assert(particles.stop_stream3d("demo_3d_probe"), "stop_stream3d removes it")
+    particles.clear_streams3d()
+    assert(particles.stream_count() == 0, "clear_streams3d drops all Lua streams")
+end
+
 function M.on_create()
     load_clips()
+    probe_procedural_surfaces()
     lab.start({
         scene = "api_3d",
         title = "3D Rendering",

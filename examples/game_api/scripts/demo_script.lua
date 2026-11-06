@@ -51,8 +51,19 @@ local function dash(value)
     return tostring(value)
 end
 
---- 按场景名重新查三只巡逻实体；名字是真源，不缓存数字 id 以外的任何东西。
+--- 按场景名查三只巡逻实体；名字只用于**建立缓存**，之后每帧只做 is_alive。
+--- 这是 P1 的 name→id 缓存示范：每帧 `entity.find` 会为每个名字分配一个 Rust String，
+--- 而缓存后热路径只剩三次 is_alive（约 13 ns/次）。
 local function find_patrols()
+    for _, patrol in ipairs(patrols) do
+        if not entity.is_alive(patrol.id) then
+            patrols = {}
+            break
+        end
+    end
+    if #patrols == #PATROL_NAMES then
+        return #patrols
+    end
     patrols = {}
     for index, name in ipairs(PATROL_NAMES) do
         local id = entity.find(name)
@@ -334,6 +345,60 @@ local steps = {
             local position = transform.get(probe)
             t:near(position.x, 620.0, 0.01, "transform.set placed the probe")
             t:near(position.y, PROBE_Y, 0.01, "transform.get reads the same position back")
+        end,
+    },
+    {
+        id = "scalar_reads",
+        title = "Scalar reads",
+        claim = "只读位置时用标量 API：不建 table，也不把名字查询塞进每帧循环",
+        api = { "transform.position", "transform.world_position", "transform.get", "transform.world" },
+        code = "x,y = transform.position(id); wx,wy = transform.world_position(id)",
+        enter = function()
+            find_patrols()
+            local patrol = patrols[1]
+            if patrol then
+                local x, y = transform.position(patrol.id)
+                lab.note(string.format("%s local=(%.0f, %.0f)", patrol.name, x, y))
+            end
+        end,
+        run = function()
+            local patrol = patrols[1]
+            if patrol == nil then
+                return
+            end
+            local x, y = transform.position(patrol.id)
+            local wx, wy = transform.world_position(patrol.id)
+            lab.note(string.format("%s local=(%.0f,%.0f) world=(%.0f,%.0f)", patrol.name, x, y, wx, wy))
+        end,
+        read = function()
+            local patrol = patrols[1]
+            if patrol == nil then
+                return { { label = "patrol", value = "-" } }
+            end
+            local x, y = transform.position(patrol.id)
+            local wx, wy = transform.world_position(patrol.id)
+            return {
+                { label = "name", value = patrol.name },
+                { label = "x", value = string.format("%.1f", x) },
+                { label = "y", value = string.format("%.1f", y) },
+                { label = "world_x", value = string.format("%.1f", wx) },
+                { label = "world_y", value = string.format("%.1f", wy) },
+            }
+        end,
+        check = function(t)
+            local patrol = patrols[1]
+            t:ok(patrol ~= nil, "at least one patrol is cached")
+            if patrol == nil then
+                return
+            end
+            local x, y = transform.position(patrol.id)
+            local table_value = transform.get(patrol.id)
+            t:near(x, table_value.x, 0.001, "position x agrees with transform.get")
+            t:near(y, table_value.y, 0.001, "position y agrees with transform.get")
+            local wx, wy = transform.world_position(patrol.id)
+            local world_value = transform.world(patrol.id)
+            t:near(wx, world_value.x, 0.001, "world_position x agrees with transform.world")
+            t:near(wy, world_value.y, 0.001, "world_position y agrees with transform.world")
         end,
     },
 }

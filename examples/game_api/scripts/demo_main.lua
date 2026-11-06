@@ -509,6 +509,14 @@ local steps = {
             -- 进入步骤时先把基线读出来：自检与交互都从同一个起点算增量。
             burst_before = particles.count()
             burst_after = burst_before
+            -- 风向与 3D 发射接口也在这里各调用一次（本演示不改变粒子池，
+            -- 只验证参数解析与读回；真正的 3D burst 见引擎 docs/54 §8-⑧）。
+            assert(particles.set_wind(0, 0), "zero wind accepted")
+            assert(particles.set_wind3d(0, 0, 0), "zero 3d wind accepted")
+            local wx, wy = particles.wind()
+            local wx3, wy3, wz3 = particles.wind3d()
+            assert(wx == 0 and wy == 0 and wx3 == 0 and wy3 == 0 and wz3 == 0, "wind reads back")
+            particles.burst3d(0, 0, 0, 0, { speed_z = 1, gravity_z = -1 })
         end,
         run = function()
             if not burst_done then

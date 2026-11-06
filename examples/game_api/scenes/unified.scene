@@ -2,7 +2,7 @@
 # 不写进实体数据；下列实体名就是脚本 `scripts/demo_unified.lua` 里 `entity.find(...)` 的目标。
 scene_version=2
 name=unified
-meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12
+meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13
 # CameraOrtho  正交相机（projection=orthographic）——运行时的**初始 2D 相机**（camera2d 一侧）
 entity	1	CameraOrtho
 component	1	Camera	projection=orthographic;center=0.0000,0.0000;zoom=1.000000
@@ -52,3 +52,6 @@ entity	12	ScreenNote
 component	12	Text	text=world: ground plane + triangle mesh + light | 2D: sprite + quad + world text + particles | screen: this UI;font_size=13.00;color=0.660,0.730,0.880
 component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	12	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-300.00,-320.00,-300.00,-320.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.5000,0.5000
+# EmberLight  点光源：`light.move` 只接受 point 光源，演示跟着火花移动的暖光
+entity	13	EmberLight
+component	13	Light	direction=0,-1,0;color=1.000,0.450,0.150;intensity=2.000;type=point;position=0.000000000,0.800000000,0.000000000;range=6.000000000

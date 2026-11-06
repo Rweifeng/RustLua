@@ -26,6 +26,7 @@ local CAM_ORTHO = "CameraOrtho"
 local CAM_PERSP = "CameraPersp"
 local SUN = "SunLight"
 local FILL = "FillLight"
+local EMBER = "EmberLight"
 local TRI = "TriMesh"
 local HERO = "HeroSprite"
 local SHADOW = "ShadowQuad"
@@ -144,8 +145,8 @@ local steps = {
     {
         id = "mesh_swap",
         title = "Mesh swap",
-        claim = "mesh.set 在三角 glTF / 内置地面之间换，mesh.clear 之后 mesh.get 返回 nil（不是空串）",
-        api = { "mesh.set", "mesh.get", "mesh.clear", "entity.find", "entity.is_alive" },
+        claim = "mesh.set 在三角 glTF / 内置地面之间换，mesh.clear 之后 mesh.get 返回 nil；mesh.set_material 覆盖/清除材质",
+        api = { "mesh.set", "mesh.get", "mesh.clear", "mesh.set_material", "entity.find", "entity.is_alive" },
         code = "mesh.set(tri, ground); mesh.clear(tri); mesh.get(tri) == nil; mesh.set(tri, gltf)",
         enter = function()
             reset_world()
@@ -157,6 +158,9 @@ local steps = {
             local removed = mesh.clear(tri)
             cleared_nil = (removed == true) and (mesh.get(tri) == nil)
             mesh.set(tri, TRIANGLE_MESH)
+            -- 逐实例材质覆盖：先换成示例工程里的 blend 材质，再清回 glTF 内嵌。
+            mesh.set_material(tri, "assets/materials/p3-r02-alpha-blend-a.material")
+            mesh.set_material(tri, nil)
         end,
         run = function()
             local tri = live(TRI)
@@ -184,8 +188,8 @@ local steps = {
         id = "sun_and_fill",
         title = "Sun / fill",
         claim = "light.set 写方向/颜色/强度、light.get 读回同一组数字；L 在两盏灯间切 light.set_active",
-        api = { "light.set", "light.get", "light.set_active", "entity.find", "entity.is_alive" },
-        code = "light.set(sun, 0.4, -0.85, -0.45, 1, 0.96, 0.88, 1.2); light.get(sun)",
+        api = { "light.set", "light.get", "light.move", "light.set_active", "entity.find", "entity.is_alive" },
+        code = "light.set(sun, ...); light.move(ember, -0.25, 0.8, 0); light.get(sun)",
         enter = function()
             reset_world()
             local sun = live(SUN)
@@ -195,6 +199,11 @@ local steps = {
         end,
         run = function()
             local sun = live(SUN)
+            local ember = live(EMBER)
+            if ember then
+                -- 点光源的 position 可以独立于 Transform 移动：暖光跟着火花左右偏一点。
+                light.move(ember, -0.25, 0.8, 0.0)
+            end
             if sun then
                 local value = light.get(sun)
                 lab.note(
@@ -214,9 +223,11 @@ local steps = {
         read = function()
             local sun = live(SUN)
             local fill = live(FILL)
+            local ember = live(EMBER)
             return {
                 sun = sun and light.get(sun).intensity or "-",
                 fill = fill and light.get(fill).intensity or "-",
+                ember = ember and light.get(ember).px or "-",
                 active = light_side,
             }
         end,
@@ -230,6 +241,13 @@ local steps = {
             t:near(value.intensity, 1.2, 1e-3, "intensity reads back")
             t:near(value.r, 1.0, 1e-3, "red channel reads back")
             t:near(value.dy, -0.85, 1e-3, "direction reads back")
+            local ember = live(EMBER)
+            if ember then
+                local point = light.get(ember)
+                t:near(point.px, -0.25, 1e-3, "light.move updates a point light's x")
+                t:near(point.py, 0.8, 1e-3, "light.move updates a point light's y")
+                t:eq(point.kind, "point", "the moved light is a point light")
+            end
         end,
     },
     {

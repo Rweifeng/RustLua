@@ -489,9 +489,9 @@ local steps = {
     {
         id = "camera_selection",
         title = "Camera select",
-        claim = "camera.set/get 直接读写透视载荷；set_active/get_active 是一条立即生效的选择链",
-        api = { "camera.set", "camera.get", "camera.set_active", "camera.get_active" },
-        code = 'camera.set(main, 1, 7, 9, 0, 0, 0, 55); camera.set_active(main); camera.get_active()',
+        claim = "camera.set/get 直接读写透视载荷；set_active/get_active 是一条立即生效的选择链；set_clip_plane 读写会话级裁剪面",
+        api = { "camera.set", "camera.get", "camera.set_active", "camera.get_active", "camera.set_clip_plane" },
+        code = 'camera.set(main, 1, 7, 9, 0, 0, 0, 55); camera.set_clip_plane(main, 0, 1, 0, -1); camera.get(main).clip_y; camera.set_active(main); camera.get_active()',
         enter = function()
             find_ids()
             clear_ui()
@@ -537,6 +537,17 @@ local steps = {
             t:near(view.y, 7, 0.001, "camera.get reads back y")
             t:near(view.z, 9, 0.001, "camera.get reads back z")
             t:near(view.fov, 55, 0.001, "camera.get reads back fov")
+
+            t:eq(
+                camera.set_clip_plane(ids.main, 0, 1, 0, -1),
+                true,
+                "set_clip_plane accepts a world-space plane"
+            )
+            local clipped = camera.get(ids.main)
+            t:near(clipped.clip_y, 1, 0.001, "clip normal y reads back")
+            t:near(clipped.clip_w, -1, 0.001, "clip offset reads back")
+            t:eq(camera.set_clip_plane(ids.main, 0, 0, 0, 0), true, "zero plane clears clipping")
+            t:near(camera.get(ids.main).clip_y, 0, 0.001, "cleared clip normal is zero")
 
             t:eq(camera.set_active(ids.main), true, "set_active accepts a camera entity")
             t:eq(camera.get_active(), ids.main, "get_active reports the main camera")
