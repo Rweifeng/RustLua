@@ -117,6 +117,41 @@ pub fn install(
         })?,
     )?;
 
+    // 无障碍音色（M74 欠项）：单声道 + 低/高频衰减。字段由 `ToneControl` 校验，
+    // Lua 侧只负责把非法值变成 `(false, 原因)`，不静默夹紧。
+    let handle = audio.clone();
+    table.set(
+        "set_mono",
+        lua.create_function(move |_, mono: bool| {
+            handle.borrow_mut()?.set_mono(mono);
+            Ok(())
+        })?,
+    )?;
+
+    let handle = audio.clone();
+    table.set(
+        "set_tone_cut",
+        lua.create_function(move |_, (bass_db, treble_db): (f32, f32)| {
+            match handle.borrow_mut()?.set_tone_cut(bass_db, treble_db) {
+                Ok(()) => Ok((true, String::new())),
+                Err(error) => Ok((false, error.to_string())),
+            }
+        })?,
+    )?;
+
+    let handle = audio.clone();
+    table.set(
+        "tone",
+        lua.create_function(move |lua, ()| {
+            let tone = handle.borrow()?.tone();
+            let out = lua.create_table()?;
+            out.set("mono", tone.mono())?;
+            out.set("bass_db", tone.bass_db())?;
+            out.set("treble_db", tone.treble_db())?;
+            Ok(out)
+        })?,
+    )?;
+
     let handle = audio.clone();
     table.set(
         "effective_volume",

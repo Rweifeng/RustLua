@@ -1,14 +1,18 @@
 # Lua 模块 `audio`
 
-> 运行期 API 面基线里本模块有 17 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 20 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
 <!-- 以上为自动生成头，以下第一段散文是模块说明（再生成时保留） -->
 
+`load_settings` / `save_settings` 读写 `project.toml` 的 `[audio]` 段；除四路音量外，
+`mono`、`bass_db`、`treble_db` 也走同一段，因此 `set_mono` / `set_tone_cut` 的档位能跨启动保留。
+旧文件缺这三行时按关/0/0 处理；值越界会夹到 `-24..=0`，不阻止启动。
+
 ## `audio.apply_settings(text: String)`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:150`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:185`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +45,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.effective_volume(bus: String)`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:121`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:156`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -64,7 +68,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.load_settings()`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:174`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:209`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -75,7 +79,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.music(name: String)`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:201`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:236`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -113,7 +117,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.play_on(bus: String, name: String)`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:130`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:165`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -124,7 +128,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.save_settings()`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:189`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:224`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -159,9 +163,27 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 示例（2D，听者固定在屏幕中心、朝 +Y 俯视）：
   `audio.set_listener(160, 90, 0, 0, 1, 0)`。
 
+## `audio.set_mono(mono: bool)`
+
+把后续所有播放（含 BGM 续播、空间音效）切到单声道；`true` 时空间音效退回普通 Sink，不再重新铺成立体声。
+
+- 参数：`mono` 布尔值。
+- 返回：无。
+- 失败：不失败；单声道开关只改播放器状态，不改已解码数据。
+- 示例：`audio.set_mono(true)`。
+
+## `audio.set_tone_cut(bass_db: f32, treble_db: f32)`
+
+设置低/高频衰减。两段都只允许 `[-24, 0]`，`0` 表示不切；**不做 boost**。
+
+- 参数：`bass_db` 低频衰减分贝；`treble_db` 高频衰减分贝。
+- 返回：`(ok, reason)`；`ok=false` 时 `reason` 是具体越界值。
+- 失败：非有限值或超出 `[-24, 0]`，不静默夹紧。
+- 示例：`local ok = audio.set_tone_cut(-6, -12)`。
+
 ## `audio.settings_path()`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:163`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:198`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -172,7 +194,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.settings_text()`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:144`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:179`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -183,7 +205,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `audio.stop_music()`
 
-> 绑定：`engine/crates/rustlua-audio/src/lua.rs:212`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-audio/src/lua.rs:247`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -191,6 +213,15 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 返回：
 - 失败：
 - 示例：
+
+## `audio.tone()`
+
+读回当前无障碍音色。
+
+- 参数：无。
+- 返回：`{mono=Boolean, bass_db=Number, treble_db=Number}`。
+- 失败：不失败。
+- 示例：`local t = audio.tone(); if t.mono then ... end`。
 
 ## `audio.volume(level: f32)`
 

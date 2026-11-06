@@ -16,6 +16,7 @@ use std::{collections::HashMap, fmt, path::PathBuf};
 use crate::device::Device;
 use crate::sink::SpatialEmission;
 use crate::spatial::{Listener, SpatialError, SpatialModel, SpatialParams, evaluate, fold_to_ears};
+use crate::tone::ToneControl;
 
 /// 音量总线（M20-02）。`Master` 是总音量，其余为分组音量。
 ///
@@ -98,6 +99,8 @@ pub struct AudioSystem {
     listener: Option<Listener>,
     /// 距离衰减模型（M74-01），默认 [`SpatialModel::DEFAULT`]。
     spatial_model: SpatialModel,
+    /// 无障碍音色（M74 欠项）：单声道 + 低/高频衰减；默认严格直通。
+    tone: ToneControl,
     /// 当前 BGM 的解码字节（供曲尾续播重挂；换曲/停止时更新）。
     music_bytes: Option<Vec<u8>>,
     /// 当前 BGM 自己的音量倍数（导入设置里的"音量"）。主音量变化时要**连它一起**重算，
@@ -112,6 +115,7 @@ impl fmt::Debug for AudioSystem {
             .field("active_sinks", &self.device.sink_count())
             .field("spatial_sinks", &self.device.spatial_count())
             .field("listener", &self.listener.is_some())
+            .field("tone", &self.tone)
             .field("volume", &self.volume)
             .field("bgm_volume", &self.bus_volume(AudioBus::Bgm))
             .field("sfx_volume", &self.bus_volume(AudioBus::Sfx))
@@ -140,6 +144,7 @@ impl AudioSystem {
             device: Device::new(),
             listener: None,
             spatial_model: SpatialModel::DEFAULT,
+            tone: ToneControl::OFF,
             music_bytes: None,
             music_gain: 1.0,
         }
@@ -245,6 +250,10 @@ impl AudioSystem {
             text.push('=');
             text.push_str(&format!("{:.3}", self.bus_volume(bus)));
         }
+        // v1 追加键：旧解析器忽略未知行，因此不升版本头；新解析器读回无障碍音色。
+        text.push_str(&format!("\nmono={}", self.tone.mono()));
+        text.push_str(&format!("\nbass_db={:.3}", self.tone.bass_db()));
+        text.push_str(&format!("\ntreble_db={:.3}", self.tone.treble_db()));
         text
     }
 
@@ -265,11 +274,32 @@ impl AudioSystem {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let Some(bus) = AudioBus::from_key(key.trim()) else {
-                continue;
-            };
-            if let Ok(volume) = value.trim().parse::<f32>() {
-                self.set_bus_volume(bus, volume);
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "mono" => {
+                    if let Ok(mono) = value.parse::<bool>() {
+                        self.set_mono(mono);
+                    }
+                }
+                "bass_db" => {
+                    if let Ok(db) = value.parse::<f32>() {
+                        let _ = self.set_tone_cut(db, self.tone.treble_db());
+                    }
+                }
+                "treble_db" => {
+                    if let Ok(db) = value.parse::<f32>() {
+                        let _ = self.set_tone_cut(self.tone.bass_db(), db);
+                    }
+                }
+                _ => {
+                    let Some(bus) = AudioBus::from_key(key) else {
+                        continue;
+                    };
+                    if let Ok(volume) = value.parse::<f32>() {
+                        self.set_bus_volume(bus, volume);
+                    }
+                }
             }
         }
         Ok(())
@@ -329,6 +359,36 @@ impl AudioSystem {
     #[must_use]
     pub fn spatial_model(&self) -> SpatialModel {
         self.spatial_model
+    }
+
+    /// 设置播放期音色（单声道/低高频衰减）。`ToneControl` 的字段只能经
+    /// [`ToneControl::new`] 校验后进入，所以这里不再拒绝。
+    pub fn set_tone(&mut self, tone: ToneControl) {
+        self.tone = tone;
+        self.device.set_tone(tone);
+    }
+
+    /// 只切单声道，保留当前两段衰减。
+    pub fn set_mono(&mut self, mono: bool) {
+        self.set_tone(self.tone.with_mono(mono));
+    }
+
+    /// 只改两段衰减，保留当前单声道开关。
+    ///
+    /// # Errors
+    /// 任一分贝值超出 `[-24, 0]` 或非有限：返回 [`AudioError::Settings`]。
+    pub fn set_tone_cut(&mut self, bass_db: f32, treble_db: f32) -> Result<(), AudioError> {
+        let tone = self
+            .tone
+            .with_cut(bass_db, treble_db)
+            .map_err(|error| AudioError::Settings(error.to_string()))?;
+        self.set_tone(tone);
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn tone(&self) -> ToneControl {
+        self.tone
     }
 
     /// 在 SFX 总线上按世界坐标播放（M74-01），返回本次的增益与声像。
@@ -506,6 +566,7 @@ impl AudioSystem {
     /// [`crate::device`] 里（桌面记 warning，wasm 记一条"没有桌面设备"）。
     fn ensure_device(&mut self) {
         self.device.open();
+        self.device.set_tone(self.tone);
     }
 
     fn sound_bytes(&mut self, name: &str) -> Result<Vec<u8>, AudioError> {
@@ -693,6 +754,8 @@ mod tests {
         audio.set_bus_volume(AudioBus::Bgm, 0.3);
         audio.set_bus_volume(AudioBus::Sfx, 0.9);
         audio.set_bus_volume(AudioBus::Ui, 0.6);
+        audio.set_tone_cut(-6.0, -12.0).unwrap();
+        audio.set_mono(true);
         let text = audio.to_settings_text();
         assert!(text.starts_with(AUDIO_SETTINGS_VERSION));
 
@@ -702,6 +765,9 @@ mod tests {
         assert!((restored.bus_volume(AudioBus::Bgm) - 0.3).abs() < 1e-3);
         assert!((restored.bus_volume(AudioBus::Sfx) - 0.9).abs() < 1e-3);
         assert!((restored.bus_volume(AudioBus::Ui) - 0.6).abs() < 1e-3);
+        assert!(restored.tone().mono());
+        assert!((restored.tone().bass_db() - -6.0).abs() < 1e-3);
+        assert!((restored.tone().treble_db() - -12.0).abs() < 1e-3);
 
         // 版本不符 → 明确错误；非法行被忽略而非panic。
         assert!(matches!(

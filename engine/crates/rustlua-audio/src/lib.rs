@@ -7,3 +7,5 @@ pub mod lua;
 pub mod sink;
 /// 空间化：听者位姿 → 增益/声像的唯一来源（M74-01；纯函数，可在 headless 用例里逐值断言）。
 pub mod spatial;
+/// 无障碍音色：单声道与低/高频衰减的纯参数/DSP；桌面设备层负责套在解码器上。
+pub mod tone;

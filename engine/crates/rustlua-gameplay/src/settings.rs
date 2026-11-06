@@ -2,9 +2,9 @@
 //! 合并，原 `settings.toml` 退役）。
 //!
 //! 玩家/编辑器可改的偏好与工程配置共用同一文件：`[project]` 段（场景/资源/启动
-//! 配置）+ `[audio]` 段（BGM/SFX/UI/Master 四路音量）+ `[input]` 段（命名动作
-//! 映射/死区/导航手感）。各段**可选**，缺失时全部使用默认值（音量 1.0、键盘默认
-//! 绑定），不影响启动。
+//! 配置）、`[audio]` 段（BGM/SFX/UI/Master 四路音量，外加无障碍 mono/bass_db/
+//! treble_db）与 `[input]` 段（命名动作映射/死区/导航手感）。各段**可选**，缺失时
+//! 全部使用默认值（音量 1.0、键盘默认绑定），不影响启动。
 //!
 //! ```toml
 //! # RustLua 工程设置（由编辑器「项目设置」面板写入；缺失即默认）
@@ -17,7 +17,7 @@
 //!
 //! 语义：
 //! * 解析**宽松**——未知段、未知键、非法数值一律忽略（保留默认），不 panic；
-//! * 写入**保序**——只替换/补齐 `[audio]` 段内的四个键，其余行（注释、其他段，
+//! * 写入**保序**——只替换/补齐 `[audio]` 段内的音量键与音色键，其余行（注释、其他段，
 //!   例如 `[input]`）原样保留；
 //! * 不引入任何新依赖（离线环境无法拉取 crates），逐行手写解析。
 //!
@@ -87,6 +87,12 @@ pub const INPUT_NAV_REPEAT_FRAMES_KEY: &str = "nav_repeat_frames";
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectSettings {
     volumes: BTreeMap<AudioBus, f32>,
+    /// 无障碍单声道（默认关）。
+    mono: bool,
+    /// 低频衰减 dB（`-24..=0`，默认 0）。
+    bass_db: f32,
+    /// 高频衰减 dB（`-24..=0`，默认 0）。
+    treble_db: f32,
 }
 
 impl Default for ProjectSettings {
@@ -103,7 +109,12 @@ impl ProjectSettings {
         for bus in AudioBus::ALL {
             volumes.insert(bus, 1.0);
         }
-        Self { volumes }
+        Self {
+            volumes,
+            mono: false,
+            bass_db: 0.0,
+            treble_db: 0.0,
+        }
     }
 
     /// 读取某路音量（未知总线不会出现：`AudioBus` 是封闭枚举）。
@@ -127,6 +138,10 @@ impl ProjectSettings {
         for bus in AudioBus::ALL {
             settings.set_volume(bus, audio.bus_volume(bus));
         }
+        let tone = audio.tone();
+        settings.mono = tone.mono();
+        settings.bass_db = tone.bass_db();
+        settings.treble_db = tone.treble_db();
         settings
     }
 
@@ -135,6 +150,9 @@ impl ProjectSettings {
         for bus in AudioBus::ALL {
             audio.set_bus_volume(bus, self.volume(bus));
         }
+        audio.set_mono(self.mono);
+        // 文件里的旧值可能越界：忽略错误，保留当前合法音色。
+        let _ = audio.set_tone_cut(self.bass_db, self.treble_db);
     }
 
     /// 解析设置文本；未知段/键与非法数值忽略，缺失键保留默认值。
@@ -157,12 +175,37 @@ impl ProjectSettings {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let Some(bus) = AudioBus::from_key(key.trim()) else {
-                // 未知键（或后续任务新增的键）忽略，不报错。
-                continue;
-            };
-            if let Ok(volume) = value.trim().trim_matches('"').parse::<f32>() {
-                settings.set_volume(bus, volume);
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            match key {
+                "mono" => {
+                    if let Ok(mono) = value.parse::<bool>() {
+                        settings.mono = mono;
+                    }
+                }
+                "bass_db" => {
+                    if let Ok(db) = value.parse::<f32>()
+                        && db.is_finite()
+                    {
+                        settings.bass_db = db.clamp(-24.0, 0.0);
+                    }
+                }
+                "treble_db" => {
+                    if let Ok(db) = value.parse::<f32>()
+                        && db.is_finite()
+                    {
+                        settings.treble_db = db.clamp(-24.0, 0.0);
+                    }
+                }
+                _ => {
+                    let Some(bus) = AudioBus::from_key(key) else {
+                        // 未知键（或后续任务新增的键）忽略，不报错。
+                        continue;
+                    };
+                    if let Ok(volume) = value.parse::<f32>() {
+                        settings.set_volume(bus, volume);
+                    }
+                }
             }
         }
         settings
@@ -178,6 +221,13 @@ impl ProjectSettings {
             text.push_str(&fmt_volume(self.volume(bus)));
             text.push('\n');
         }
+        text.push_str("mono = ");
+        text.push_str(if self.mono { "true" } else { "false" });
+        text.push_str("\nbass_db = ");
+        text.push_str(&fmt_db(self.bass_db));
+        text.push_str("\ntreble_db = ");
+        text.push_str(&fmt_db(self.treble_db));
+        text.push('\n');
         text
     }
 
@@ -212,6 +262,17 @@ pub fn fmt_volume(volume: f32) -> String {
     fmt_compact(volume, 1.0)
 }
 
+/// 音色增益的稳定文本：保留负号，一位小数（`0.0`、`-6.0`、`-12.0`）。
+#[must_use]
+pub fn fmt_db(db: f32) -> String {
+    let value = if db.is_finite() {
+        db.clamp(-24.0, 0.0)
+    } else {
+        0.0
+    };
+    format!("{value:.1}")
+}
+
 /// 死区的稳定文本形式（M20-08；与 [`fmt_volume`] 同一套最短化规则）。
 #[must_use]
 pub fn fmt_deadzone(deadzone: f32) -> String {
@@ -229,7 +290,7 @@ fn fmt_compact(value: f32, max: f32) -> String {
     text
 }
 
-/// `[audio]` 段内替换/补齐四个音量键；其余行（含其他段与注释）原样保留。
+/// `[audio]` 段内替换/补齐四路音量与 mono/bass_db/treble_db；其余行（含其他段与注释）原样保留。
 ///
 /// * 已有 `key = ...`（首次出现）→ 替换该行的值；
 /// * `[audio]` 段存在但缺键 → 追加到该段末尾；
@@ -239,8 +300,8 @@ pub fn upsert_audio_section(existing: &str, settings: &ProjectSettings) -> Strin
     let had_newline = existing.ends_with('\n');
     let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
     let mut section = String::new();
-    // 段内已出现的键 → 行号。
-    let mut replaced: BTreeMap<AudioBus, usize> = BTreeMap::new();
+    // 段内已出现的音频键 → 行号；音量键与 mono/bass_db/treble_db 同一套替换。
+    let mut replaced: BTreeMap<String, usize> = BTreeMap::new();
     let mut audio_end: Option<usize> = None;
     let mut has_audio_section = false;
     for (index, line) in lines.iter().enumerate() {
@@ -256,43 +317,41 @@ pub fn upsert_audio_section(existing: &str, settings: &ProjectSettings) -> Strin
         if section != AUDIO_SECTION {
             continue;
         }
-        // 段内任意非表头行（含注释/空行）都是「段尾」候选：追加键插在下一个表头
-        // 之前，而不是插到后面别的段之后（`[input]` 等扩展段必须保持原位）。
         audio_end = Some(index);
         let Some((key, _)) = trimmed.split_once('=') else {
             continue;
         };
-        let Some(bus) = AudioBus::from_key(key.trim()) else {
-            continue;
-        };
-        replaced.entry(bus).or_insert(index);
+        let key = key.trim();
+        if audio_key(key).is_some() {
+            replaced.entry(key.to_owned()).or_insert(index);
+        }
     }
-    for (bus, index) in &replaced {
-        lines[*index] = format!("{} = {}", bus.key(), fmt_volume(settings.volume(*bus)));
+    for (key, index) in &replaced {
+        if let Some(line) = audio_line(key, settings) {
+            lines[*index] = line;
+        }
     }
-    let missing: Vec<AudioBus> = AudioBus::ALL
-        .into_iter()
-        .filter(|bus| !replaced.contains_key(bus))
+    let missing: Vec<&str> = audio_keys()
+        .iter()
+        .copied()
+        .filter(|key| !replaced.contains_key(*key))
         .collect();
     if !has_audio_section {
         if !lines.is_empty() && lines.last().is_some_and(|line| !line.trim().is_empty()) {
             lines.push(String::new());
         }
         lines.push(format!("[{AUDIO_SECTION}]"));
-        for bus in missing {
-            lines.push(format!(
-                "{} = {}",
-                bus.key(),
-                fmt_volume(settings.volume(bus))
-            ));
+        for key in missing {
+            if let Some(line) = audio_line(key, settings) {
+                lines.push(line);
+            }
         }
     } else if !missing.is_empty() {
         let insert_at = audio_end.map_or(lines.len(), |index| index + 1);
-        for (offset, bus) in missing.into_iter().enumerate() {
-            lines.insert(
-                insert_at + offset,
-                format!("{} = {}", bus.key(), fmt_volume(settings.volume(bus))),
-            );
+        for (offset, key) in missing.into_iter().enumerate() {
+            if let Some(line) = audio_line(key, settings) {
+                lines.insert(insert_at + offset, line);
+            }
         }
     }
     let mut result = lines.join("\n");
@@ -300,6 +359,34 @@ pub fn upsert_audio_section(existing: &str, settings: &ProjectSettings) -> Strin
         result.push('\n');
     }
     result
+}
+
+/// `[audio]` 段的认识键：四路音量 + 无障碍音色三项。
+fn audio_keys() -> [&'static str; 7] {
+    ["master", "bgm", "sfx", "ui", "mono", "bass_db", "treble_db"]
+}
+
+fn audio_key(key: &str) -> Option<&'static str> {
+    audio_keys().into_iter().find(|known| *known == key)
+}
+
+fn audio_line(key: &str, settings: &ProjectSettings) -> Option<String> {
+    match key {
+        "mono" => Some(format!(
+            "mono = {}",
+            if settings.mono { "true" } else { "false" }
+        )),
+        "bass_db" => Some(format!("bass_db = {}", fmt_db(settings.bass_db))),
+        "treble_db" => Some(format!("treble_db = {}", fmt_db(settings.treble_db))),
+        _ => {
+            let bus = AudioBus::from_key(key)?;
+            Some(format!(
+                "{} = {}",
+                bus.key(),
+                fmt_volume(settings.volume(bus))
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -851,6 +938,8 @@ mod tests {
         audio.set_bus_volume(AudioBus::Bgm, 0.3);
         audio.set_bus_volume(AudioBus::Sfx, 0.9);
         audio.set_bus_volume(AudioBus::Ui, 0.6);
+        audio.set_mono(true);
+        audio.set_tone_cut(-6.0, -12.0).expect("tone");
         let settings = ProjectSettings::from_audio(&audio);
 
         let mut restored = AudioSystem::new();
@@ -862,6 +951,16 @@ mod tests {
         // 有效音量 = 主 × 分组。
         assert!((restored.effective_volume(AudioBus::Bgm) - 0.24).abs() < 1e-3);
         assert!((restored.effective_volume(AudioBus::Master) - 0.8).abs() < 1e-3);
+        assert!(restored.tone().mono());
+        assert!((restored.tone().bass_db() + 6.0).abs() < 1e-3);
+        assert!((restored.tone().treble_db() + 12.0).abs() < 1e-3);
+        // 文本往返也必须带音色，而不是只有四路音量。
+        let reparsed = ProjectSettings::from_toml(&settings.to_toml());
+        let mut again = AudioSystem::new();
+        reparsed.apply_to(&mut again);
+        assert!(again.tone().mono());
+        assert!((again.tone().bass_db() + 6.0).abs() < 1e-3);
+        assert!((again.tone().treble_db() + 12.0).abs() < 1e-3);
     }
 
     #[test]

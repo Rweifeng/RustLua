@@ -312,6 +312,11 @@ local steps = {
             find_ids()
             clear_ui()
             reset_mix()
+            -- 可访问性三件套也属于总线演示：单声道开关、搁架增益、读回。
+            audio.set_mono(false)
+            assert(audio.set_tone_cut(0, 0), "tone cut must accept 0 dB")
+            local tone = audio.tone()
+            assert(tone.mono == false and tone.bass_db == 0, "tone reads back")
             selected = 2
             obs.op = "mix reset to 0.80 / 0.70 / 0.90 / 0.60"
         end,

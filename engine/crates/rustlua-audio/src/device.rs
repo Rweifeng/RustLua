@@ -20,8 +20,107 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use crate::audio::AudioError;
-    use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, SpatialSink};
+    use crate::tone::{ToneControl, ToneFilter};
+    use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source, SpatialSink};
     use std::io::Cursor;
+    use std::time::Duration;
+
+    /// 把解码后的 f32 源包上单声道降混与低/高频衰减。
+    ///
+    /// 只有 [`ToneControl::is_neutral`] 为假时才构造本类型；默认路径不改变旧声音。
+    struct ToneSource<I> {
+        inner: I,
+        control: ToneControl,
+        filter: ToneFilter,
+        channels: u16,
+        frame_pos: usize,
+    }
+
+    impl<I> ToneSource<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn new(inner: I, control: ToneControl) -> Self {
+            let channels = inner.channels().max(1);
+            let filter = ToneFilter::new(inner.sample_rate(), channels, control);
+            Self {
+                inner,
+                control,
+                filter,
+                channels,
+                frame_pos: 0,
+            }
+        }
+    }
+
+    impl<I> Iterator for ToneSource<I>
+    where
+        I: Source<Item = f32>,
+    {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<f32> {
+            if self.control.is_neutral() {
+                return self.inner.next();
+            }
+            if self.control.mono() {
+                let mut sum = 0.0;
+                for _ in 0..self.channels {
+                    sum += self.inner.next()?;
+                }
+                return Some(self.filter.process(0, sum / f32::from(self.channels)));
+            }
+            let channel = self.frame_pos % usize::from(self.channels);
+            let sample = self.inner.next()?;
+            self.frame_pos += 1;
+            Some(self.filter.process(channel, sample))
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            let (lo, hi) = self.inner.size_hint();
+            if self.control.mono() {
+                let n = usize::from(self.channels);
+                (lo / n, hi.map(|v| v / n))
+            } else {
+                (lo, hi)
+            }
+        }
+    }
+
+    impl<I> Source for ToneSource<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn current_frame_len(&self) -> Option<usize> {
+            self.inner.current_frame_len().map(|samples| {
+                if self.control.mono() {
+                    samples / usize::from(self.channels)
+                } else {
+                    samples
+                }
+            })
+        }
+
+        fn channels(&self) -> u16 {
+            if self.control.mono() {
+                1
+            } else {
+                self.channels
+            }
+        }
+
+        fn sample_rate(&self) -> u32 {
+            self.inner.sample_rate()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            self.inner.total_duration()
+        }
+
+        fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+            self.inner.try_seek(pos)
+        }
+    }
 
     /// 桌面实现：rodio 的输出流 + 若干个 sink。
     #[derive(Default)]
@@ -33,6 +132,7 @@ mod imp {
         /// 回收判据一样（`empty()`），但位置参数在播放期间靠它自己持有。
         spatial_sinks: Vec<SpatialSink>,
         music_sink: Option<Sink>,
+        tone: ToneControl,
     }
 
     impl Device {
@@ -68,6 +168,11 @@ mod imp {
             self.spatial_sinks.len()
         }
 
+        /// 设置播放期音色；之后新建的每个 sink（含 BGM 续播）都使用它。
+        pub(crate) fn set_tone(&mut self, tone: ToneControl) {
+            self.tone = tone;
+        }
+
         /// 播放一次性音效。设备没开时是 no-op（调用方已在外面判过 `is_open`，这里只是兜底）。
         pub(crate) fn play(&mut self, bytes: Vec<u8>, volume: f32) -> Result<(), AudioError> {
             let Some(handle) = self.handle.as_ref() else {
@@ -76,9 +181,10 @@ mod imp {
             let sink =
                 Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
             let source = Decoder::new(Cursor::new(bytes))
-                .map_err(|error| AudioError::Decode(error.to_string()))?;
+                .map_err(|error| AudioError::Decode(error.to_string()))?
+                .convert_samples::<f32>();
             sink.set_volume(volume);
-            sink.append(source);
+            sink.append(ToneSource::new(source, self.tone));
             self.sinks.push(sink);
             // 播完的 sink 回收掉，否则底层混音槽位会一直涨。
             self.sinks.retain(|sink| !sink.empty());
@@ -95,15 +201,21 @@ mod imp {
             left: [f32; 3],
             right: [f32; 3],
         ) -> Result<(), AudioError> {
+            // 单声道无障碍模式必须真的只有一个声道；`SpatialSink` 会把它重新铺成
+            // 立体声，所以这里退回普通 Sink（音量已由上层按距离算好）。
+            if self.tone.mono() {
+                return self.play(bytes, volume);
+            }
             let Some(handle) = self.handle.as_ref() else {
                 return Ok(());
             };
             let sink = SpatialSink::try_new(handle, folded, left, right)
                 .map_err(|error| AudioError::Device(error.to_string()))?;
             let source = Decoder::new(Cursor::new(bytes))
-                .map_err(|error| AudioError::Decode(error.to_string()))?;
+                .map_err(|error| AudioError::Decode(error.to_string()))?
+                .convert_samples::<f32>();
             sink.set_volume(volume);
-            sink.append(source);
+            sink.append(ToneSource::new(source, self.tone));
             self.spatial_sinks.push(sink);
             self.spatial_sinks.retain(|sink| !sink.empty());
             Ok(())
@@ -122,9 +234,10 @@ mod imp {
             let sink =
                 Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
             let source = Decoder::new(Cursor::new(bytes.to_vec()))
-                .map_err(|error| AudioError::Decode(error.to_string()))?;
+                .map_err(|error| AudioError::Decode(error.to_string()))?
+                .convert_samples::<f32>();
             sink.set_volume(volume);
-            sink.append(source);
+            sink.append(ToneSource::new(source, self.tone));
             self.music_sink = Some(sink);
             Ok(())
         }
@@ -139,8 +252,9 @@ mod imp {
                 return Ok(());
             };
             let source = Decoder::new(Cursor::new(bytes.to_vec()))
-                .map_err(|error| AudioError::Decode(error.to_string()))?;
-            sink.append(source);
+                .map_err(|error| AudioError::Decode(error.to_string()))?
+                .convert_samples::<f32>();
+            sink.append(ToneSource::new(source, self.tone));
             Ok(())
         }
 
@@ -169,6 +283,32 @@ mod imp {
                 music.play();
                 tracing::debug!(target: "audio", "[audio] music resumed");
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use rodio::buffer::SamplesBuffer;
+
+        #[test]
+        fn mono_averages_stereo_and_reports_one_channel() {
+            let input = SamplesBuffer::new(2, 48_000, vec![0.5_f32, -0.5, 0.25, 0.25]);
+            let mut source = ToneSource::new(input, ToneControl::new(true, 0.0, 0.0).unwrap());
+            assert_eq!(source.channels(), 1);
+            assert!(source.next().unwrap().abs() < 1e-6);
+            assert!((source.next().unwrap() - 0.25).abs() < 1e-6);
+        }
+
+        #[test]
+        fn neutral_tone_keeps_stereo_samples_exact() {
+            let input = SamplesBuffer::new(2, 48_000, vec![0.5_f32, -0.5, 0.25, -0.25]);
+            let mut source = ToneSource::new(input, ToneControl::OFF);
+            assert_eq!(source.channels(), 2);
+            assert_eq!(source.next().unwrap(), 0.5);
+            assert_eq!(source.next().unwrap(), -0.5);
+            assert_eq!(source.next().unwrap(), 0.25);
+            assert_eq!(source.next().unwrap(), -0.25);
         }
     }
 }
@@ -208,6 +348,8 @@ mod imp {
         pub(crate) fn spatial_count(&self) -> usize {
             0
         }
+
+        pub(crate) fn set_tone(&mut self, _tone: crate::tone::ToneControl) {}
 
         pub(crate) fn play(&mut self, _bytes: Vec<u8>, _volume: f32) -> Result<(), AudioError> {
             Ok(())
