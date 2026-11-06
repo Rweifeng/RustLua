@@ -870,6 +870,15 @@ impl RuntimeScene {
             particle_compute_available: false,
             last_particle_placement: ParticlePlacementReport::default(),
             last_particle_dispatch: ParticleDispatchReport::default(),
+            particle_streams_available: false,
+            gpu_scene_streams: HashMap::new(),
+            scene_stream_requests: Vec::new(),
+            scene_streams_ready: false,
+            gpu_lua_streams: HashMap::new(),
+            // Scene-entity streams use `EntityId::to_lua_i64()` (small positive
+            // handles). Keep Lua stream keys in the high half so the two
+            // namespaces can never collide in the same renderer pool.
+            next_lua_stream_key: 1 << 63,
             particle_deferred: 0,
             particle_warned: 0,
             last_physics_sync: (0, 0),

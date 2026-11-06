@@ -171,6 +171,18 @@ impl PrefabUiNodes {
 /// （`MAX_GPU_PARTICLE_SYSTEMS` / `MAX_GPU_PARTICLE_SLOTS`），被拒的批照样回 CPU。
 pub const MAX_GPU_BURSTS_PER_FRAME: usize = 32;
 
+/// One Lua-declared continuous 3D emitter.
+///
+/// `key` is script-owned and stable across frames; the host maps it to a
+/// renderer stream key. Re-declaring the same key updates in place (and rebuilds
+/// if the emitter parameters changed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LuaParticleStream {
+    pub key: String,
+    pub position: [f32; 3],
+    pub emitter: ParticleEmitter,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
@@ -207,6 +219,10 @@ pub(crate) struct ScriptState {
     /// `rustlua-camera`，绑定见 `rustlua_camera::camera_lua`）。
     camera: Handle<crate::script::domain::camera::camera_state::CameraState>,
     particles: ParticleSystem,
+    /// Lua 声明的 3D 连续发射器。宿主每帧快照后同步给渲染器的环形流；
+    /// 与场景 `ParticleEmitter{rate>0,mode=gpu}` 共用同一条渲染通道。
+    /// 脚本显式 `particles.stop_stream3d` 才移除——没有 TTL，避免每帧都要重新声明。
+    particle_streams: Vec<LuaParticleStream>,
     /// P3-R07-2：`mode=gpu` 的 burst 先进这条队列，宿主在同一帧里把它们交给渲染器
     /// （`RuntimeScene::dispatch_gpu_particle_bursts`）。
     ///
@@ -214,7 +230,7 @@ pub(crate) struct ScriptState {
     /// 为什么不只是进队列：宿主没来接（编辑器停 Play、纯脚本单测、无渲染器的 headless 跑法）
     /// 时粒子会卡在队列里——**既没被模拟也没被画**，那是丢粒子。所以下一次脚本步进开头会把
     /// 还没被取走的残留倒回 CPU 池（[`LuaRuntime::flush_gpu_bursts`]），队列长度因此恒 ≤ 一帧。
-    gpu_bursts: Vec<(Vec2, ParticleEmitter)>,
+    gpu_bursts: Vec<([f32; 3], ParticleEmitter)>,
     /// 累计有多少次 `mode=gpu` 的 burst 因为队列已满而直接落在 CPU 上（诊断用）。
     gpu_burst_overflow: usize,
     /// 动画域能力单元（P1 ⑤-10）：帧事件队列归动画域（rustlua-animation）。
@@ -276,6 +292,11 @@ impl ScriptState {
     /// 队列满时**当场回 CPU**并计数：宁可在 CPU 上多跑一批，也不丢作者要的爆发，也不让队列
     /// 长成第二个粒子池。参数非法时与 CPU 路径一致——不生成粒子（校验由调用方报错）。
     fn spawn_particles(&mut self, position: Vec2, emitter: &ParticleEmitter) {
+        self.spawn_particles_3d([position.x, position.y, 0.0], emitter);
+    }
+
+    /// 三维版本：z 随 burst 一起进 GPU 派发队列；回退 CPU 时同样保留 z。
+    fn spawn_particles_3d(&mut self, position: [f32; 3], emitter: &ParticleEmitter) {
         if emitter.mode == ParticleMode::Gpu {
             if self.gpu_bursts.len() < MAX_GPU_BURSTS_PER_FRAME {
                 self.gpu_bursts.push((position, *emitter));
@@ -283,7 +304,42 @@ impl ScriptState {
             }
             self.gpu_burst_overflow += 1;
         }
-        self.particles.burst_with(position, emitter);
+        self.particles.burst_with_3d(position, emitter);
+    }
+
+    /// Upserts a Lua continuous emitter by key. Re-declaring the same key keeps
+    /// one entry; changing any field replaces it and the host rebuilds the
+    /// renderer stream.
+    fn upsert_particle_stream(
+        &mut self,
+        key: String,
+        position: [f32; 3],
+        emitter: ParticleEmitter,
+    ) {
+        if let Some(existing) = self
+            .particle_streams
+            .iter_mut()
+            .find(|stream| stream.key == key)
+        {
+            existing.position = position;
+            existing.emitter = emitter;
+            return;
+        }
+        self.particle_streams.push(LuaParticleStream {
+            key,
+            position,
+            emitter,
+        });
+    }
+
+    fn stop_particle_stream(&mut self, key: &str) -> bool {
+        let before = self.particle_streams.len();
+        self.particle_streams.retain(|stream| stream.key != key);
+        self.particle_streams.len() != before
+    }
+
+    fn clear_particle_streams(&mut self) {
+        self.particle_streams.clear();
     }
 
     /// 懒加载字体度量探针（`ui.measure_text`）：要工程根才能找到 `project.toml`
@@ -404,6 +460,21 @@ pub fn probe_startup_stage(stage: u8) -> Result<(), String> {
 }
 
 impl LuaRuntime {
+    /// 读一个字符串全局并清空（宿主用：脚本请求截图等一次性动作）。
+    pub fn take_global_string(&mut self, name: &str) -> Option<String> {
+        let globals = self.lua.globals();
+        let value: Option<String> = globals.get(name).ok().flatten();
+        if value.is_some() {
+            let _ = globals.set(name, Value::Nil);
+        }
+        value
+    }
+
+    /// 写一个字符串全局（宿主回报：截图成功/失败等一次性结果）。
+    pub fn set_global_string(&mut self, name: &str, value: &str) {
+        let _ = self.lua.globals().set(name, value);
+    }
+
     pub fn set_delta(&mut self, delta_seconds: f32) {
         let delta_seconds = delta_seconds.max(0.0);
         self.state.borrow_mut().delta_seconds = delta_seconds;
@@ -720,9 +791,51 @@ impl LuaRuntime {
     pub fn with_particles<R>(&self, f: impl FnOnce(&[Particle]) -> R) -> R {
         f(self.state.borrow().particles.particles())
     }
+    /// 当前 CPU 粒子池的全局风（供宿主同步给 GPU 粒子后端）。
+    pub fn particle_wind(&self) -> (f32, f32) {
+        let wind = self.state.borrow().particles.wind();
+        (wind.x, wind.y)
+    }
+    /// 三维全局风（宿主同步给 GPU 时只用 x/y，z 保留给 CPU 3D 发射器）。
+    pub fn particle_wind_3d(&self) -> (f32, f32, f32) {
+        let state = self.state.borrow();
+        let wind = state.particles.wind();
+        (wind.x, wind.y, state.particles.wind_z())
+    }
+    /// 风场 `(shear, gust, gust_hz)`（宿主同步给 GPU 粒子后端）。
+    pub fn particle_wind_profile(&self) -> (f32, f32, f32) {
+        self.state.borrow().particles.wind_profile()
+    }
+    /// 局部风源 `[[x, y(height), z, radius, radial, lift]; 4]`（宿主同步给 GPU）。
+    pub fn particle_wind_sources(&self) -> [[f32; 6]; 4] {
+        self.state.borrow().particles.wind_sources().map(|source| {
+            [
+                source.x,
+                source.y,
+                source.z,
+                source.radius,
+                source.radial,
+                source.lift,
+            ]
+        })
+    }
     /// 当前存活粒子数（宿主侧读取，避免为了拿长度而借用整个切片）。
     pub fn particle_count(&self) -> usize {
         self.state.borrow().particles.len()
+    }
+    /// Snapshot of Lua-declared 3D continuous emitters. The host maps each key
+    /// to a renderer stream, so the returned value deliberately does not borrow
+    /// the script state across the renderer call.
+    pub fn particle_streams(&self) -> Vec<LuaParticleStream> {
+        self.state.borrow().particle_streams.clone()
+    }
+    /// Stops one Lua stream; returns whether it existed.
+    pub fn stop_particle_stream(&mut self, key: &str) -> bool {
+        self.state.borrow_mut().stop_particle_stream(key)
+    }
+    /// Drops all Lua streams (scene reload / runtime reset).
+    pub fn clear_particle_streams(&mut self) {
+        self.state.borrow_mut().clear_particle_streams();
     }
     /// WP4 ⑧：宿主每帧把**本帧实际渲染用的** 2D 相机与视口回填进来，供 Lua 做
     /// 屏幕↔世界换算。放在帧末（渲染前）回填，因此脚本看到的是玩家刚看到的那一帧。
@@ -750,11 +863,18 @@ impl LuaRuntime {
         self.state.borrow_mut().spawn_particles(position, emitter);
     }
 
+    /// 三维版本；`position[2]` 原样保留到 GPU 状态或 CPU 池。
+    pub fn burst_particles_3d(&mut self, position: [f32; 3], emitter: &ParticleEmitter) {
+        self.state
+            .borrow_mut()
+            .spawn_particles_3d(position, emitter);
+    }
+
     /// 取走本帧待派发到 GPU 的爆发（取走即清空）。
     ///
     /// 调用点是宿主的每帧循环（`run_script_steps` 之后、渲染之前）；这些粒子**不在** CPU 池里，
     /// `with_particles` / Lua `particles.count` 读不到它们——GPU 粒子是视觉层（docs/54 §8-⑧）。
-    pub fn take_gpu_bursts(&mut self) -> Vec<(Vec2, ParticleEmitter)> {
+    pub fn take_gpu_bursts(&mut self) -> Vec<([f32; 3], ParticleEmitter)> {
         std::mem::take(&mut self.state.borrow_mut().gpu_bursts)
     }
 
@@ -778,7 +898,7 @@ impl LuaRuntime {
         let state = &mut *self.state.borrow_mut();
         let count = state.gpu_bursts.len();
         for (position, emitter) in std::mem::take(&mut state.gpu_bursts) {
-            state.particles.burst_with(position, &emitter);
+            state.particles.burst_with_3d(position, &emitter);
         }
         count
     }
@@ -789,6 +909,14 @@ impl LuaRuntime {
             .borrow_mut()
             .particles
             .burst_with(position, emitter);
+    }
+
+    /// 三维版本的回退入口：保留 z，供 3D GPU 派发被拒时落 CPU。
+    pub fn push_particles_cpu_3d(&mut self, position: [f32; 3], emitter: &ParticleEmitter) {
+        self.state
+            .borrow_mut()
+            .particles
+            .burst_with_3d(position, emitter);
     }
     /// Gives the host a shared read view of the runtime entity world, so the
     /// renderer draws the exact entities the Lua script is mutating.

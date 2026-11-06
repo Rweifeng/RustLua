@@ -14,6 +14,7 @@
 use super::*;
 use crate::GpuParticleConfig;
 use engine::host::runtime_scene::{ParticleDispatchReport, RuntimeScene};
+use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::particle::{ParticleCpuReason, ParticleEmitter, ParticleMode};
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
@@ -224,6 +225,94 @@ fn pool_budget_rejection_returns_the_burst_to_cpu() {
     );
 }
 
+/// 场景声明的 `rate > 0` 发射器：第二帧起由渲染器的连续流接管，不再逐帧落 CPU。
+#[test]
+fn scene_rate_emitter_becomes_a_persistent_gpu_stream() {
+    let Some(mut renderer) = compute_renderer() else {
+        return gpu_skipped("device has no compute");
+    };
+    let mut scene_asset = Scene::new("particle-stream");
+    let id = rustlua_scene::scene::SceneEntityId(1);
+    scene_asset.add_entity(id, "Rain", None).expect("entity");
+    let entity = scene_asset.entities.get_mut(&id).expect("entity mut");
+    entity.components.insert(
+        "Transform".into(),
+        "position=10,20,0;rotation=0,0,0,1;scale=1,1,1".into(),
+    );
+    entity.components.insert(
+        "ParticleEmitter".into(),
+        "count=1;rate=120;speed=0;life=0.5;size=2;color=1,1,1,1;mode=gpu".into(),
+    );
+    let mut scene = RuntimeScene::from_scene_edit(None, scene_asset).expect("runtime");
+    let input = InputSnapshot::default();
+
+    // 第一帧：宿主还没从渲染器取到"支持连续流"的能力位，按 continuous_rate 回 CPU。
+    scene.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    let first = scene.dispatch_gpu_particle_bursts(&mut renderer, 1.0 / 60.0);
+    assert_eq!(first.streams, 0, "第一帧还没有流");
+    assert_eq!(cpu_pool_count(&mut scene), 2, "第一帧回退不丢粒子");
+
+    // 第二帧：能力位已知，场景发射器变成连续流；这一帧的粒子由渲染器按 rate 抽样。
+    scene.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    let placement = scene.last_particle_placement();
+    assert_eq!(
+        (placement.cpu, placement.gpu, placement.gpu_requested),
+        (0, 1, 1),
+        "连续流应如实记成 GPU，而不是折算成 not_wired"
+    );
+    assert_eq!(placement.fallback, None);
+    let second = scene.dispatch_gpu_particle_bursts(&mut renderer, 1.0 / 60.0);
+    assert_eq!(second.streams, 1, "场景 rate 发射器应建立一个连续流");
+    assert_eq!(renderer.gpu_particle_stream_count(), 1);
+    assert_eq!(renderer.gpu_particle_stream_keys().len(), 1);
+    assert_eq!(
+        cpu_pool_count(&mut scene),
+        2,
+        "流接管后不再往 CPU 池追加（第一帧那 2 颗仍按寿命存在）"
+    );
+    let alive = renderer
+        .read_gpu_particles()
+        .expect("readback")
+        .iter()
+        .filter(|state| state.life > 0.0)
+        .count();
+    assert!(alive >= 1, "连续流这一帧应至少抽到 1 颗，实际 {alive}");
+
+    // 第三帧没有新请求：流必须继续活着并继续按 rate 发射，而不是被当成 stale 删掉。
+    let third = scene.dispatch_gpu_particle_bursts(&mut renderer, 1.0 / 60.0);
+    assert_eq!(third.streams, 1);
+    assert_eq!(renderer.gpu_particle_stream_count(), 1);
+    // 宿主两帧没来接派发：上一帧的流请求必须在下一帧入口倒回 CPU，不能静静被覆盖。
+    let before = cpu_pool_count(&mut scene);
+    scene.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    scene.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    assert!(
+        cpu_pool_count(&mut scene) > before,
+        "没接派发口时连续流请求必须回 CPU 池（{before} → {}）",
+        cpu_pool_count(&mut scene)
+    );
+    let recovered = scene.dispatch_gpu_particle_bursts(&mut renderer, 1.0 / 60.0);
+    assert_eq!(recovered.streams, 1, "恢复派发后流应继续存在");
+
+    // 实体消失：下一帧场景不再登记这条流，派发口必须把它删掉，而不是留一条孤儿流。
+    let handle = scene.scene_entity_handles()[0].1;
+    scene.with_script(|script| {
+        script.with_world_mut(|world| {
+            world
+                .despawn(EntityId::from_lua_i64(handle as i64).expect("handle"))
+                .expect("despawn");
+        });
+    });
+    scene.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    let removed = scene.dispatch_gpu_particle_bursts(&mut renderer, 1.0 / 60.0);
+    assert_eq!(removed.streams, 0, "实体消失后流必须被回收");
+    assert_eq!(renderer.gpu_particle_stream_count(), 0);
+    println!(
+        "dispatch_stream streams={} systems={} gpu_particles={} removed_streams={}",
+        third.streams, third.systems, third.gpu_particles, removed.streams
+    );
+}
+
 /// 读数结构本身：默认值必须是"什么都没发生"，`Eq` 用来跟 `last_particle_dispatch` 对拍。
 #[test]
 fn dispatch_report_defaults_to_silence() {
@@ -236,6 +325,8 @@ fn dispatch_report_defaults_to_silence() {
             deferred: 0,
             overflow: 0,
             fallback_reason: None,
+            streams: 0,
+            lua_streams: 0,
             systems: 0,
             recycled: 0,
             steps: 0,

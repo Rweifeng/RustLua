@@ -10,7 +10,10 @@
 //! ④ 无 compute 档下所有入口返回 `Unsupported`，且计划里没有 `Particle`。
 
 use super::*;
-use crate::{ComputeBinding, ComputeError, ComputeRequest, GpuParticleConfig, GpuParticleState};
+use crate::{
+    ComputeBinding, ComputeError, ComputeRequest, GpuParticleConfig, GpuParticleConfig3D,
+    GpuParticleState,
+};
 use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
 use rustlua_ecs::particle::{ParticleEmitter, ParticleSystem};
 use rustlua_ecs::transform::Vec2;
@@ -238,6 +241,100 @@ fn gpu_particles_match_the_cpu_reference() {
     );
     assert!(max_position_error < 1e-4);
     assert_eq!(renderer.gpu_particle_status().expect("status").steps, 120);
+}
+
+/// 三维 burst：z 起点/速度/重力与 CPU 同一套抽样，积分后逐粒子对拍。
+#[test]
+fn gpu_particles_match_cpu_in_3d() {
+    let Some((device, queue)) = headless() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut renderer =
+        Renderer::new_offscreen(device, queue, None, false, false).expect("offscreen renderer");
+    if !renderer.compute_enabled() {
+        return gpu_skipped("device reports no compute");
+    }
+    let emitter = ParticleEmitter {
+        count: 32,
+        speed: 10.0,
+        life: 3.0,
+        speed_z: 6.0,
+        spread_z: 2.0,
+        gravity_z: -9.0,
+        gravity: Vec2::new(0.0, -2.0),
+        ..ParticleEmitter::default()
+    };
+    let origin = [10.0, -5.0, 20.0];
+    renderer
+        .push_gpu_particle_burst_3d(GpuParticleConfig3D {
+            origin,
+            emitter,
+            capacity: emitter.count as u32,
+        })
+        .expect("push 3d gpu particles");
+    let mut cpu = ParticleSystem::new();
+    cpu.burst_with_3d(origin, &emitter);
+    // 3D wind must reach the compute uniform: otherwise a z-only push is
+    // indistinguishable from the emitter's own gravity_z in this comparison.
+    let wind = [0.5, -0.25, 3.0];
+    let profile = [0.01, 0.35, 0.12];
+    cpu.set_wind_3d(wind[0], wind[1], wind[2])
+        .expect("cpu wind");
+    cpu.set_wind_profile(profile[0], profile[1], profile[2])
+        .expect("cpu wind profile");
+    renderer.set_gpu_particle_wind_3d(wind);
+    renderer.set_gpu_particle_wind_profile(profile);
+    assert_eq!(renderer.gpu_particle_wind_3d(), wind);
+    assert_eq!(renderer.gpu_particle_wind_profile(), profile);
+    // 局部风源同样走 CPU/GPU 对拍：源放在粒子群里，径向 + 上升都参与。
+    let source = rustlua_ecs::particle::WindSource {
+        x: 10.0,
+        y: -5.0,
+        z: 20.0,
+        radius: 30.0,
+        radial: 0.6,
+        lift: 1.2,
+    };
+    cpu.set_wind_source(0, source).expect("cpu wind source");
+    let sources = [
+        [10.0, -5.0, 20.0, 30.0, 0.6, 1.2],
+        [0.0; 6],
+        [0.0; 6],
+        [0.0; 6],
+    ];
+    assert!(renderer.set_gpu_particle_wind_sources(sources));
+    assert_eq!(renderer.gpu_particle_wind_sources(), sources);
+
+    let initial = renderer
+        .read_gpu_particles()
+        .expect("read 3d gpu particles");
+    for (index, (gpu, reference)) in initial.iter().zip(cpu.particles()).enumerate() {
+        assert_eq!(gpu.position_z, reference.position_z, "particle {index} z");
+        assert!((gpu.velocity_z - reference.velocity_z).abs() < 1e-5);
+        assert!((gpu.position[0] - reference.position.x).abs() < 1e-5);
+    }
+
+    let dt = 1.0 / 60.0;
+    for _ in 0..30 {
+        cpu.step(dt);
+        renderer.step_gpu_particles(dt).expect("gpu 3d step");
+    }
+    let after = renderer.read_gpu_particles().expect("read after 3d step");
+    for (index, (gpu, reference)) in after.iter().zip(cpu.particles()).enumerate() {
+        assert!(
+            (gpu.position_z - reference.position_z).abs() < 1e-4,
+            "particle {index} z {} vs {}",
+            gpu.position_z,
+            reference.position_z
+        );
+        assert!((gpu.velocity_z - reference.velocity_z).abs() < 1e-4);
+        assert!(
+            (gpu.position[0] - reference.position.x).abs() < 1e-4,
+            "particle {index} x {} vs {}",
+            gpu.position[0],
+            reference.position.x
+        );
+    }
 }
 
 /// 参数口径：连续发射（`rate > 0`）显式拒绝，不静默忽略。
@@ -699,7 +796,7 @@ fn gpu_particle_pass_draws_pixels() {
     renderer.step_gpu_particles(1.0 / 60.0).expect("step");
 
     let mesh = empty_mesh();
-    renderer.render_into_texture(&mesh, None, &view, size, size);
+    renderer.render_into_texture(&mesh, None, &view, size, size, true);
     assert!(
         renderer.last_frame_passes().contains(&RenderPass::Particle),
         "计划里必须有 Particle：{:?}",
@@ -726,7 +823,7 @@ fn gpu_particle_pass_draws_pixels() {
 
     // 关掉 compute ⇒ 计划里没有 Particle，像素回到纯背景（回滚档不残留半帧）。
     renderer.set_compute_enabled(false);
-    renderer.render_into_texture(&mesh, None, &view, size, size);
+    renderer.render_into_texture(&mesh, None, &view, size, size, true);
     assert!(!renderer.last_frame_passes().contains(&RenderPass::Particle));
     let pixels = renderer
         .copy_texture_to_cpu(&texture, size, size)
@@ -829,7 +926,7 @@ fn dead_gpu_particle_instances_draw_nothing_and_stay_frozen() {
     );
 
     // 判据一（画面侧）：还有活粒子时，同一份相机确实画出了像素。
-    renderer.render_into_texture(&mesh, None, &view, size, size);
+    renderer.render_into_texture(&mesh, None, &view, size, size, true);
     assert!(
         renderer.last_frame_passes().contains(&RenderPass::Particle),
         "计划里必须有 Particle：{:?}",
@@ -888,7 +985,7 @@ fn dead_gpu_particle_instances_draw_nothing_and_stay_frozen() {
     }
 
     // 判据一（收口）：全死的一帧 draw 范围仍是 capacity，但像素回到纯背景。
-    renderer.render_into_texture(&mesh, None, &view, size, size);
+    renderer.render_into_texture(&mesh, None, &view, size, size, true);
     assert!(
         renderer.last_frame_passes().contains(&RenderPass::Particle),
         "系统在、计划就必须在（剔除发生在着色器里）"
@@ -974,7 +1071,7 @@ fn gpu_particle_quads_billboard_to_a_perspective_camera() {
             capacity: 1,
         })
         .expect("configure");
-    renderer.render_into_texture(&mesh, None, &view, size, size);
+    renderer.render_into_texture(&mesh, None, &view, size, size, true);
     assert!(
         renderer.last_frame_passes().contains(&RenderPass::Particle),
         "计划里必须有 Particle：{:?}",
@@ -1002,6 +1099,77 @@ fn gpu_particle_quads_billboard_to_a_perspective_camera() {
         changed > 100,
         "侧视透视相机下粒子没画出来（changed={changed}）：quad 仍躺在世界 XY 平面里"
     );
+}
+
+/// 连续流：CPU 按 `rate×dt` 写新槽、GPU 只积分；环形容量够装 `rate×life`，
+/// 删除后绑定组与 key 一起消失。
+#[test]
+fn gpu_particle_stream_spawns_over_time_and_removes_by_key() {
+    let Some((device, queue)) = headless() else {
+        return gpu_skipped("device has no compute");
+    };
+    let mut renderer =
+        Renderer::new_offscreen(device, queue, None, false, false).expect("offscreen renderer");
+    let emitter = ParticleEmitter {
+        count: 0,
+        rate: 120.0,
+        speed: 0.0,
+        life: 1.0,
+        size_start: 4.0,
+        size_end: 4.0,
+        mode: rustlua_ecs::particle::ParticleMode::Gpu,
+        ..ParticleEmitter::default()
+    };
+    let status = renderer
+        .push_gpu_particle_stream(
+            7,
+            GpuParticleStreamConfig {
+                origin: [1.0, 2.0, 4.0],
+                emitter,
+                capacity: 0,
+            },
+        )
+        .expect("create stream");
+    assert!(status.capacity >= 8, "容量至少 8 槽：{}", status.capacity);
+    assert_eq!(renderer.gpu_particle_stream_keys(), vec![7]);
+    assert!(renderer.gpu_particle_stream_count() == 1);
+
+    for _ in 0..30 {
+        renderer.step_gpu_particles(1.0 / 60.0).expect("step");
+    }
+    let snapshots = renderer.read_gpu_particles().expect("read");
+    let alive = snapshots.iter().filter(|state| state.life > 0.0).count();
+    assert!(alive >= 50, "30 帧应留下约 60 颗活粒子（实际 {alive}）");
+    let live = snapshots
+        .iter()
+        .find(|state| state.life > 0.0)
+        .expect("live particle");
+    assert!(
+        (live.position_z - 4.0).abs() < 1e-4,
+        "3D 原点 z 没有进入初始状态：{}",
+        live.position_z
+    );
+    assert!(
+        (live.position[0] - 1.0).abs() < 1e-4,
+        "x 原点没有进入初始状态：{:?}",
+        live.position
+    );
+
+    // 连续流没有整批寿命：跑过 emitter.life 之后仍必须活着，且环形槽会被覆盖而不 panic。
+    for _ in 0..120 {
+        renderer.step_gpu_particles(1.0 / 60.0).expect("step");
+    }
+    assert_eq!(
+        renderer.gpu_particle_stream_count(),
+        1,
+        "连续流不能按 burst 的 elapsed > life 被回收"
+    );
+
+    assert!(renderer.set_gpu_particle_stream_origin(7, [5.0, 6.0, 7.0]));
+    assert!(!renderer.set_gpu_particle_stream_origin(8, [0.0, 0.0, 0.0]));
+    assert!(renderer.remove_gpu_particle_stream(7));
+    assert!(renderer.gpu_particle_stream_keys().is_empty());
+    assert!(!renderer.remove_gpu_particle_stream(7));
 }
 
 /// 布局一致性：公开的 `GpuParticleState` 必须与 shader 的 48 字节结构一致。

@@ -320,6 +320,51 @@ fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
     );
 }
 
+/// 3D 场景发射器：`Transform` 的 z 必须进入粒子的世界 z，而不是被压回 0。
+#[test]
+fn scene_declared_emitter_uses_the_world_z_for_3d_particles() {
+    let root = game_root();
+    let mut scene = Scene::new("scene-emitter-3d");
+    let source = rustlua_scene::scene::SceneEntityId(1);
+    scene.add_entity(source, "Sparks3D", None).unwrap();
+    let entity = scene.entities.get_mut(&source).unwrap();
+    entity.components.insert(
+        "Transform".into(),
+        "position=640,360,120;rotation=0,0,0,1;scale=1,1,1".into(),
+    );
+    // `Transform` 本身不区分 2D/3D；带一个 3D 专属标记（`MeshRenderer`）才让场景
+    // 提取器按三维空间解释同一个统一 `Transform`。
+    entity
+        .components
+        .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
+    entity.components.insert(
+        "ParticleEmitter".into(),
+        "count=2;rate=60;speed=0;life=0.5;size=2;color=1,1,1,1;gravity_z=-1".into(),
+    );
+    let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+    let input = rustlua_input::input::InputSnapshot::default();
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &input)
+        .expect("step");
+    assert_eq!(runtime.last_scene_emission(), 1);
+    let z = runtime.with_script(|script| {
+        script.with_particles(|particles| particles.first().map(|particle| particle.position_z))
+    });
+    assert!(z.is_some_and(|z| z >= 119.0), "3D emitter z was {z:?}");
+    assert!(
+        runtime.sprite_view_projection(1280, 720).is_some(),
+        "3D particles must request a world projection even with the depth switch off"
+    );
+    let frame = runtime.vertices(1280, 720).expect("3d particle frame");
+    assert!(
+        frame
+            .world_sprites
+            .iter()
+            .any(|vertex| vertex.position[2] > 100.0),
+        "the particle's z must reach the world sprite vertex, not just the CPU pool"
+    );
+}
+
 /// P3-R07-1 出口门：`mode=gpu` 的场景发射器**照样在 CPU 上把粒子发出来**（不丢粒子、
 /// 不黑屏），回退原因如实上报；宿主告知 compute 能力后原因从"设备不行"变成"参数不支持"。
 #[test]

@@ -18,7 +18,7 @@ use rustlua_camera::camera::Camera3D;
 use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::SpatialReport;
-use rustlua_ecs::particle::{ParticleCpuReason, ParticlePlacement};
+use rustlua_ecs::particle::{ParticleCpuReason, ParticleEmitter, ParticlePlacement};
 use rustlua_ecs::scheduler::{ScheduleReport, Scheduler, SystemTiming};
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::{Transform, Vec2};
@@ -353,6 +353,18 @@ pub struct RuntimeScene {
     pub(crate) last_particle_placement: ParticlePlacementReport,
     /// P3-R07-2：最近一次 GPU burst 派发的结果（诊断与验收用；不参与玩法）。
     pub(crate) last_particle_dispatch: ParticleDispatchReport,
+    /// 渲染器是否支持连续 GPU 粒子流（`rate > 0`）；每帧从渲染器重取。
+    pub(crate) particle_streams_available: bool,
+    /// 场景实体 → 渲染器连续流 key。实体消失/改成 CPU 时在派发口删除。
+    pub(crate) gpu_scene_streams: HashMap<EntityId, u64>,
+    /// 本步场景里要 GPU 连续流的请求；由 `dispatch_gpu_particle_bursts` 消费。
+    pub(crate) scene_stream_requests: Vec<(EntityId, [f32; 3], ParticleEmitter)>,
+    /// 本步是否真的推进过场景发射器。暂停/不跑模拟时不能把"没请求"当成"拆流"。
+    pub(crate) scene_streams_ready: bool,
+    /// Lua 流 key → (渲染器流 key, 当前发射器参数)。脚本改参数时重建流。
+    pub(crate) gpu_lua_streams: HashMap<String, (u64, ParticleEmitter)>,
+    /// 分配渲染器流 key 的单调计数器；与场景实体流共用同一渲染器命名空间。
+    pub(crate) next_lua_stream_key: u64,
     /// P3-R07-2：自上次派发以来，"入队了但宿主没来取"而被倒回 CPU 池的 burst 数。
     pub(crate) particle_deferred: usize,
     /// 已经就哪些回退原因喊过一层的位图（`ParticleCpuReason::index` 为位）。
@@ -381,14 +393,14 @@ pub struct RuntimeScene {
 /// P3-R07-1：一步里**场景声明的发射器**的落点分布（诊断/验收用，不参与玩法）。
 ///
 /// 语义边界：`gpu` 一侧的粒子只活在显存里，Lua 与玩法**读不到**它们的位置。R07-1 只交付
-/// 落点判定与回退标记，GPU 派发在 R07-2 —— 所以本步的 `gpu` 恒为 0，`cpu` 是"照旧在 CPU
-/// 上发射"的真实计数（含回退、含尚未接线的 gpu 请求）。字段按 R07-2 的形状一次定好，
-/// 避免那时再改一遍所有读它的测试与报告。
+/// 落点判定与回退标记。`cpu` 是"这一帧真的在 CPU 池里发射"的发射器数（含回退），
+/// `gpu` 是判定为 GPU 的发射器数（burst 与连续流都算；连续流随后由派发口建/移/删）。
+/// 最终是否真的上 GPU 以 [`ParticleDispatchReport`] 的 `gpu`/`streams` 为准。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ParticlePlacementReport {
     /// 本步在 CPU 侧发射的发射器数（每个都真的发了粒子）。
     pub cpu: usize,
-    /// 本步真的由 GPU 模拟的发射器数（R07-1 = 0）。
+    /// 本步判定为 GPU 的发射器数（burst + 连续流；实际收下数以派发报告为准）。
     pub gpu: usize,
     /// 作者声明了 `mode=gpu` 的发射器数（无论最终落在哪侧）。
     pub gpu_requested: usize,
@@ -401,29 +413,34 @@ pub struct ParticlePlacementReport {
 
 impl ParticlePlacementReport {
     /// 记一个发射器的判定结果。
+    ///
+    /// `Gpu` 不再折算成 `not_wired`：派发通道与连续流都已接上，折算会把"真的交给 GPU"
+    /// 误报成"没接线"。回退只统计 `Cpu(reason)` 且 `reason` 是 fallback 的那些。
     fn record(&mut self, placement: ParticlePlacement) {
-        // R07-2 之前没有派发通道：判定为 `Gpu` 的发射器照旧在 CPU 池发射，原因记 not_wired。
-        let effective = match placement {
-            ParticlePlacement::Gpu => ParticleCpuReason::NotWired,
-            ParticlePlacement::Cpu(reason) => reason,
-        };
-        self.cpu += 1;
-        if effective != ParticleCpuReason::Requested {
-            self.gpu_requested += 1;
-        }
-        if effective.is_fallback() {
-            self.fallback.get_or_insert(effective);
-            self.fallback_bits |= 1 << effective.index();
+        match placement {
+            ParticlePlacement::Gpu => {
+                self.gpu += 1;
+                self.gpu_requested += 1;
+            }
+            ParticlePlacement::Cpu(reason) => {
+                self.cpu += 1;
+                if reason != ParticleCpuReason::Requested {
+                    self.gpu_requested += 1;
+                }
+                if reason.is_fallback() {
+                    self.fallback.get_or_insert(reason);
+                    self.fallback_bits |= 1 << reason.index();
+                }
+            }
         }
     }
 }
 
-/// P3-R07-2：一次 **burst 派发通道**的结果（诊断/验收用，不参与玩法）。
+/// P3-R07-2：一次 **粒子派发通道**的结果（诊断/验收用，不参与玩法）。
 ///
-/// 为什么场景发射器的报告（[`ParticlePlacementReport`]）不够用：发射器按 `rate` 连续发射，
-/// 而 compute 侧只实现了一次性 burst，所以场景发射器恒定回退 `continuous_rate`——它测不出
-/// 派发通道本身通不通。通道的一端是脚本/宿主的 `mode=gpu` burst（Lua `particles.burst`），
-/// 另一端是渲染器的 GPU 粒子池，本结构就是这两端之间的账。
+/// 为什么场景发射器的报告（[`ParticlePlacementReport`]）不够用：发射器可以按 `rate`
+/// 连续发射，而 burst 通道只反映一次性爆发。通道的一端是脚本/宿主的 `mode=gpu` burst
+/// （Lua `particles.burst`），另一端是渲染器的 GPU 粒子池；连续流另记在 `streams`。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ParticleDispatchReport {
     /// 本次从脚本侧取到的 GPU burst 条数（含随后被拒的）。
@@ -438,6 +455,10 @@ pub struct ParticleDispatchReport {
     pub overflow: usize,
     /// 本次第一个回退原因（`None` = 全留在 GPU 或全在 CPU 池外）。
     pub fallback_reason: Option<ParticleCpuReason>,
+    /// 派发之后场景声明的**连续流**条数（`rate > 0` 的 GPU 发射器）。
+    pub streams: usize,
+    /// 其中由 Lua `particles.stream3d` 声明的条数（场景流不受影响）。
+    pub lua_streams: usize,
     /// 派发并步进之后仍在 GPU 池里的系统数。
     pub systems: usize,
     /// 本次步进回收（寿命走完）的系统数。
@@ -599,6 +620,34 @@ impl RuntimeScene {
     #[must_use]
     pub fn text_capture_requested(&self) -> bool {
         self.input.text_capture()
+    }
+
+    /// 脚本请求宿主保存一帧 PNG：读全局 `__capture_path`（只给文件名），读完即清。
+    pub fn take_capture_request(&mut self) -> Option<String> {
+        self.script.take_global_string("__capture_path")
+    }
+
+    /// 同一帧是否要把 2D/UI 层也烧进图里：`world` = 只世界，其余 = 整屏。
+    pub fn take_capture_ui(&mut self) -> bool {
+        !matches!(
+            self.script.take_global_string("__capture_ui").as_deref(),
+            Some("world")
+        )
+    }
+
+    /// 把截图结果回写给脚本：成功写 `__capture_ok`，失败写 `__capture_err`。
+    pub fn set_capture_result(&mut self, ok: bool, name: &str) {
+        let key = if ok { "__capture_ok" } else { "__capture_err" };
+        self.script.set_global_string(key, name);
+    }
+
+    /// 同一帧的相框档位（`__capture_frame`，0 = 不烧边框）。
+    pub fn take_capture_frame(&mut self) -> u8 {
+        self.script
+            .take_global_string("__capture_frame")
+            .and_then(|frame| frame.parse::<u8>().ok())
+            .unwrap_or(0)
+            .min(4)
     }
 }
 

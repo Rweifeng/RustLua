@@ -14,7 +14,8 @@ pub struct ParticleEmitter {
     /// **连续发射速率**（粒子/秒，`0` = 只按 burst 发射）。
     ///
     /// 场景里声明的发射器用这个字段表达"持续冒烟/冒火"；Lua 的 `particles.burst` 不读它，
-    /// 因此默认值 `0` 让既有脚本与场景的行为逐字节不变。
+    /// 因此默认值 `0` 让既有脚本与场景的行为逐字节不变。`mode=gpu` 且渲染器支持连续流时，
+    /// 这个速率由渲染器的环形槽按同一 `rate × dt` 抽样。
     pub rate: f32,
     /// 初速上限（世界单位/秒）。每个粒子在 25%–100% 之间随机取。
     pub speed: f32,
@@ -28,6 +29,18 @@ pub struct ParticleEmitter {
     pub color_end: [f32; 4],
     /// 世界重力（单位/秒²）。
     pub gravity: Vec2,
+    /// Z 轴重力（单位/秒²）。默认 `0`，2D 发射器逐位不变。
+    pub gravity_z: f32,
+    /// Z 轴初速绝对值上限（单位/秒）。默认 `0`：不抽 Z 随机数，旧序列不变。
+    pub speed_z: f32,
+    /// 出生点 Z 抖动半径（单位）。默认 `0`：不抽随机数。
+    pub spread_z: f32,
+    /// 出生盒半边长 `[x,y,z]`（世界单位）。每个粒子在盒内均匀落点；默认 `[0,0,0]`
+    /// 时**不抽随机数**，旧 burst/连续流的初始状态逐位不变。
+    ///
+    /// 与 `spread_z` 的区别：`spread_z` 抖的是**初速的 z 分量**，这里抖的是**出生位置**。
+    /// 雨幕/雪幕/雾团需要的是后者；一个连续流就能覆盖相机周围的一片体积。
+    pub spawn_area: [f32; 3],
     /// 每秒速度衰减比例（`0` = 无阻力）。
     pub drag: f32,
     /// 初始旋转（弧度）。
@@ -99,7 +112,7 @@ pub enum ParticleCpuReason {
     Requested,
     /// 要了 gpu，但这个设备/构建没有 compute 能力。
     NoCompute,
-    /// 要了 gpu，但 `rate > 0` 的连续发射在 compute 侧还没实现（R07-2 的 spawn 环形队列）。
+    /// 要了 gpu，但渲染器没有连续流（`rate > 0` 需要环形槽），这一批回 CPU。
     ContinuousRate,
     /// 要了 gpu、compute 也可用，但这一批没能走到派发通道（宿主没来取 / 队列保底）。
     NotWired,
@@ -177,6 +190,10 @@ impl Default for ParticleEmitter {
             color_start: [1.0, 0.6, 0.2, 1.0],
             color_end: [1.0, 0.6, 0.2, 1.0],
             gravity: Vec2::zero(),
+            gravity_z: 0.0,
+            speed_z: 0.0,
+            spread_z: 0.0,
+            spawn_area: [0.0; 3],
             drag: 0.0,
             rotation: 0.0,
             rotation_speed: 0.0,
@@ -218,11 +235,23 @@ impl ParticleEmitter {
         for value in self.color_start.iter().chain(self.color_end.iter()).chain([
             &self.gravity.x,
             &self.gravity.y,
+            &self.gravity_z,
+            &self.speed_z,
+            &self.spread_z,
+            &self.spawn_area[0],
+            &self.spawn_area[1],
+            &self.spawn_area[2],
             &self.drag,
         ]) {
             if !value.is_finite() {
-                return Err("particle color/gravity/drag must be finite".to_owned());
+                return Err("particle color/gravity/drag/area must be finite".to_owned());
             }
+        }
+        if self.speed_z < 0.0 || self.spread_z < 0.0 {
+            return Err("particle speed_z/spread_z must be >= 0".to_owned());
+        }
+        if self.spawn_area.iter().any(|value| *value < 0.0) {
+            return Err("particle spawn_area must be >= 0".to_owned());
         }
         if !self.rotation.is_finite() || !self.rotation_speed.is_finite() {
             return Err("particle rotation must be finite".to_owned());
@@ -237,7 +266,8 @@ impl ParticleEmitter {
     ///
     /// 文法（`;` 分隔、`key=value`，未知键一律报错而不是静默忽略）：
     /// `count`、`rate`、`speed`、`life`、`size`、`size_end`、`color`、`color_end`、
-    /// `gravity`、`drag`、`rotation`、`rotation_speed`、`mode`、`seed`。`size`/`color` 同时设置曲线的**起止**
+    /// `gravity`、`gravity_z`、`speed_z`、`spread_z`、`drag`、`rotation`、`rotation_speed`、`mode`、`seed`。
+    /// `size`/`color` 同时设置曲线的**起止**
     /// 值，`size_end`/`color_end` 覆盖终点（与书写顺序无关，见下方 `seen_*_end`）。
     pub fn from_component_str(value: &str) -> Result<Self, ParticleComponentError> {
         let mut emitter = ParticleEmitter::default();
@@ -289,6 +319,12 @@ impl ParticleEmitter {
                     let (x, y) = parse_pair(raw, field)?;
                     emitter.gravity = Vec2::new(x, y);
                 }
+                "gravity_z" => emitter.gravity_z = parse_number(raw, field)?,
+                "speed_z" => emitter.speed_z = parse_number(raw, field)?,
+                "spread_z" => emitter.spread_z = parse_number(raw, field)?,
+                "area_x" => emitter.spawn_area[0] = parse_number(raw, field)?,
+                "area_y" => emitter.spawn_area[1] = parse_number(raw, field)?,
+                "area_z" => emitter.spawn_area[2] = parse_number(raw, field)?,
                 "drag" => emitter.drag = parse_number(raw, field)?,
                 "rotation" => emitter.rotation = parse_number(raw, field)?,
                 "rotation_speed" => emitter.rotation_speed = parse_number(raw, field)?,
@@ -341,6 +377,24 @@ impl ParticleEmitter {
                 self.gravity.x, self.gravity.y
             ));
         }
+        if self.gravity_z != 0.0 {
+            out.push_str(&format!(";gravity_z={:.6}", self.gravity_z));
+        }
+        if self.speed_z != 0.0 {
+            out.push_str(&format!(";speed_z={:.6}", self.speed_z));
+        }
+        if self.spread_z != 0.0 {
+            out.push_str(&format!(";spread_z={:.6}", self.spread_z));
+        }
+        for (name, value) in [
+            ("area_x", self.spawn_area[0]),
+            ("area_y", self.spawn_area[1]),
+            ("area_z", self.spawn_area[2]),
+        ] {
+            if value != 0.0 {
+                out.push_str(&format!(";{name}={value:.6}"));
+            }
+        }
         if self.drag > 0.0 {
             out.push_str(&format!(";drag={:.6}", self.drag));
         }
@@ -363,21 +417,34 @@ impl ParticleEmitter {
 
     /// 这份发射参数**实际**落在哪一侧模拟（P3-R07 的落点判定）。
     ///
-    /// 判定条件与渲染器 `configure_gpu_particles` 的拒绝条件一致：要 `mode=gpu`、设备有
-    /// compute、且是 burst 语义（`rate == 0`；连续发射要等 R07-2 的 spawn 环形队列）。
-    /// 任何一条不满足都用**同一份参数**回 CPU——回退不丢粒子，也不黑屏。
+    /// 判定条件与渲染器 burst 入口的拒绝条件一致：要 `mode=gpu`、设备有 compute、
+    /// 且是 burst 语义（`rate == 0`）。任何一条不满足都用**同一份参数**回 CPU——回退不丢
+    /// 粒子，也不黑屏。要判断连续流请用 [`Self::placement_with_streams`]。
     ///
     /// `compute_available` 由宿主从渲染器能力（或 wasm/release 的"根本没有 compute 接缝"）
     /// 传来；ECS 自己不知道设备的事，这是这层不依赖渲染器的边界。
     #[must_use]
     pub fn placement(&self, compute_available: bool) -> ParticlePlacement {
+        self.placement_with_streams(compute_available, false)
+    }
+
+    /// 与 [`Self::placement`] 同一套规则，额外告诉判定"渲染器有没有连续粒子流"。
+    ///
+    /// `rate > 0` 只有在渲染器明确支持连续流时才落 GPU；否则仍回
+    /// [`ParticleCpuReason::ContinuousRate`]，所以旧调用方（默认 `false`）的行为逐位不变。
+    #[must_use]
+    pub fn placement_with_streams(
+        &self,
+        compute_available: bool,
+        streams_available: bool,
+    ) -> ParticlePlacement {
         if self.mode != ParticleMode::Gpu {
             return ParticlePlacement::Cpu(ParticleCpuReason::Requested);
         }
         if !compute_available {
             return ParticlePlacement::Cpu(ParticleCpuReason::NoCompute);
         }
-        if self.rate > 0.0 {
+        if self.rate > 0.0 && !streams_available {
             return ParticlePlacement::Cpu(ParticleCpuReason::ContinuousRate);
         }
         ParticlePlacement::Gpu
@@ -483,7 +550,11 @@ impl SceneParticleEmitter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Particle {
     pub position: Vec2,
+    /// 世界 Z 坐标。2D burst 恒为 `0`，因此旧渲染路径逐位不变。
+    pub position_z: f32,
     pub velocity: Vec2,
+    /// 世界 Z 速度。2D burst 恒为 `0`。
+    pub velocity_z: f32,
     /// Seconds remaining before the particle is recycled.
     pub life: f32,
     /// Total life when spawned, used to compute the fade factor.
@@ -493,6 +564,7 @@ pub struct Particle {
     pub color_start: [f32; 4],
     pub color_end: [f32; 4],
     pub gravity: Vec2,
+    pub gravity_z: f32,
     pub drag: f32,
     pub rotation: f32,
     pub rotation_speed: f32,
@@ -543,7 +615,37 @@ pub struct ParticleSystem {
     particles: Vec<Particle>,
     /// Deterministic LCG so bursts are reproducible.
     seed: u64,
+    /// 全局风加速度（世界单位/秒²）；默认零，旧行为逐位不变。
+    wind: Vec2,
+    /// 全局风的 Z 分量。只有 3D 发射器会读它；默认 `0`。
+    wind_z: f32,
+    /// 风场：随高度线性增强的剪切系数（每世界单位 z），默认 0。
+    wind_shear: f32,
+    /// 风场：空间阵风强度（0..=4），默认 0。
+    wind_gust: f32,
+    /// 风场：阵风的空间频率（每世界单位），默认 0。
+    wind_gust_hz: f32,
+    /// 最多 4 个局部风源（火柱上升、酸雾外扩等）。
+    wind_sources: [WindSource; MAX_WIND_SOURCES],
 }
+
+/// 一个局部风源，坐标与 `particles.burst3d` 一致：`x`/`y` 是水平面（`y`=高度），
+/// `z` 是深度；`lift` 沿世界高度方向向上推，`radial` 沿从源指向粒子的三维方向外推。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindSource {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    /// 影响半径（世界单位）；`0` 表示该槽未启用。
+    pub radius: f32,
+    /// 沿“源 → 粒子”三维方向的外推力（负值向内），世界单位/秒²。
+    pub radial: f32,
+    /// 沿世界高度方向（`y`）的上升力，世界单位/秒²。
+    pub lift: f32,
+}
+
+/// 局部风源槽位数；Lua/CPU/GPU 共用这一上限。
+pub const MAX_WIND_SOURCES: usize = 4;
 
 impl ParticleSystem {
     /// Creates an empty particle system with a fixed seed.
@@ -552,7 +654,117 @@ impl ParticleSystem {
         Self {
             particles: Vec::new(),
             seed: 0x1234_5678_9abc_def0,
+            wind: Vec2::zero(),
+            wind_z: 0.0,
+            wind_shear: 0.0,
+            wind_gust: 0.0,
+            wind_gust_hz: 0.0,
+            wind_sources: [WindSource::default(); MAX_WIND_SOURCES],
         }
+    }
+
+    /// 设置全局风加速度；只作用于 CPU 粒子池（GPU burst 的 GPU 参数暂未带风）。
+    /// 非有限值拒绝，避免 NaN 污染整池。
+    pub fn set_wind(&mut self, wind: Vec2) -> Result<(), String> {
+        self.set_wind_3d(wind.x, wind.y, 0.0)
+    }
+
+    /// 设置三维全局风。Z 分量默认 `0`，2D 发射器的积分结果不变。
+    pub fn set_wind_3d(&mut self, x: f32, y: f32, z: f32) -> Result<(), String> {
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return Err("particle wind must be finite".to_owned());
+        }
+        self.wind = Vec2::new(x, y);
+        self.wind_z = z;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn wind(&self) -> Vec2 {
+        self.wind
+    }
+
+    /// 当前风的 Z 分量。
+    #[must_use]
+    pub fn wind_z(&self) -> f32 {
+        self.wind_z
+    }
+
+    /// 设置风场：高度剪切 + 空间阵风。
+    ///
+    /// - `shear`：每世界单位 z 的风速系数（`-1..=1`；正数表示越高风越大）；
+    /// - `gust`：阵风强度（`0..=4`）；
+    /// - `gust_hz`：阵风空间频率（每世界单位，`0..=20`）。
+    ///
+    /// CPU 池与 GPU 参数用**同一个公式**（见 [`Self::wind_factor_at`]），因此同一阵
+    /// 风在 CPU/GPU 粒子上的表现一致。默认全 0，旧行为逐位不变。
+    pub fn set_wind_profile(&mut self, shear: f32, gust: f32, gust_hz: f32) -> Result<(), String> {
+        if !shear.is_finite() || !gust.is_finite() || !gust_hz.is_finite() {
+            return Err("particle wind profile must be finite".to_owned());
+        }
+        if !(-1.0..=1.0).contains(&shear) {
+            return Err("particle wind shear must be -1..=1".to_owned());
+        }
+        if !(0.0..=4.0).contains(&gust) {
+            return Err("particle wind gust must be 0..=4".to_owned());
+        }
+        if !(0.0..=20.0).contains(&gust_hz) {
+            return Err("particle wind gust_hz must be 0..=20".to_owned());
+        }
+        self.wind_shear = shear;
+        self.wind_gust = gust;
+        self.wind_gust_hz = gust_hz;
+        Ok(())
+    }
+
+    /// 当前风场 `(shear, gust, gust_hz)`。
+    #[must_use]
+    pub fn wind_profile(&self) -> (f32, f32, f32) {
+        (self.wind_shear, self.wind_gust, self.wind_gust_hz)
+    }
+
+    /// 设置一个局部风源；`radius = 0` 关闭该槽。越界/非有限值拒绝且保留旧值。
+    pub fn set_wind_source(&mut self, index: usize, source: WindSource) -> Result<(), String> {
+        if index >= MAX_WIND_SOURCES {
+            return Err(format!("wind source index must be 0..{MAX_WIND_SOURCES}"));
+        }
+        if !source.x.is_finite()
+            || !source.y.is_finite()
+            || !source.z.is_finite()
+            || !source.radius.is_finite()
+            || !source.radial.is_finite()
+            || !source.lift.is_finite()
+        {
+            return Err("wind source must be finite".to_owned());
+        }
+        if !(0.0..=512.0).contains(&source.radius) {
+            return Err("wind source radius must be 0..=512".to_owned());
+        }
+        if !(-64.0..=64.0).contains(&source.radial) || !(-64.0..=64.0).contains(&source.lift) {
+            return Err("wind source radial/lift must be -64..=64".to_owned());
+        }
+        self.wind_sources[index] = source;
+        Ok(())
+    }
+
+    /// 清空全部局部风源。
+    pub fn clear_wind_sources(&mut self) {
+        self.wind_sources = [WindSource::default(); MAX_WIND_SOURCES];
+    }
+
+    /// 当前 4 个局部风源（`radius = 0` 的槽未启用）。
+    #[must_use]
+    pub fn wind_sources(&self) -> &[WindSource; MAX_WIND_SOURCES] {
+        &self.wind_sources
+    }
+
+    /// 风场在 `(x, height)` 处的倍率；CPU 与 GPU 共用这一条公式。
+    ///
+    /// 高度剪切 + 一条空间正弦阵风；结果下限 0，避免反向风把粒子吹得比无风还慢。
+    #[must_use]
+    pub fn wind_factor_at(&self, x: f32, height: f32) -> f32 {
+        let phase = height * self.wind_gust_hz + x * 0.11;
+        (1.0 + self.wind_shear * height + self.wind_gust * phase.sin()).max(0.0)
     }
 
     /// Spawns `count` particles at `position` bursting outward up to `speed`
@@ -569,6 +781,18 @@ impl ParticleSystem {
     /// `emitter.seed` 给定时先把 LCG 复位到该 seed：同一份参数的两次 burst 逐位相同，
     /// CPU 与 GPU 两侧也才能对拍。缺席时沿用系统的历史状态（旧行为，一个 bit 都不变）。
     pub fn burst_with(&mut self, position: Vec2, emitter: &ParticleEmitter) {
+        self.burst_at(position, 0.0, emitter);
+    }
+
+    /// 在三维世界坐标 `[x, y, z]` 生成一次爆发。
+    ///
+    /// 与 2D `burst_with` 共用同一抽样序列；只有 `speed_z`/`spread_z` 非零时才额外抽
+    /// Z 随机数，所以既有 2D 调用一个 bit 都不变。
+    pub fn burst_with_3d(&mut self, position: [f32; 3], emitter: &ParticleEmitter) {
+        self.burst_at(Vec2::new(position[0], position[1]), position[2], emitter);
+    }
+
+    fn burst_at(&mut self, position: Vec2, position_z: f32, emitter: &ParticleEmitter) {
         if emitter.count == 0 || emitter.validate().is_err() {
             return;
         }
@@ -583,12 +807,43 @@ impl ParticleSystem {
             let speed_unit = self.next_rand();
             let life_unit = self.next_rand();
             let size_unit = self.next_rand();
+            // 只有 3D 发射器才多抽两次；默认 0 时分支不进，旧序列不变。
+            let (z_offset, velocity_z) = if emitter.speed_z > 0.0 || emitter.spread_z > 0.0 {
+                let speed_z_unit = if emitter.speed_z > 0.0 {
+                    self.next_rand()
+                } else {
+                    0.5
+                };
+                let spread_z_unit = if emitter.spread_z > 0.0 {
+                    self.next_rand()
+                } else {
+                    0.5
+                };
+                (
+                    (spread_z_unit * 2.0 - 1.0) * emitter.spread_z,
+                    (speed_z_unit * 2.0 - 1.0) * emitter.speed_z,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            // 出生盒：只有任一边长 > 0 时才抽三次，默认参数下随机序列与旧版逐位一致。
+            let spawn = if emitter.spawn_area.iter().any(|value| *value > 0.0) {
+                [
+                    (self.next_rand() * 2.0 - 1.0) * emitter.spawn_area[0],
+                    (self.next_rand() * 2.0 - 1.0) * emitter.spawn_area[1],
+                    (self.next_rand() * 2.0 - 1.0) * emitter.spawn_area[2],
+                ]
+            } else {
+                [0.0; 3]
+            };
             let magnitude = emitter.speed * (0.25 + speed_unit * 0.75);
             let max_life = emitter.life * (0.5 + life_unit * 0.5);
             let scale = 0.75 + 0.5 * size_unit;
             self.particles.push(Particle {
-                position,
+                position: Vec2::new(position.x + spawn[0], position.y + spawn[1]),
+                position_z: position_z + z_offset + spawn[2],
                 velocity: Vec2::new(angle.cos() * magnitude, angle.sin() * magnitude),
+                velocity_z,
                 life: max_life,
                 max_life,
                 size_start: emitter.size_start * scale,
@@ -596,6 +851,7 @@ impl ParticleSystem {
                 color_start: emitter.color_start,
                 color_end: emitter.color_end,
                 gravity: emitter.gravity,
+                gravity_z: emitter.gravity_z,
                 drag: emitter.drag,
                 rotation: emitter.rotation,
                 rotation_speed: emitter.rotation_speed,
@@ -620,11 +876,24 @@ impl ParticleSystem {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return;
         }
+        let wind = self.wind;
+        let wind_z = self.wind_z;
+        let (shear, gust, gust_hz) = (self.wind_shear, self.wind_gust, self.wind_gust_hz);
+        let sources = self.wind_sources;
         let particles = &mut self.particles;
         let threads = parallelism.effective_threads(particles.len());
         if threads < 2 {
             for particle in particles.iter_mut() {
-                step_particle(particle, delta_seconds);
+                step_particle(
+                    particle,
+                    wind,
+                    wind_z,
+                    shear,
+                    gust,
+                    gust_hz,
+                    &sources,
+                    delta_seconds,
+                );
             }
             particles.retain(|particle| particle.life > 0.0);
             return;
@@ -634,7 +903,16 @@ impl ParticleSystem {
             for batch in particles.chunks_mut(chunk) {
                 scope.spawn(move || {
                     for particle in batch.iter_mut() {
-                        step_particle(particle, delta_seconds);
+                        step_particle(
+                            particle,
+                            wind,
+                            wind_z,
+                            shear,
+                            gust,
+                            gust_hz,
+                            &sources,
+                            delta_seconds,
+                        );
                     }
                 });
             }
@@ -644,13 +922,55 @@ impl ParticleSystem {
 }
 
 /// 单粒子一步积分：`step` 与 `step_with_parallelism` 共用同一份，保证串/并行逐位一致。
-fn step_particle(particle: &mut Particle, delta_seconds: f32) {
-    particle.velocity = particle.velocity + particle.gravity * delta_seconds;
+#[allow(clippy::too_many_arguments)]
+fn step_particle(
+    particle: &mut Particle,
+    wind: Vec2,
+    wind_z: f32,
+    shear: f32,
+    gust: f32,
+    gust_hz: f32,
+    sources: &[WindSource; MAX_WIND_SOURCES],
+    delta_seconds: f32,
+) {
+    // 与 GPU compute 同一公式：高度剪切 + 空间正弦阵风。粒子坐标系是
+    // (x, height) 平面 + position_z 深度，所以高度取 `position.y`。
+    let height = particle.position.y;
+    let phase = height * gust_hz + particle.position.x * 0.11;
+    let factor = (1.0 + shear * height + gust * phase.sin()).max(0.0);
+    let mut wind = wind * factor;
+    let mut wind_z = wind_z * factor;
+    // 局部风源：径向 + 上升。四个槽逐个看，未启用的 radius=0 直接跳过。
+    for source in sources {
+        if source.radius <= 0.0 {
+            continue;
+        }
+        let dx = particle.position.x - source.x;
+        let dy = height - source.y;
+        let dz = particle.position_z - source.z;
+        let distance_sq = dx * dx + dy * dy + dz * dz;
+        if distance_sq >= source.radius * source.radius {
+            continue;
+        }
+        let distance = distance_sq.sqrt();
+        let falloff = (1.0 - distance / source.radius).powi(2);
+        if source.radial != 0.0 && distance > 1e-4 {
+            let radial = source.radial * falloff / distance;
+            wind = wind + Vec2::new(dx, dy) * radial;
+            wind_z += dz * radial;
+        }
+        wind.y += source.lift * falloff;
+    }
+    particle.velocity = particle.velocity + (particle.gravity + wind) * delta_seconds;
+    particle.velocity_z += (particle.gravity_z + wind_z) * delta_seconds;
     if particle.drag > 0.0 {
         // 每秒衰减 `drag` 比例；单步时长超过 1/drag 时钳到 0（不反转速度）。
-        particle.velocity = particle.velocity * (1.0 - particle.drag * delta_seconds).max(0.0);
+        let damp = (1.0 - particle.drag * delta_seconds).max(0.0);
+        particle.velocity = particle.velocity * damp;
+        particle.velocity_z *= damp;
     }
     particle.position = particle.position + particle.velocity * delta_seconds;
+    particle.position_z += particle.velocity_z * delta_seconds;
     particle.rotation += particle.rotation_speed * delta_seconds;
     particle.life -= delta_seconds;
 }
@@ -671,6 +991,14 @@ impl ParticleSystem {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.particles.is_empty()
+    }
+
+    /// 丢掉所有粒子但保留 LCG 状态与风。
+    ///
+    /// 连续粒子流只借这个系统做**初始抽样**：采样一批、读 `particles()`、再 `clear()`，
+    /// 下一批继续推进同一条随机序列，不会像新建系统那样每帧从同一 seed 重来。
+    pub fn clear(&mut self) {
+        self.particles.clear();
     }
 
     fn next_rand(&mut self) -> f32 {
@@ -716,6 +1044,238 @@ mod tests {
             parallel.step_with_parallelism(0.016, parallel_degree);
         }
         assert_eq!(sequential.particles(), parallel.particles());
+    }
+
+    #[test]
+    fn wind_accelerates_particles_and_rejects_non_finite() {
+        let mut system = ParticleSystem::new();
+        system.burst(Vec2::zero(), 1, 0.0, 2.0, [1.0, 1.0, 1.0, 1.0]);
+        system.set_wind(Vec2::new(10.0, -4.0)).unwrap();
+        system.step(0.5);
+        assert!((system.particles()[0].velocity.x - 5.0).abs() < 1e-6);
+        assert!((system.particles()[0].velocity.y + 2.0).abs() < 1e-6);
+        assert!(system.set_wind(Vec2::new(f32::NAN, 0.0)).is_err());
+        assert!(system.set_wind(Vec2::new(0.0, f32::INFINITY)).is_err());
+    }
+
+    /// 3D burst 的 z 起点/速度/重力都真实参与积分；2D 路径仍逐位不变。
+    #[test]
+    fn burst_with_3d_integrates_z_and_2d_path_is_bit_identical() {
+        let emitter = ParticleEmitter::new(4, 0.0, 1.0, [1.0, 1.0, 1.0, 1.0]);
+        let mut flat = ParticleSystem::new();
+        let mut flat_3d_api = ParticleSystem::new();
+        flat.burst_with(Vec2::new(3.0, 4.0), &emitter);
+        flat_3d_api.burst_with_3d([3.0, 4.0, 0.0], &emitter);
+        assert_eq!(flat.particles(), flat_3d_api.particles());
+
+        let elevated = ParticleEmitter {
+            count: 4,
+            speed: 0.0,
+            life: 2.0,
+            speed_z: 6.0,
+            spread_z: 2.0,
+            gravity_z: -10.0,
+            ..ParticleEmitter::default()
+        };
+        let mut system = ParticleSystem::new();
+        system.burst_with_3d([1.0, 2.0, 5.0], &elevated);
+        assert_eq!(system.len(), 4);
+        assert!(
+            system
+                .particles()
+                .iter()
+                .all(|particle| (3.0..=7.0).contains(&particle.position_z)),
+            "spread_z must jitter around the emitter z"
+        );
+        let before = system.particles()[0].position_z;
+        system.set_wind_3d(0.0, 0.0, 20.0).unwrap();
+        system.step(0.5);
+        let after = system.particles()[0];
+        assert!(after.position_z > before, "z wind/gravity must move z");
+        assert!(after.velocity_z.is_finite());
+        assert!(system.set_wind_3d(0.0, 0.0, f32::NAN).is_err());
+    }
+
+    #[test]
+    fn wind_sources_push_radially_and_lift() {
+        let emitter = ParticleEmitter {
+            count: 1,
+            speed: 0.0,
+            life: 10.0,
+            spread_z: 0.0,
+            ..ParticleEmitter::default()
+        };
+        let mut lift_system = ParticleSystem::new();
+        lift_system
+            .set_wind_source(
+                0,
+                WindSource {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    radius: 10.0,
+                    radial: 0.0,
+                    lift: 5.0,
+                },
+            )
+            .unwrap();
+        lift_system.burst_with_3d([0.0, 1.0, 0.0], &emitter);
+        lift_system.step(1.0);
+        let expected_lift = 5.0 * (1.0 - 0.1f32).powi(2);
+        assert!((lift_system.particles()[0].velocity.y - expected_lift).abs() < 1e-4);
+
+        let mut radial_system = ParticleSystem::new();
+        radial_system
+            .set_wind_source(
+                1,
+                WindSource {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    radius: 10.0,
+                    radial: 2.0,
+                    lift: 0.0,
+                },
+            )
+            .unwrap();
+        radial_system.burst_with_3d([5.0, 0.0, 0.0], &emitter);
+        radial_system.step(1.0);
+        assert!((radial_system.particles()[0].velocity.x - 0.5).abs() < 1e-4);
+
+        radial_system.clear_wind_sources();
+        assert_eq!(radial_system.wind_sources()[1].radius, 0.0);
+        assert!(
+            radial_system
+                .set_wind_source(
+                    4,
+                    WindSource {
+                        radius: 1.0,
+                        ..WindSource::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            radial_system
+                .set_wind_source(
+                    0,
+                    WindSource {
+                        radius: 600.0,
+                        ..WindSource::default()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            radial_system
+                .set_wind_source(
+                    0,
+                    WindSource {
+                        radius: 1.0,
+                        lift: f32::NAN,
+                        ..WindSource::default()
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn wind_profile_shears_with_height_and_guards_inputs() {
+        let mut system = ParticleSystem::new();
+        assert_eq!(system.wind_profile(), (0.0, 0.0, 0.0));
+        assert!((system.wind_factor_at(0.0, 0.0) - 1.0).abs() < 1e-6);
+
+        system.set_wind_profile(0.1, 0.0, 0.0).unwrap();
+        assert!((system.wind_factor_at(0.0, 10.0) - 2.0).abs() < 1e-5);
+
+        system.set_wind_profile(0.0, 0.5, 1.0).unwrap();
+        let phase = std::f32::consts::FRAC_PI_2;
+        let expected = (1.0 + 0.5 * phase.sin()).max(0.0);
+        assert!((system.wind_factor_at(0.0, phase) - expected).abs() < 1e-5);
+
+        for (shear, gust, hz) in [
+            (1.5, 0.0, 0.0),
+            (0.0, 5.0, 0.0),
+            (0.0, 0.0, 30.0),
+            (f32::NAN, 0.0, 0.0),
+        ] {
+            assert!(system.set_wind_profile(shear, gust, hz).is_err());
+        }
+
+        // Same wind, same profile: the particle at z=20 gets twice the acceleration.
+        let emitter = ParticleEmitter {
+            count: 1,
+            speed: 0.0,
+            life: 10.0,
+            spread_z: 0.0,
+            ..ParticleEmitter::default()
+        };
+        let mut low = ParticleSystem::new();
+        let mut high = ParticleSystem::new();
+        low.burst_with_3d([0.0, 0.0, 0.0], &emitter);
+        high.burst_with_3d([0.0, 20.0, 0.0], &emitter);
+        for system in [&mut low, &mut high] {
+            system.set_wind_3d(10.0, 0.0, 0.0).unwrap();
+            system.set_wind_profile(0.1, 0.0, 0.0).unwrap();
+            system.step(0.5);
+        }
+        assert!(
+            high.particles()[0].velocity.x > low.particles()[0].velocity.x + 1.0,
+            "height shear must accelerate the higher particle"
+        );
+    }
+
+    #[test]
+    fn spawn_area_fills_a_box_without_changing_default_positions() {
+        let emitter = ParticleEmitter {
+            count: 64,
+            speed: 0.0,
+            life: 1.0,
+            spawn_area: [2.0, 3.0, 4.0],
+            seed: Some(11),
+            ..ParticleEmitter::default()
+        };
+        let mut system = ParticleSystem::new();
+        system.burst_with_3d([10.0, 0.0, 5.0], &emitter);
+        assert_eq!(system.len(), 64);
+        for particle in system.particles() {
+            assert!(
+                (8.0..=12.0).contains(&particle.position.x)
+                    && (-3.0..=3.0).contains(&particle.position.y)
+                    && (1.0..=9.0).contains(&particle.position_z),
+                "particle outside spawn box: {particle:?}"
+            );
+        }
+        let mut default = ParticleSystem::new();
+        default.burst_with_3d(
+            [10.0, 0.0, 5.0],
+            &ParticleEmitter::new(4, 0.0, 1.0, [1.0; 4]),
+        );
+        assert!(
+            default
+                .particles()
+                .iter()
+                .all(|particle| particle.position == Vec2::new(10.0, 0.0)
+                    && particle.position_z == 5.0),
+            "default spawn_area must keep every particle at the origin"
+        );
+        let mut invalid = ParticleEmitter {
+            spawn_area: [0.0, -1.0, 0.0],
+            ..ParticleEmitter::default()
+        };
+        assert!(invalid.validate().is_err());
+        invalid.spawn_area = [f32::NAN, 0.0, 0.0];
+        assert!(invalid.validate().is_err());
+        let text = ParticleEmitter {
+            spawn_area: [1.0, 2.0, 3.0],
+            ..ParticleEmitter::default()
+        }
+        .to_component_str();
+        assert!(text.contains("area_x=1.000000"));
+        assert!(text.contains("area_z=3.000000"));
+        let parsed = ParticleEmitter::from_component_str(&text).unwrap();
+        assert_eq!(parsed.spawn_area, [1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -1037,6 +1597,29 @@ mod tests {
         assert_eq!(gpu_mode.particles(), cpu_mode.particles());
     }
 
+    /// 连续流的抽样器：`clear` 只丢粒子，LCG 继续前进（不是每帧从同一 seed 重来）。
+    #[test]
+    fn clear_keeps_the_sampling_sequence_advancing() {
+        let emitter = ParticleEmitter {
+            count: 2,
+            speed: 0.0,
+            ..ParticleEmitter::default()
+        };
+        let mut sampler = ParticleSystem::new();
+        sampler.burst_with(Vec2::zero(), &emitter);
+        assert_eq!(sampler.len(), 2);
+        let first = sampler.particles()[0];
+        sampler.clear();
+        assert!(sampler.is_empty());
+        sampler.burst_with(Vec2::zero(), &emitter);
+        assert_eq!(sampler.len(), 2);
+        assert_ne!(
+            sampler.particles()[0],
+            first,
+            "clear 后的下一批必须继续推进随机序列"
+        );
+    }
+
     /// 落点判定与渲染器 `configure_gpu_particles` 的拒绝条件一致；回退用同一份参数走 CPU。
     #[test]
     fn placement_falls_back_to_cpu_whenever_gpu_cannot_take_it() {
@@ -1070,10 +1653,19 @@ mod tests {
         assert_eq!(
             continuous.placement(true),
             ParticlePlacement::Cpu(ParticleCpuReason::ContinuousRate),
-            "连续发射在 compute 侧还没实现，必须回 CPU 而不是静默忽略 rate"
+            "渲染器没声明连续流时，rate 必须回 CPU 而不是静默忽略"
         );
         assert_eq!(
-            continuous.placement(false),
+            continuous.placement_with_streams(true, true),
+            ParticlePlacement::Gpu,
+            "渲染器支持连续流后，rate 才允许落 GPU"
+        );
+        assert_eq!(
+            continuous.placement_with_streams(true, false),
+            ParticlePlacement::Cpu(ParticleCpuReason::ContinuousRate)
+        );
+        assert_eq!(
+            continuous.placement_with_streams(false, true),
             ParticlePlacement::Cpu(ParticleCpuReason::NoCompute),
             "能力缺失先于参数不支持上报"
         );

@@ -9,10 +9,13 @@
 //!
 //! ## 边界（刻意不做的事）
 //!
-//! - **不接管发射器生命周期**：`rate`（连续发射）在 v1 里显式拒绝，只做一次 burst + 逐帧积分。
-//!   连续发射需要环形容量与回收策略，属于 P3-R07 的完整版；这里先不假装支持。
-//!   （场景侧 `ParticleEmitter` 只能按 `rate` 发射，所以 `mode=gpu` 的场景发射器现在恒定回退
-//!   `continuous_rate`；进 GPU 的是**一次性 burst**——Lua `particles.burst(..., {mode='gpu'})`。）
+//! - **两条发射通道**：
+//!   - `push_gpu_particle_burst[_3d]`：一次性 burst，CPU 生成初始状态后上传（Lua
+//!     `particles.burst(..., {mode='gpu'})` 走这条）；
+//!   - `push_gpu_particle_stream`：连续流，CPU 每帧按 `rate × dt` 抽样新粒子写进环形槽，
+//!     GPU 只积分；场景声明的 `ParticleEmitter{rate>0,mode=gpu}` 走这条。连续流**只由宿主
+//!     场景通道创建**，Lua burst API 没有 `rate` 选项；没有环形队列的后端仍由
+//!     `ParticleEmitter::placement_with_streams` 回 CPU，不丢粒子。
 //! - **不回读给 CPU 渲染**：compute 只写**状态**，几何在顶点着色器里逐实例展开，渲染侧零回读。
 //!   `read_gpu_particles` 只给验收/调试用（native 同步回读）。
 //! - **不改变默认画面**：没有调用 `configure_gpu_particles` 时，本模块一个 pass 都不产生；
@@ -21,8 +24,8 @@
 //! ## 数据流
 //!
 //! ```text
-//! CPU 初始 burst（同一套 ParticleEmitter 语义）
-//!   → storage buffer（ParticleState × capacity，48 B/槽）
+//! burst：CPU 初始状态 → storage buffer（ParticleState × capacity，48 B/槽）
+//! stream：CPU 每帧按 rate 抽样 → 环形槽（同一条 storage buffer 的空槽）
 //!   → compute（只积分状态；死槽一位不写）
 //!   → 同一块 buffer 作为**实例流**（group2 只读存储）
 //!   → instanced 管线：4 顶点 triangle strip，无顶点缓冲，复用世界 Sprite 的相机与白贴图
@@ -40,7 +43,6 @@
 
 use bytemuck::{Pod, Zeroable};
 use rustlua_ecs::particle::{ParticleEmitter, ParticleSystem};
-use rustlua_ecs::transform::Vec2;
 use wgpu::util::DeviceExt;
 
 use super::construct::build_gpu_particle_pipeline;
@@ -64,22 +66,30 @@ macro_rules! particle_common {
         r#"struct ParticleState {
     position: vec2<f32>,
     velocity: vec2<f32>,
+    position_z: f32,
+    velocity_z: f32,
     life: f32,
     max_life: f32,
     size_start: f32,
     size_end: f32,
     rotation: f32,
-    _pad0: f32,
-    _pad1: vec2<f32>,
+    gravity_z: f32,
 };
 
 struct Params {
     dt: f32,
     drag: f32,
     rotation_speed: f32,
-    _pad0: f32,
+    wind_x: f32,
     gravity: vec2<f32>,
-    _pad1: vec2<f32>,
+    wind_y: f32,
+    wind_z: f32,
+    wind_shear: f32,
+    wind_gust: f32,
+    wind_gust_hz: f32,
+    _pad: f32,
+    source_a: array<vec4<f32>, 4>,
+    source_b: array<vec4<f32>, 4>,
     color_start: vec4<f32>,
     color_end: vec4<f32>,
 };
@@ -113,12 +123,47 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let dt = params.dt;
-    state.velocity = state.velocity + params.gravity * dt;
+    // 与 CPU `ParticleSystem::wind_factor_at` 同一公式：高度剪切 + 空间正弦阵风。
+    // `state.position` 是 (world x, world y=height)，`position_z` 是世界 z 深度。
+    let gust_phase = state.position.y * params.wind_gust_hz + state.position.x * 0.11;
+    let wind_factor = max(
+        1.0 + params.wind_shear * state.position.y + params.wind_gust * sin(gust_phase),
+        0.0,
+    );
+    var wind = vec2<f32>(params.wind_x, params.wind_y) * wind_factor;
+    var wind_z = params.wind_z * wind_factor;
+    // 局部风源：与 CPU 同一套径向 + 上升公式（4 个固定槽，active 位在 source_b.z）。
+    for (var index: u32 = 0u; index < 4u; index = index + 1u) {
+        let source = params.source_a[index];
+        let strength = params.source_b[index];
+        if (strength.z < 0.5 || source.w <= 0.0) {
+            continue;
+        }
+        let dx = state.position.x - source.x;
+        let dy = state.position.y - source.y;
+        let dz = state.position_z - source.z;
+        let distance_sq = dx * dx + dy * dy + dz * dz;
+        if (distance_sq >= source.w * source.w) {
+            continue;
+        }
+        let distance = sqrt(distance_sq);
+        let falloff = pow(1.0 - distance / source.w, 2.0);
+        if (abs(strength.x) > 1e-9 && distance > 1e-4) {
+            let radial = strength.x * falloff / distance;
+            wind = wind + vec2<f32>(dx, dy) * radial;
+            wind_z = wind_z + dz * radial;
+        }
+        wind.y = wind.y + strength.y * falloff;
+    }
+    state.velocity = state.velocity + (params.gravity + wind) * dt;
+    state.velocity_z = state.velocity_z + (state.gravity_z + wind_z) * dt;
     if (params.drag > 0.0) {
         let damp = max(1.0 - params.drag * dt, 0.0);
         state.velocity = state.velocity * damp;
+        state.velocity_z = state.velocity_z * damp;
     }
     state.position = state.position + state.velocity * dt;
+    state.position_z = state.position_z + state.velocity_z * dt;
     state.rotation = state.rotation + params.rotation_speed * dt;
     state.life = state.life - dt;
     states[index] = state;
@@ -189,7 +234,7 @@ const CORNERS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
     let perspective = abs(camera.view_projection[0][3])
         + abs(camera.view_projection[1][3])
         + abs(camera.view_projection[2][3]) > 0.5;
-    var world = vec3<f32>(state.position, 0.0);
+    var world = vec3<f32>(state.position, state.position_z);
     if (perspective) {
         let right = normalize(vec3<f32>(
             camera.view_projection[0][0],
@@ -226,13 +271,14 @@ pub(super) const QUAD_VERTEX_COUNT: u32 = 4;
 pub struct GpuParticleState {
     pub position: [f32; 2],
     pub velocity: [f32; 2],
+    pub position_z: f32,
+    pub velocity_z: f32,
     pub life: f32,
     pub max_life: f32,
     pub size_start: f32,
     pub size_end: f32,
     pub rotation: f32,
-    _padding: f32,
-    _padding2: [f32; 2],
+    pub gravity_z: f32,
 }
 
 impl GpuParticleState {
@@ -240,13 +286,14 @@ impl GpuParticleState {
         Self {
             position: [particle.position.x, particle.position.y],
             velocity: [particle.velocity.x, particle.velocity.y],
+            position_z: particle.position_z,
+            velocity_z: particle.velocity_z,
             life: particle.life,
             max_life: particle.max_life,
             size_start: particle.size_start,
             size_end: particle.size_end,
             rotation: particle.rotation,
-            _padding: 0.0,
-            _padding2: [0.0; 2],
+            gravity_z: particle.gravity_z,
         }
     }
 }
@@ -254,7 +301,7 @@ impl GpuParticleState {
 /// 一次 GPU 粒子的配置。
 ///
 /// 语义与 [`ParticleEmitter`] 一致；`capacity` 是显存里预留的槽位（≥ `emitter.count`）。
-/// `rate > 0`（连续发射）在 v1 里会被**拒绝**而不是静默忽略。
+/// `rate > 0` 会被 burst 入口**拒绝**；连续发射用 [`GpuParticleStreamConfig`]。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuParticleConfig {
     /// burst 的世界坐标（2D）。
@@ -265,13 +312,23 @@ pub struct GpuParticleConfig {
     pub capacity: u32,
 }
 
+/// 三维 burst 的配置。语义与 [`GpuParticleConfig`] 相同，只把原点换成 `[x, y, z]`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuParticleConfig3D {
+    pub origin: [f32; 3],
+    pub emitter: ParticleEmitter,
+    pub capacity: u32,
+}
+
 /// 配置成功后的读数。
 ///
 /// P3-R07-3 起没有 `vertex_bytes` 这一项了：instanced 路径的**实例流就是状态缓冲**，
 /// 两者是同一块显存，再报一个"顶点字节"只会读成两份并不存在的开销。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GpuParticleStatus {
+    /// 预留槽位（burst 与连续流求和）。
     pub capacity: u32,
+    /// burst 的已写槽数；连续流按整个环形容量报（槽位里可能有已死粒子）。
     pub spawned: u32,
     /// 状态/实例缓冲的字节数（`capacity × size_of::<GpuParticleState>()`）。
     pub state_bytes: u64,
@@ -295,7 +352,9 @@ pub struct GpuParticleStep {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuParticleSnapshot {
     pub position: [f32; 2],
+    pub position_z: f32,
     pub velocity: [f32; 2],
+    pub velocity_z: f32,
     pub life: f32,
     pub max_life: f32,
     pub size_start: f32,
@@ -309,9 +368,16 @@ struct GpuParticleParams {
     dt: f32,
     drag: f32,
     rotation_speed: f32,
-    _padding: f32,
+    wind_x: f32,
     gravity: [f32; 2],
-    _padding2: [f32; 2],
+    wind_y: f32,
+    wind_z: f32,
+    wind_shear: f32,
+    wind_gust: f32,
+    wind_gust_hz: f32,
+    _pad: f32,
+    source_a: [[f32; 4]; 4],
+    source_b: [[f32; 4]; 4],
     color_start: [f32; 4],
     color_end: [f32; 4],
 }
@@ -342,6 +408,32 @@ pub(super) struct GpuParticleSystem {
     /// 否则"每帧爆发一次"的池会把绑定组缓存无限撑大。
     bind_group_key: u64,
     state_bytes: u64,
+    /// 连续流状态；`None` = 普通 burst（寿命到点回收）。
+    stream: Option<GpuParticleStream>,
+}
+
+/// 一个连续发射器的环形槽状态。
+///
+/// 新粒子由 CPU 按 `rate × dt` 抽样后写进空槽，GPU 只负责后续积分；槽位写满后从
+/// 头覆盖。`sampler` 只用来抽样，不保存模拟结果，因此 `clear()` 后不会随着运行时间
+/// 越长内存越大。
+pub(super) struct GpuParticleStream {
+    key: u64,
+    cursor: u32,
+    accumulator: f32,
+    origin: [f32; 3],
+    sampler: ParticleSystem,
+}
+
+/// 连续粒子流的创建参数。
+#[derive(Clone, Copy, Debug)]
+pub struct GpuParticleStreamConfig {
+    /// 发射原点（世界坐标，z 可非零）。
+    pub origin: [f32; 3],
+    /// 发射参数；`rate` 必须 `> 0`，`count` 不参与容量计算。
+    pub emitter: ParticleEmitter,
+    /// 环形容量；`0` = 按 `rate × life × 1.25` 自动取（至少 8 槽）。
+    pub capacity: u32,
 }
 
 impl GpuParticleSystem {
@@ -350,7 +442,13 @@ impl GpuParticleSystem {
     }
 
     /// 寿命是否已走完（池回收判据）。
-    pub(super) const fn is_expired(&self) -> bool {
+    ///
+    /// 连续流没有"整批寿命"：只要宿主还声明它就一直活着；只有 dispatch 失败
+    /// （`elapsed = INFINITY`）才回收。
+    pub(super) fn is_expired(&self) -> bool {
+        if self.stream.is_some() {
+            return self.elapsed == f32::INFINITY;
+        }
         self.elapsed > self.emitter.life
     }
 
@@ -390,7 +488,8 @@ impl Renderer {
     ///
     /// # Errors
     ///
-    /// 能力缺失、`emitter.rate > 0`、容量/绑定超限、参数非有限。
+    /// 能力缺失、`emitter.rate > 0`（连续发射请用 [`Self::push_gpu_particle_stream`]）、
+    /// 容量/绑定超限、参数非有限。
     pub fn configure_gpu_particles(
         &mut self,
         config: GpuParticleConfig,
@@ -398,7 +497,7 @@ impl Renderer {
         if !self.compute_enabled() {
             return Err(self.compute_not_available());
         }
-        let system = self.build_gpu_particle_system(config)?;
+        let system = self.build_gpu_particle_system(config, 0.0)?;
         let status = system.status(self.capabilities.backend_name());
         // 重新配置：旧缓冲已交出，旧绑定组不能再命中。
         self.compute_state.clear();
@@ -430,6 +529,30 @@ impl Renderer {
         &mut self,
         config: GpuParticleConfig,
     ) -> Result<GpuParticleStatus, ComputeError> {
+        self.push_gpu_particle_burst_at(config, 0.0)
+    }
+
+    /// 三维 burst：`origin[2]` 原样进入初始状态；其余与
+    /// [`Self::push_gpu_particle_burst`] 同一套池预算/校验。
+    pub fn push_gpu_particle_burst_3d(
+        &mut self,
+        config: GpuParticleConfig3D,
+    ) -> Result<GpuParticleStatus, ComputeError> {
+        self.push_gpu_particle_burst_at(
+            GpuParticleConfig {
+                origin: [config.origin[0], config.origin[1]],
+                emitter: config.emitter,
+                capacity: config.capacity,
+            },
+            config.origin[2],
+        )
+    }
+
+    fn push_gpu_particle_burst_at(
+        &mut self,
+        config: GpuParticleConfig,
+        origin_z: f32,
+    ) -> Result<GpuParticleStatus, ComputeError> {
         if !self.compute_enabled() {
             return Err(self.compute_not_available());
         }
@@ -447,7 +570,7 @@ impl Renderer {
                 config.capacity
             )));
         }
-        let system = self.build_gpu_particle_system(config)?;
+        let system = self.build_gpu_particle_system(config, origin_z)?;
         let status = system.status(self.capabilities.backend_name());
         self.gpu_particles.push(system);
         Ok(status)
@@ -473,6 +596,7 @@ impl Renderer {
     fn build_gpu_particle_system(
         &mut self,
         config: GpuParticleConfig,
+        origin_z: f32,
     ) -> Result<GpuParticleSystem, ComputeError> {
         config
             .emitter
@@ -536,8 +660,8 @@ impl Renderer {
 
         // CPU 语义生成初始状态：随机数留在 CPU，GPU 只负责积分。
         let mut cpu = ParticleSystem::new();
-        cpu.burst_with(
-            Vec2::new(config.origin[0], config.origin[1]),
+        cpu.burst_with_3d(
+            [config.origin[0], config.origin[1], origin_z],
             &config.emitter,
         );
         let spawned = cpu.len() as u32;
@@ -566,7 +690,14 @@ impl Renderer {
                     | wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::COPY_SRC,
             });
-        let params = Self::gpu_particle_params(&config.emitter, 0.0);
+        let params = Self::gpu_particle_params(
+            &config.emitter,
+            0.0,
+            self.gpu_particle_wind,
+            self.gpu_particle_wind_z,
+            self.gpu_particle_wind_profile(),
+            self.gpu_particle_wind_sources,
+        );
         let params_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -605,6 +736,233 @@ impl Renderer {
             params_buffer,
             bind_group_key: self.next_gpu_particle_key(),
             state_bytes,
+            stream: None,
+        })
+    }
+
+    /// 创建一个**连续** GPU 粒子流：槽位由 CPU 按速率写入、GPU 负责积分，直到宿主动
+    /// [`Self::remove_gpu_particle_stream`]。
+    ///
+    /// `key` 由宿主分配（场景实体 id 即可），同一个 key 重复创建会被拒绝而不是悄悄替换；
+    /// 宿主换发射器参数时应先删再建。
+    ///
+    /// # Errors
+    ///
+    /// 无 compute、key 重复、`rate <= 0`、参数非有限、容量/槽位/绑定超限。
+    pub fn push_gpu_particle_stream(
+        &mut self,
+        key: u64,
+        config: GpuParticleStreamConfig,
+    ) -> Result<GpuParticleStatus, ComputeError> {
+        if !self.compute_enabled() {
+            return Err(self.compute_not_available());
+        }
+        if self.gpu_particles.len() >= MAX_GPU_PARTICLE_SYSTEMS {
+            return Err(ComputeError::InvalidConfig(format!(
+                "GPU 粒子池已满（{} 个系统，上限 {MAX_GPU_PARTICLE_SYSTEMS}）",
+                self.gpu_particles.len()
+            )));
+        }
+        if self.gpu_particles.iter().any(|system| {
+            system
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.key == key)
+        }) {
+            return Err(ComputeError::InvalidConfig(format!(
+                "GPU 粒子流 key={key} 已存在（先删再建）"
+            )));
+        }
+        let system = self.build_gpu_particle_stream(key, config)?;
+        let status = system.status(self.capabilities.backend_name());
+        self.gpu_particles.push(system);
+        Ok(status)
+    }
+
+    /// 移动一个已存在的连续流；返回 false 表示 key 不在池里（宿主应重建）。
+    pub fn set_gpu_particle_stream_origin(&mut self, key: u64, origin: [f32; 3]) -> bool {
+        if !origin.iter().all(|value| value.is_finite()) {
+            return false;
+        }
+        let Some(system) = self.gpu_particles.iter_mut().find(|system| {
+            system
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.key == key)
+        }) else {
+            return false;
+        };
+        let Some(stream) = system.stream.as_mut() else {
+            return false;
+        };
+        stream.origin = origin;
+        true
+    }
+
+    /// 删除一个连续流；返回 false 表示 key 本来就不在池里。
+    pub fn remove_gpu_particle_stream(&mut self, key: u64) -> bool {
+        let Some(index) = self.gpu_particles.iter().position(|system| {
+            system
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.key == key)
+        }) else {
+            return false;
+        };
+        let system = self.gpu_particles.remove(index);
+        self.compute_state.retire_bind_group(system.bind_group_key);
+        true
+    }
+
+    /// 当前池里的连续流 key（按入池顺序；测试/诊断用）。
+    #[must_use]
+    pub fn gpu_particle_stream_keys(&self) -> Vec<u64> {
+        self.gpu_particles
+            .iter()
+            .filter_map(|system| system.stream.as_ref().map(|stream| stream.key))
+            .collect()
+    }
+
+    /// 连续流个数。
+    #[must_use]
+    pub fn gpu_particle_stream_count(&self) -> usize {
+        self.gpu_particles
+            .iter()
+            .filter(|system| system.stream.is_some())
+            .count()
+    }
+
+    fn build_gpu_particle_stream(
+        &mut self,
+        key: u64,
+        config: GpuParticleStreamConfig,
+    ) -> Result<GpuParticleSystem, ComputeError> {
+        config
+            .emitter
+            .validate()
+            .map_err(|error| ComputeError::InvalidConfig(error.to_owned()))?;
+        if config.emitter.rate <= 0.0 || !config.emitter.rate.is_finite() {
+            return Err(ComputeError::InvalidConfig(
+                "连续流的 emitter.rate 必须是有限正数".to_owned(),
+            ));
+        }
+        if !config.origin.iter().all(|value| value.is_finite()) {
+            return Err(ComputeError::InvalidConfig(
+                "连续流的 origin 必须是有限数".to_owned(),
+            ));
+        }
+        if self.gpu_particle_draw_layout.is_none() {
+            return Err(ComputeError::Unsupported {
+                reason: "设备没有存储缓冲（max_storage_buffers_per_shader_stage=0）：\
+                         GPU 粒子 draw 布局未创建，走 CPU 粒子"
+                    .to_owned(),
+            });
+        }
+        let capacity = if config.capacity == 0 {
+            let estimate = (config.emitter.rate * config.emitter.life * 1.25).ceil();
+            if !estimate.is_finite() || estimate > MAX_GPU_PARTICLE_SLOTS as f32 {
+                return Err(ComputeError::InvalidConfig(format!(
+                    "rate×life={} 超过 GPU 粒子槽位上限 {MAX_GPU_PARTICLE_SLOTS}",
+                    estimate
+                )));
+            }
+            (estimate as u32).max(8)
+        } else {
+            config.capacity
+        };
+        let used = self.gpu_particle_slots_used();
+        let total = used.saturating_add(capacity);
+        if total > MAX_GPU_PARTICLE_SLOTS {
+            return Err(ComputeError::InvalidConfig(format!(
+                "GPU 粒子槽位预算不足：已用 {used} + 连续流 {capacity} = {total}，\
+                 超过上限 {MAX_GPU_PARTICLE_SLOTS}"
+            )));
+        }
+        if self.capabilities.max_compute_workgroup_size[0] < WORKGROUP_SIZE
+            || self.capabilities.max_compute_invocations_per_workgroup < WORKGROUP_SIZE
+        {
+            return Err(ComputeError::InvalidConfig(format!(
+                "设备 workgroup 上限 {}x/{} 调用不足以容纳 {WORKGROUP_SIZE} 线程",
+                self.capabilities.max_compute_workgroup_size[0],
+                self.capabilities.max_compute_invocations_per_workgroup
+            )));
+        }
+        let workgroups = capacity.div_ceil(WORKGROUP_SIZE);
+        if workgroups > self.capabilities.max_compute_workgroups_per_dimension {
+            return Err(ComputeError::InvalidConfig(format!(
+                "capacity={capacity} 需要 {workgroups} 个 workgroup，超过设备上限 {}",
+                self.capabilities.max_compute_workgroups_per_dimension
+            )));
+        }
+        let state_bytes = u64::from(capacity) * std::mem::size_of::<GpuParticleState>() as u64;
+        if state_bytes > self.capabilities.max_storage_buffer_binding_size {
+            return Err(ComputeError::BindingTooLarge {
+                binding: 0,
+                requested: state_bytes,
+                limit: self.capabilities.max_storage_buffer_binding_size,
+            });
+        }
+        let states = vec![GpuParticleState::zeroed(); capacity as usize];
+        let state_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-gpu-particles-stream-state"),
+                contents: bytemuck::cast_slice(&states),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            });
+        let params = Self::gpu_particle_params(
+            &config.emitter,
+            0.0,
+            self.gpu_particle_wind,
+            self.gpu_particle_wind_z,
+            self.gpu_particle_wind_profile(),
+            self.gpu_particle_wind_sources,
+        );
+        let params_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-gpu-particles-stream-params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let draw_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-gpu-particles-stream-draw"),
+            layout: self
+                .gpu_particle_draw_layout
+                .as_ref()
+                .expect("build_gpu_particle_stream 入口已拒绝无布局的设备"),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: state_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        Ok(GpuParticleSystem {
+            emitter: config.emitter,
+            capacity,
+            // 连续流的槽位是环形池；回读/诊断按整个容量看，不按"累计发射过多少"。
+            spawned: capacity,
+            steps: 0,
+            elapsed: 0.0,
+            state_buffer,
+            draw_bind_group,
+            params_buffer,
+            bind_group_key: self.next_gpu_particle_key(),
+            state_bytes,
+            stream: Some(GpuParticleStream {
+                key,
+                cursor: 0,
+                accumulator: 0.0,
+                origin: config.origin,
+                sampler: ParticleSystem::new(),
+            }),
         })
     }
 
@@ -619,15 +977,63 @@ impl Renderer {
 
     /// 推进池里**所有**系统一帧。`dt <= 0`/非有限值与 CPU `ParticleSystem::step` 一致：**不改状态**。
     ///
-    /// 每帧末尾回收寿命走完的系统（缓冲释放 + 绑定组缓存条目按 id 精确剔除）。回收判据是
+    /// 每帧末尾回收寿命走完的 burst 系统（缓冲释放 + 绑定组缓存条目按 id 精确剔除）。回收判据是
     /// `elapsed > emitter.life`，而 CPU 侧任何粒子的 `max_life` 都 ≤ `emitter.life`，因此
-    /// 这一步**不需要读回**——GPU 粒子的"什么时候全死了"由发射参数就能推出上界。
+    /// 这一步**不需要读回**——GPU 粒子的"什么时候全死了"由发射参数就能推出上界。连续流没有
+    /// 整批寿命，只在 dispatch 失败（`elapsed = INFINITY`）时回收，实体消失由宿主删流。
     ///
     /// # Errors
     ///
     /// 没配置（`NotConfigured`）、无 compute/被关闭（`Unsupported`）、dispatch 校验失败。
     /// 池里某个系统 dispatch 失败时：其余系统照常步进，出错的那个当场作废（不带着可能
     /// 半更新的缓冲继续画），错误作为返回值上报。
+    /// 连续流按 `rate × dt` 抽样新粒子并写进环形槽；dead 槽位不碰。
+    ///
+    /// 写缓冲只写新粒子那几十/几百字节，不做整池上传。抽样器在 `clear()` 后继续推进
+    /// LCG，所以连续发射不会每帧拿到同一组随机数。
+    fn spawn_stream_particles(&mut self, index: usize, delta_seconds: f32) {
+        let queue = self.queue.clone();
+        let Some(system) = self.gpu_particles.get_mut(index) else {
+            return;
+        };
+        let Some(stream) = system.stream.as_mut() else {
+            return;
+        };
+        stream.accumulator += system.emitter.rate * delta_seconds;
+        let wanted = stream.accumulator.floor();
+        if !wanted.is_finite() || wanted <= 0.0 {
+            return;
+        }
+        stream.accumulator -= wanted;
+        let capacity = system.capacity as usize;
+        let count = (wanted as usize).min(capacity);
+        if count == 0 {
+            return;
+        }
+        let mut emitter = system.emitter;
+        emitter.count = count;
+        // 连续发射要不断前进；固定 seed 只对单次 burst 有意义。
+        emitter.seed = None;
+        stream.sampler.clear();
+        stream.sampler.burst_with_3d(stream.origin, &emitter);
+        if stream.sampler.len() != count {
+            return;
+        }
+        let states: Vec<GpuParticleState> = stream
+            .sampler
+            .particles()
+            .iter()
+            .map(GpuParticleState::from_cpu)
+            .collect();
+        let state_size = std::mem::size_of::<GpuParticleState>() as u64;
+        for (offset, state) in states.iter().enumerate() {
+            let slot = (stream.cursor as usize + offset) % capacity;
+            let byte_offset = slot as u64 * state_size;
+            queue.write_buffer(&system.state_buffer, byte_offset, bytemuck::bytes_of(state));
+        }
+        stream.cursor = ((stream.cursor as usize + states.len()) % capacity) as u32;
+    }
+
     pub fn step_gpu_particles(
         &mut self,
         delta_seconds: f32,
@@ -643,8 +1049,18 @@ impl Renderer {
         }
         let mut failed = None;
         for index in 0..self.gpu_particles.len() {
+            if self.gpu_particles[index].stream.is_some() {
+                self.spawn_stream_particles(index, delta_seconds);
+            }
             let system = &self.gpu_particles[index];
-            let params = Self::gpu_particle_params(&system.emitter, delta_seconds);
+            let params = Self::gpu_particle_params(
+                &system.emitter,
+                delta_seconds,
+                self.gpu_particle_wind,
+                self.gpu_particle_wind_z,
+                self.gpu_particle_wind_profile(),
+                self.gpu_particle_wind_sources,
+            );
             self.queue
                 .write_buffer(&system.params_buffer, 0, bytemuck::bytes_of(&params));
             let workgroups = system.capacity.div_ceil(WORKGROUP_SIZE);
@@ -769,7 +1185,9 @@ impl Renderer {
             let state = bytemuck::pod_read_unaligned::<GpuParticleState>(chunk);
             snapshots.push(GpuParticleSnapshot {
                 position: state.position,
+                position_z: state.position_z,
                 velocity: state.velocity,
+                velocity_z: state.velocity_z,
                 life: state.life,
                 max_life: state.max_life,
                 size_start: state.size_start,
@@ -809,14 +1227,120 @@ impl Renderer {
         self.gpu_particles.len()
     }
 
-    fn gpu_particle_params(emitter: &ParticleEmitter, dt: f32) -> GpuParticleParams {
+    /// 设置 GPU burst 共用的全局风加速度；非有限值忽略（保持上一份合法风）。
+    pub fn set_gpu_particle_wind(&mut self, wind: [f32; 2]) {
+        if wind[0].is_finite() && wind[1].is_finite() {
+            self.gpu_particle_wind = wind;
+        }
+    }
+
+    /// 设置三维全局风；Z 分量只影响 `position_z` 的积分，与 CPU 池同口径。
+    pub fn set_gpu_particle_wind_3d(&mut self, wind: [f32; 3]) {
+        if wind[0].is_finite() && wind[1].is_finite() && wind[2].is_finite() {
+            self.gpu_particle_wind = [wind[0], wind[1]];
+            self.gpu_particle_wind_z = wind[2];
+        }
+    }
+
+    #[must_use]
+    pub const fn gpu_particle_wind(&self) -> [f32; 2] {
+        self.gpu_particle_wind
+    }
+
+    /// 设置风场 `(shear, gust, gust_hz)`；非有限/越界拒绝并保持旧值。
+    ///
+    /// 范围与 CPU `ParticleSystem::set_wind_profile` 一致：shear `-1..=1`、
+    /// gust `0..=4`、gust_hz `0..=20`。返回是否写入。
+    pub fn set_gpu_particle_wind_profile(&mut self, profile: [f32; 3]) -> bool {
+        let [shear, gust, gust_hz] = profile;
+        if !shear.is_finite()
+            || !gust.is_finite()
+            || !gust_hz.is_finite()
+            || !(-1.0..=1.0).contains(&shear)
+            || !(0.0..=4.0).contains(&gust)
+            || !(0.0..=20.0).contains(&gust_hz)
+        {
+            return false;
+        }
+        self.gpu_particle_wind_shear = shear;
+        self.gpu_particle_wind_gust = gust;
+        self.gpu_particle_wind_gust_hz = gust_hz;
+        true
+    }
+
+    /// 当前风场 `(shear, gust, gust_hz)`。
+    #[must_use]
+    pub const fn gpu_particle_wind_profile(&self) -> [f32; 3] {
+        [
+            self.gpu_particle_wind_shear,
+            self.gpu_particle_wind_gust,
+            self.gpu_particle_wind_gust_hz,
+        ]
+    }
+
+    /// 设置 4 个局部风源 `[x, y(height), z, radius, radial, lift]`；任一非法则整批拒绝。
+    pub fn set_gpu_particle_wind_sources(&mut self, sources: [[f32; 6]; 4]) -> bool {
+        let valid = sources.iter().all(|source| {
+            source.iter().all(|value| value.is_finite())
+                && (0.0..=512.0).contains(&source[3])
+                && (-64.0..=64.0).contains(&source[4])
+                && (-64.0..=64.0).contains(&source[5])
+        });
+        if !valid {
+            return false;
+        }
+        self.gpu_particle_wind_sources = sources;
+        true
+    }
+
+    /// 当前局部风源。
+    #[must_use]
+    pub const fn gpu_particle_wind_sources(&self) -> [[f32; 6]; 4] {
+        self.gpu_particle_wind_sources
+    }
+
+    #[must_use]
+    pub const fn gpu_particle_wind_3d(&self) -> [f32; 3] {
+        [
+            self.gpu_particle_wind[0],
+            self.gpu_particle_wind[1],
+            self.gpu_particle_wind_z,
+        ]
+    }
+
+    fn gpu_particle_params(
+        emitter: &ParticleEmitter,
+        dt: f32,
+        wind: [f32; 2],
+        wind_z: f32,
+        profile: [f32; 3],
+        sources: [[f32; 6]; 4],
+    ) -> GpuParticleParams {
+        let mut source_a = [[0.0f32; 4]; 4];
+        let mut source_b = [[0.0f32; 4]; 4];
+        for (index, source) in sources.iter().enumerate() {
+            source_a[index] = [source[0], source[1], source[2], source[3]];
+            source_b[index] = [
+                source[4],
+                source[5],
+                if source[3] > 0.0 { 1.0 } else { 0.0 },
+                0.0,
+            ];
+        }
         GpuParticleParams {
             dt,
             drag: emitter.drag,
             rotation_speed: emitter.rotation_speed,
-            _padding: 0.0,
+            wind_x: wind[0],
             gravity: [emitter.gravity.x, emitter.gravity.y],
-            _padding2: [0.0; 2],
+            wind_y: wind[1],
+            wind_z,
+            wind_shear: profile[0],
+            wind_gust: profile[1],
+            wind_gust_hz: profile[2],
+            _pad: 0.0,
+            source_a,
+            source_b,
             color_start: emitter.color_start,
             color_end: emitter.color_end,
         }
@@ -966,7 +1490,32 @@ mod tests {
     #[test]
     fn gpu_layouts_match_wgsl_sizes() {
         assert_eq!(std::mem::size_of::<GpuParticleState>(), 48);
-        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 64);
+        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 208);
+    }
+
+    #[test]
+    fn gpu_wind_is_packed_into_the_existing_uniform() {
+        let emitter = ParticleEmitter::new(4, 10.0, 1.0, [1.0; 4]);
+        let sources = [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [0.0; 6], [0.0; 6], [0.0; 6]];
+        let params = Renderer::gpu_particle_params(
+            &emitter,
+            0.5,
+            [2.5, -3.5],
+            4.5,
+            [0.2, 0.3, 0.4],
+            sources,
+        );
+        assert_eq!(params.dt, 0.5);
+        assert_eq!(params.wind_x, 2.5);
+        assert_eq!(params.wind_y, -3.5);
+        assert_eq!(params.wind_z, 4.5);
+        assert_eq!(params.wind_shear, 0.2);
+        assert_eq!(params.wind_gust, 0.3);
+        assert_eq!(params.wind_gust_hz, 0.4);
+        assert_eq!(params.source_a[0], [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(params.source_b[0], [5.0, 6.0, 1.0, 0.0]);
+        assert_eq!(params.source_b[1][2], 0.0, "radius=0 is inactive");
+        assert_eq!(params.gravity, [0.0, 0.0]);
     }
 
     /// compute 段与 draw 段必须**逐字节共享同一段声明**：它们绑的是同一块状态缓冲，

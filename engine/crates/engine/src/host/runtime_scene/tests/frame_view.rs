@@ -236,6 +236,7 @@ fn scene_3d_with_camera_override_keeps_scene_data_intact() {
         far: 200.0,
         pose_from_transform: false,
         enabled: true,
+        clip_plane: [0.0; 4],
     };
     let overridden = runtime
         .scene_3d_with_camera(Viewport::new(4.0, 3.0).unwrap(), Some(override_camera))

@@ -4,10 +4,14 @@
 //! 这里的开关成对出现（`set_*` + 读取器）。`sprite_parallelism` 的读取器按行段正好落在两条
 //! collider 调试方法之间，因此单独成段带走——与 `set_sprite_parallelism` 同模块，配对不用跨文件找。
 
+use std::collections::HashSet;
+
 use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::SpatialReport;
-use rustlua_ecs::particle::{ParticleCpuReason, ParticlePlacement, SceneParticleEmitter};
+use rustlua_ecs::particle::{
+    ParticleCpuReason, ParticleEmitter, ParticlePlacement, SceneParticleEmitter,
+};
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::{Transform, Vec2};
 use rustlua_ecs::world::World;
@@ -242,7 +246,12 @@ impl RuntimeScene {
     /// 的那份矩阵与深度附件，本函数的值只作为纯 2D 画面的回退。
     #[must_use]
     pub fn sprite_view_projection(&self, width: u32, height: u32) -> Option<Mat4> {
-        if !self.world_sprite_depth {
+        // 3D CPU 粒子即使宿主没打开世界深度开关，也需要一条世界投影来保留 z
+        // （见 `frame_data` 的 `particles_world` 隐式通道）。
+        let particles_world = self.script.with_particles(|particles| {
+            particles.iter().any(|particle| particle.position_z != 0.0)
+        });
+        if !self.world_sprite_depth && !particles_world {
             return None;
         }
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32).ok()?;
@@ -276,13 +285,29 @@ impl RuntimeScene {
     /// 返回本步发出的粒子数（诊断/验收用）。发射本身复用 Lua `particles.burst` 的同一实现。
     ///
     /// P3-R07-1：这一步同时判定每个发射器的**落点**（[`rustlua_ecs::particle::ParticleEmitter::placement`]）。
-    /// GPU 派发要到 R07-2 才接线，因此**今天所有粒子照旧在 CPU 池里生成**——回退不丢粒子、
-    /// 不黑屏；落点分布记在 [`RuntimeScene::last_particle_placement`]，每种回退原因喊一层日志。
+    /// 落点判定为 GPU 的 burst 进脚本队列、`rate > 0` 进连续流请求；渲染器不支持或拒绝时
+    /// **用同一份参数回 CPU**——不丢粒子、不黑屏。落点分布记在
+    /// [`RuntimeScene::last_particle_placement`]，每种回退原因喊一层日志。
     pub fn step_scene_emitters(&mut self, delta_seconds: f32) -> usize {
+        // 宿主没接派发口时，上一帧的连续流请求不能静静地被覆盖掉——倒回 CPU，
+        // 与 script burst 的 `requeue_stale_gpu_bursts` 同一条保底纪律。
+        if self.scene_streams_ready {
+            for (_, position, emitter) in std::mem::take(&mut self.scene_stream_requests) {
+                if position[2] == 0.0 {
+                    self.script
+                        .push_particles_cpu(Vec2::new(position[0], position[1]), &emitter);
+                } else {
+                    self.script.push_particles_cpu_3d(position, &emitter);
+                }
+            }
+            self.scene_streams_ready = false;
+        }
         let compute_available = self.particle_compute_available;
-        let (pending, placement) = self.script.with_world_mut(|world| {
+        let streams_available = self.particle_streams_available;
+        let (pending, stream_requests, placement_report) = self.script.with_world_mut(|world| {
             let mut pending = Vec::new();
-            let mut placement = ParticlePlacementReport::default();
+            let mut stream_requests = Vec::new();
+            let mut placement_report = ParticlePlacementReport::default();
             for id in world.entities_with::<SceneParticleEmitter>() {
                 let Some(mut scene) = world
                     .get::<SceneParticleEmitter>(id)
@@ -293,30 +318,59 @@ impl RuntimeScene {
                     continue;
                 };
                 // 没有变换的发射器没有位置可发，跳过（与"世界变换缺席"的消费端约定一致）。
-                let Some(position) = rustlua_ecs::hierarchy::world_transform_2d(world, id)
+                // 3D 变换优先：有 `Transform3D` 的实体按世界 z 发射；纯 2D 实体回退到
+                // `Transform` 且 z=0，既有场景行为逐位不变。
+                let position = rustlua_ecs::hierarchy::world_transform_3d(world, id)
                     .ok()
                     .flatten()
-                    .map(|transform| transform.position)
-                else {
+                    .map(|transform| {
+                        [
+                            transform.position.x,
+                            transform.position.y,
+                            transform.position.z,
+                        ]
+                    })
+                    .or_else(|| {
+                        rustlua_ecs::hierarchy::world_transform_2d(world, id)
+                            .ok()
+                            .flatten()
+                            .map(|transform| [transform.position.x, transform.position.y, 0.0])
+                    });
+                let Some(position) = position else {
                     continue;
                 };
                 let count = scene.take_steps(delta_seconds);
                 // 累计器必须写回：否则每步都从 0 开始，低速率发射器永远发不出粒子。
                 let _ = world.insert(id, scene);
+                let mut emitter = scene.emitter;
+                emitter.count = count;
+                let placement =
+                    emitter.placement_with_streams(compute_available, streams_available);
+                placement_report.record(placement);
+                if placement == ParticlePlacement::Gpu && emitter.rate > 0.0 {
+                    // 连续流交给渲染器按 rate 自己抽样；即使本步 `count == 0` 也要登记，
+                    // 否则低速率发射器会在"这一帧没攒够一颗"时被误删流。
+                    stream_requests.push((id, position, emitter));
+                    continue;
+                }
                 if count == 0 {
                     continue;
                 }
-                let mut emitter = scene.emitter;
-                emitter.count = count;
-                placement.record(emitter.placement(compute_available));
                 pending.push((position, emitter));
             }
-            (pending, placement)
+            (pending, stream_requests, placement_report)
         });
-        self.note_particle_placement(placement);
+        self.scene_stream_requests = stream_requests;
+        self.scene_streams_ready = true;
+        self.note_particle_placement(placement_report);
         let emitted = pending.len();
         for (position, emitter) in pending {
-            self.script.burst_particles(position, &emitter);
+            if position[2] == 0.0 {
+                self.script
+                    .burst_particles(Vec2::new(position[0], position[1]), &emitter);
+            } else {
+                self.script.burst_particles_3d(position, &emitter);
+            }
         }
         emitted
     }
@@ -373,6 +427,167 @@ impl RuntimeScene {
     /// P3-R07-2：把脚本侧 `mode=gpu` 的爆发交给渲染器的 GPU 粒子池，并步进这个池。
     ///
     /// 调用点是宿主的每帧循环：`run_script_steps` **之后**、渲染**之前**——compute 必须在
+    /// 把本步场景里的连续流请求同步给渲染器：新建 / 移动 / 删除。
+    ///
+    /// 返回 `(失败条数, 退回 CPU 的发射参数)`。失败的那一帧用同一份参数走 CPU，
+    /// 下一帧继续重试——不丢粒子，也不把"渲染器暂不支持"说成"已经走 GPU"。
+    fn sync_gpu_scene_streams(
+        &mut self,
+        renderer: &mut impl ParticleRenderer,
+    ) -> (usize, Vec<([f32; 3], ParticleEmitter)>) {
+        if !self.scene_streams_ready {
+            return (0, Vec::new());
+        }
+        self.scene_streams_ready = false;
+        let requests = std::mem::take(&mut self.scene_stream_requests);
+        let mut seen = HashSet::new();
+        let mut failed = 0usize;
+        let mut fallbacks = Vec::new();
+        for (entity, position, emitter) in requests {
+            let key = entity.to_lua_i64() as u64;
+            seen.insert(key);
+            let mut ready = self
+                .gpu_scene_streams
+                .get(&entity)
+                .is_some_and(|stream_key| renderer.update_particle_stream(*stream_key, position));
+            if !ready {
+                if let Some(old) = self.gpu_scene_streams.remove(&entity) {
+                    renderer.remove_particle_stream(old);
+                }
+                // 渲染器可能留着上一轮的孤儿 key（宿主丢过状态）；先删一次再建。
+                let _ = renderer.remove_particle_stream(key);
+                match renderer.create_particle_stream(key, position, emitter, 0) {
+                    Ok(()) => {
+                        self.gpu_scene_streams.insert(entity, key);
+                        ready = true;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "particles",
+                            error = %error,
+                            entity = ?entity,
+                            "[particles] 连续流创建失败：本帧回 CPU，下一帧重试"
+                        );
+                        failed += 1;
+                    }
+                }
+            }
+            if !ready {
+                fallbacks.push((position, emitter));
+            }
+        }
+        let stale: Vec<EntityId> = self
+            .gpu_scene_streams
+            .keys()
+            .copied()
+            .filter(|entity| !seen.contains(&(entity.to_lua_i64() as u64)))
+            .collect();
+        for entity in stale {
+            if let Some(key) = self.gpu_scene_streams.remove(&entity) {
+                renderer.remove_particle_stream(key);
+            }
+        }
+        (failed, fallbacks)
+    }
+
+    /// Syncs Lua `particles.stream3d` declarations to renderer streams.
+    ///
+    /// Returns `(active, fallbacks)`: `active` is the number of Lua streams the
+    /// renderer accepted; `fallbacks` is the number that had to be emitted on the
+    /// CPU this frame because the backend has no stream support or rejected the
+    /// stream. The fallback is approximate (`rate * dt` rounded) by design: a
+    /// backend without continuous streams should still show something rather
+    /// than silently dropping the effect.
+    fn sync_lua_streams(
+        &mut self,
+        renderer: &mut impl ParticleRenderer,
+        delta_seconds: f32,
+    ) -> (usize, usize) {
+        let streams = self.script.particle_streams();
+        let mut seen = HashSet::new();
+        let mut fallbacks = 0usize;
+        if !self.particle_streams_available {
+            for stream in streams {
+                if let Some((key, _)) = self.gpu_lua_streams.remove(&stream.key) {
+                    renderer.remove_particle_stream(key);
+                }
+                let count = (stream.emitter.rate * delta_seconds).round() as usize;
+                if count > 0 {
+                    let mut emitter = stream.emitter;
+                    emitter.count = count;
+                    self.script.push_particles_cpu_3d(stream.position, &emitter);
+                    fallbacks += 1;
+                }
+            }
+            return (0, fallbacks);
+        }
+        for stream in streams {
+            seen.insert(stream.key.clone());
+            let capacity = (stream.emitter.rate * stream.emitter.life * 1.25)
+                .ceil()
+                .clamp(8.0, 65_536.0) as u32;
+            let existing = self.gpu_lua_streams.get(&stream.key).copied();
+            let mut ready = match existing {
+                Some((key, emitter)) if emitter == stream.emitter => {
+                    renderer.update_particle_stream(key, stream.position)
+                }
+                Some((key, _)) => {
+                    renderer.remove_particle_stream(key);
+                    false
+                }
+                None => false,
+            };
+            if !ready {
+                if let Some((old, _)) = self.gpu_lua_streams.remove(&stream.key) {
+                    renderer.remove_particle_stream(old);
+                }
+                let key = self.next_lua_stream_key;
+                self.next_lua_stream_key = self.next_lua_stream_key.saturating_add(1);
+                match renderer.create_particle_stream(
+                    key,
+                    stream.position,
+                    stream.emitter,
+                    capacity,
+                ) {
+                    Ok(()) => {
+                        self.gpu_lua_streams
+                            .insert(stream.key, (key, stream.emitter));
+                        ready = true;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            key = %stream.key,
+                            %error,
+                            "Lua particle stream rejected; falling back to CPU"
+                        );
+                    }
+                }
+            }
+            if !ready {
+                let count = (stream.emitter.rate * delta_seconds).round() as usize;
+                if count > 0 {
+                    let mut emitter = stream.emitter;
+                    emitter.count = count;
+                    self.script.push_particles_cpu_3d(stream.position, &emitter);
+                    fallbacks += 1;
+                }
+            }
+        }
+        let stale: Vec<String> = self
+            .gpu_lua_streams
+            .keys()
+            .filter(|key| !seen.contains(*key))
+            .cloned()
+            .collect();
+        for key in stale {
+            if let Some((renderer_key, _)) = self.gpu_lua_streams.remove(&key) {
+                renderer.remove_particle_stream(renderer_key);
+            }
+        }
+        (self.gpu_lua_streams.len(), fallbacks)
+    }
+
     /// 本帧图形 pass 之前提交（见 `dispatch_compute` 的提交点约定）。
     ///
     /// 三条保证，各有单测钉住：
@@ -392,6 +607,14 @@ impl RuntimeScene {
         // 能力位每帧刷新（`set_particle_compute_available` 是宿主启动时的一次性下推；
         // 设备重建/后端切换后只有这里能把它拉回来）。
         self.particle_compute_available = compute_available;
+        self.particle_streams_available = renderer.supports_particle_streams();
+        // 风是跨后端的同一份状态：每帧把脚本层 CPU 池的风同步给 GPU 后端。
+        let wind = self.script.particle_wind_3d();
+        renderer.set_particle_wind_3d([wind.0, wind.1, wind.2]);
+        let profile = self.script.particle_wind_profile();
+        renderer.set_particle_wind_profile([profile.0, profile.1, profile.2]);
+        let sources = self.script.particle_wind_sources();
+        renderer.set_particle_wind_sources(sources);
         let bursts = self.script.take_gpu_bursts();
         let mut report = ParticleDispatchReport {
             requested: bursts.len(),
@@ -400,6 +623,32 @@ impl RuntimeScene {
             ..ParticleDispatchReport::default()
         };
         let mut fallback_bits = 0u32;
+        let (stream_failed, stream_fallbacks) = self.sync_gpu_scene_streams(renderer);
+        if stream_failed > 0 {
+            report.fallback += stream_failed;
+            report
+                .fallback_reason
+                .get_or_insert(ParticleCpuReason::DispatchRejected);
+            fallback_bits |= 1 << ParticleCpuReason::DispatchRejected.index();
+        }
+        let (lua_streams, lua_fallbacks) = self.sync_lua_streams(renderer, delta_seconds);
+        report.lua_streams = lua_streams;
+        if lua_fallbacks > 0 {
+            report.fallback += lua_fallbacks;
+            report
+                .fallback_reason
+                .get_or_insert(ParticleCpuReason::DispatchRejected);
+            fallback_bits |= 1 << ParticleCpuReason::DispatchRejected.index();
+        }
+        report.streams = self.gpu_scene_streams.len();
+        for (position, emitter) in stream_fallbacks {
+            if position[2] == 0.0 {
+                self.script
+                    .push_particles_cpu(Vec2::new(position[0], position[1]), &emitter);
+            } else {
+                self.script.push_particles_cpu_3d(position, &emitter);
+            }
+        }
         let mut note_fallback = |report: &mut ParticleDispatchReport, reason: ParticleCpuReason| {
             report.fallback += 1;
             report.fallback_reason.get_or_insert(reason);
@@ -409,13 +658,22 @@ impl RuntimeScene {
             match emitter.placement(compute_available) {
                 ParticlePlacement::Cpu(reason) => {
                     note_fallback(&mut report, reason);
-                    self.script.push_particles_cpu(position, &emitter);
+                    if position[2] == 0.0 {
+                        self.script
+                            .push_particles_cpu(Vec2::new(position[0], position[1]), &emitter);
+                    } else {
+                        self.script.push_particles_cpu_3d(position, &emitter);
+                    }
                 }
                 ParticlePlacement::Gpu => {
                     // 超过 u32 的 count 会饱和成 `u32::MAX`，由渲染器的容量校验整批拒绝。
                     let capacity = u32::try_from(emitter.count).unwrap_or(u32::MAX);
-                    match renderer.push_particle_burst([position.x, position.y], emitter, capacity)
-                    {
+                    let dispatched = if position[2] == 0.0 {
+                        renderer.push_particle_burst([position[0], position[1]], emitter, capacity)
+                    } else {
+                        renderer.push_particle_burst_3d(position, emitter, capacity)
+                    };
+                    match dispatched {
                         Ok(()) => report.gpu += 1,
                         Err(error) => {
                             tracing::warn!(
@@ -425,7 +683,14 @@ impl RuntimeScene {
                                 "[particles] GPU burst 派发被拒：整批退回 CPU 池"
                             );
                             note_fallback(&mut report, ParticleCpuReason::DispatchRejected);
-                            self.script.push_particles_cpu(position, &emitter);
+                            if position[2] == 0.0 {
+                                self.script.push_particles_cpu(
+                                    Vec2::new(position[0], position[1]),
+                                    &emitter,
+                                );
+                            } else {
+                                self.script.push_particles_cpu_3d(position, &emitter);
+                            }
                         }
                     }
                 }
