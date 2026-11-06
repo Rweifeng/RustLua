@@ -39,7 +39,7 @@ impl ToggleMode {
 
 /// 工程/场景级渲染开关。字段只描述**用户意图**，设备能力由 [`crate::render_settings`] 的
 /// 使用方（渲染器能力快照）单独判断，两者不能混成一个布尔值。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderSettings {
     /// HDR 场景颜色 + Tonemap。默认关闭（保持今天的输出）。
     pub hdr: ToggleMode,
@@ -49,6 +49,37 @@ pub struct RenderSettings {
     pub ibl: ToggleMode,
     /// shader 变体缓存（P3-R04）。默认关闭。
     pub variants: bool,
+    /// HDR Tonemap 前的泛光。默认关闭；只有 HDR 帧会消费。
+    pub bloom: bool,
+    /// 方向光阴影的 3×3 PCF 软化。默认关闭（旧像素不变）；声明 `Environment`
+    /// 的场景由宿主打开。
+    pub soft_shadows: bool,
+    /// Tonemap 后的 5 采样边缘平滑（FXAA-lite）。默认关闭；只作用于 3D，不影响 UI。
+    pub fxaa: bool,
+    /// 基于深度的屏幕空间环境遮蔽（SSAO-lite）。默认关闭；只在 HDR Tonemap 路径生效。
+    pub ssao: bool,
+    /// 基于深度+颜色的屏幕空间反射（SSR-lite）。默认关闭；只在 HDR Tonemap 路径生效。
+    pub ssr: bool,
+    /// 屏幕空间接触阴影（contact shadows）。默认关闭；只在 HDR Tonemap 路径生效。
+    pub contact_shadows: bool,
+    /// 方向光 ESM filtered shadow（2048² × 4 全分辨率）。默认关闭。
+    pub filtered_shadows: bool,
+    /// 距离雾/空气透视（Tonemap 深度重建）；默认关闭。
+    pub fog: bool,
+    /// 雾密度（世界单位）；只在 `fog` 打开时使用。
+    pub fog_density: f32,
+    /// 屏幕空间体积光/神光（从太阳位置向屏幕内累积亮部）。
+    pub god_rays: bool,
+    /// 屏幕空间景深（Tonemap 深度重建 + 8 抽头）。
+    pub dof: bool,
+    /// 景深对焦距离（世界单位）。
+    pub dof_focus: f32,
+    /// 景深过渡范围（世界单位）。
+    pub dof_range: f32,
+    /// 景深最大模糊强度 0..1。
+    pub dof_strength: f32,
+    /// 前八盏（最多 8 盏）点光源的立方体阴影。默认关闭；每帧最多 48 个 1024² 深度面。
+    pub point_shadows: bool,
 }
 
 impl Default for RenderSettings {
@@ -58,6 +89,21 @@ impl Default for RenderSettings {
             pbr: false,
             ibl: ToggleMode::Off,
             variants: false,
+            bloom: false,
+            soft_shadows: false,
+            fxaa: false,
+            ssao: false,
+            ssr: false,
+            contact_shadows: false,
+            filtered_shadows: false,
+            fog: false,
+            fog_density: 0.0015,
+            god_rays: false,
+            dof: false,
+            dof_focus: 20.0,
+            dof_range: 30.0,
+            dof_strength: 1.0,
+            point_shadows: false,
         }
     }
 }
@@ -69,6 +115,21 @@ impl RenderSettings {
         pbr: false,
         ibl: ToggleMode::Off,
         variants: false,
+        bloom: false,
+        soft_shadows: false,
+        fxaa: false,
+        ssao: false,
+        ssr: false,
+        contact_shadows: false,
+        filtered_shadows: false,
+        fog: false,
+        fog_density: 0.0015,
+        god_rays: false,
+        dof: false,
+        dof_focus: 20.0,
+        dof_range: 30.0,
+        dof_strength: 1.0,
+        point_shadows: false,
     };
 
     /// 只改 HDR 开关的构造器（golden/测试最常用）。
@@ -83,6 +144,110 @@ impl RenderSettings {
     #[must_use]
     pub const fn with_pbr(mut self, pbr: bool) -> Self {
         self.pbr = pbr;
+        self
+    }
+
+    /// HDR 泛光开关（只有 HDR 帧会消费；LDR 保持关闭）。
+    #[must_use]
+    pub const fn with_bloom(mut self, bloom: bool) -> Self {
+        self.bloom = bloom;
+        self
+    }
+
+    /// 方向光 3×3 PCF 软阴影开关；只有 PBR/Legacy 的方向光阴影消费。
+    #[must_use]
+    pub const fn with_soft_shadows(mut self, soft_shadows: bool) -> Self {
+        self.soft_shadows = soft_shadows;
+        self
+    }
+
+    /// Tonemap 阶段 5 采样边缘平滑（FXAA-lite）；只作用于 3D 颜色。
+    #[must_use]
+    pub const fn with_fxaa(mut self, fxaa: bool) -> Self {
+        self.fxaa = fxaa;
+        self
+    }
+
+    /// 基于深度的屏幕空间环境遮蔽（SSAO-lite）；只在 HDR Tonemap 路径生效。
+    #[must_use]
+    pub const fn with_ssao(mut self, ssao: bool) -> Self {
+        self.ssao = ssao;
+        self
+    }
+
+    /// 屏幕空间反射（SSR-lite）；只在 HDR Tonemap 路径生效。
+    #[must_use]
+    pub const fn with_ssr(mut self, ssr: bool) -> Self {
+        self.ssr = ssr;
+        self
+    }
+
+    /// 屏幕空间接触阴影（contact shadows）；只在 HDR Tonemap 路径生效。
+    #[must_use]
+    pub const fn with_contact_shadows(mut self, contact_shadows: bool) -> Self {
+        self.contact_shadows = contact_shadows;
+        self
+    }
+
+    /// 方向光 ESM filtered shadow；打开后方向光走 2048² × 4 的指数阴影图。
+    #[must_use]
+    pub const fn with_filtered_shadows(mut self, filtered_shadows: bool) -> Self {
+        self.filtered_shadows = filtered_shadows;
+        self
+    }
+
+    /// 距离雾/空气透视；只在 HDR Tonemap 路径生效。
+    #[must_use]
+    pub const fn with_fog(mut self, fog: bool) -> Self {
+        self.fog = fog;
+        self
+    }
+
+    /// 雾密度（世界单位）；非有限或负数会被读取端夹到 0。
+    #[must_use]
+    pub const fn with_fog_density(mut self, fog_density: f32) -> Self {
+        self.fog_density = fog_density;
+        self
+    }
+
+    /// 屏幕空间体积光/神光。
+    #[must_use]
+    pub const fn with_god_rays(mut self, god_rays: bool) -> Self {
+        self.god_rays = god_rays;
+        self
+    }
+
+    /// 屏幕空间景深。
+    #[must_use]
+    pub const fn with_dof(mut self, dof: bool) -> Self {
+        self.dof = dof;
+        self
+    }
+
+    /// 景深对焦距离（世界单位）。
+    #[must_use]
+    pub const fn with_dof_focus(mut self, dof_focus: f32) -> Self {
+        self.dof_focus = dof_focus;
+        self
+    }
+
+    /// 景深过渡范围（世界单位）。
+    #[must_use]
+    pub const fn with_dof_range(mut self, dof_range: f32) -> Self {
+        self.dof_range = dof_range;
+        self
+    }
+
+    /// 景深最大模糊强度。
+    #[must_use]
+    pub const fn with_dof_strength(mut self, dof_strength: f32) -> Self {
+        self.dof_strength = dof_strength;
+        self
+    }
+
+    /// 打开前八盏（最多 8 盏）点光源的立方体阴影（默认关，旧像素不变）。
+    pub const fn with_point_shadows(mut self, point_shadows: bool) -> Self {
+        self.point_shadows = point_shadows;
         self
     }
 
@@ -359,6 +524,52 @@ mod tests {
         assert!(!settings.pbr);
         assert_eq!(settings.ibl, ToggleMode::Off);
         assert!(!settings.variants);
+        assert!(!settings.bloom);
+        assert!(!settings.soft_shadows);
+        assert!(!settings.fxaa);
+        assert!(RenderSettings::default().with_bloom(true).bloom);
+        assert!(
+            RenderSettings::default()
+                .with_soft_shadows(true)
+                .soft_shadows
+        );
+        assert!(RenderSettings::default().with_fxaa(true).fxaa);
+        assert!(!settings.ssao);
+        assert!(RenderSettings::default().with_ssao(true).ssao);
+        assert!(!settings.ssr);
+        assert!(RenderSettings::default().with_ssr(true).ssr);
+        assert!(!settings.contact_shadows);
+        assert!(
+            RenderSettings::default()
+                .with_contact_shadows(true)
+                .contact_shadows
+        );
+        assert!(!settings.filtered_shadows);
+        assert!(
+            RenderSettings::default()
+                .with_filtered_shadows(true)
+                .filtered_shadows
+        );
+        assert!(!settings.fog);
+        assert_eq!(settings.fog_density, 0.0015);
+        assert!(
+            RenderSettings::default()
+                .with_fog(true)
+                .with_fog_density(0.02)
+                .fog
+        );
+        assert!(!settings.god_rays);
+        assert!(RenderSettings::default().with_god_rays(true).god_rays);
+        assert!(!settings.dof);
+        assert!(RenderSettings::default().with_dof(true).dof);
+        assert_eq!(settings.dof_focus, 20.0);
+        assert_eq!(settings.dof_range, 30.0);
+        assert!(!RenderSettings::default().point_shadows);
+        assert!(
+            RenderSettings::default()
+                .with_point_shadows(true)
+                .point_shadows
+        );
     }
 
     #[test]

@@ -26,9 +26,9 @@ use super::world_sprite::SpritePassFilter;
 use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};
 use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
 use super::{
-    DepthPass, RenderFrameMetrics, RenderOutcome, Renderer, apply_declared_viewport,
-    count_layer_draws, hash_bytes, record_dropped_draw, record_indexed_draw, record_set_pass,
-    record_triangle_draw, record_vertex_draw,
+    DepthPass, POINT_SHADOW_LIGHTS, RenderFrameMetrics, RenderOutcome, Renderer,
+    apply_declared_viewport, count_layer_draws, hash_bytes, record_dropped_draw,
+    record_indexed_draw, record_set_pass, record_triangle_draw, record_vertex_draw,
 };
 
 impl Renderer {
@@ -91,22 +91,93 @@ impl Renderer {
 
     /// P3-R01：把 HDR 场景颜色（线性、可 >1）经曝光与曲线写进 LDR 目标。
     ///
-    /// 与后处理共用绑定布局（HDR 纹理 + 线性过滤采样器 + uniform），但参数只有 4 个 f32。
+    /// Tonemap 专用布局：HDR 颜色 + 采样器 + 参数 + 深度 + 逆视图投影（SSAO）。
     /// 输出附件用 Clear 起步：全屏三角形覆盖整个目标，结果与"上一帧残留"无关。
+    // 效果开关逐个传参：打包成结构体反而让调用点看不出这一帧到底开了哪些 pass。
+    #[allow(clippy::too_many_arguments)]
     fn draw_tonemap(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::TextureView,
         target: &wgpu::TextureView,
         settings: PostProcess,
+        fxaa: bool,
+        ssao: bool,
+        ssr: bool,
+        contact_shadows: bool,
+        fog: bool,
+        fog_density: f32,
+        god_rays: bool,
+        dof: bool,
+        dof_focus: f32,
+        dof_range: f32,
+        dof_strength: f32,
+        scene: Option<&Scene3d>,
         target_size: (u32, u32),
     ) -> u64 {
-        let params = [settings.exposure_ev, settings.tonemap.code(), 0.0, 0.0];
+        // 240B：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 指向光的方向 + 雾 + 景深 + 天空。
+        // SSR/contact shadows/fog/天空用后几者把深度重建到世界空间；没有相机时保持全零，
+        // shader 直接跳过。
+        let mut params = [0.0_f32; 60];
+        params[0] = settings.exposure_ev;
+        params[1] = settings.tonemap.code();
+        params[2] = settings.bloom;
+        params[3] = if fxaa { 1.0 } else { 0.0 };
+        params[4] = if ssao { 1.0 } else { 0.0 };
+        params[5] = if ssr { 1.0 } else { 0.0 };
+        params[6] = if contact_shadows { 1.0 } else { 0.0 };
+        params[7] = if god_rays { 1.0 } else { 0.0 };
+        if let Some(scene) = scene
+            && let Ok(view_projection) = scene.camera.view_projection_matrix(scene.view.viewport)
+        {
+            params[8..24].copy_from_slice(&view_projection.columns.concat());
+            if let Ok(inverse) = view_projection.inverse() {
+                params[24..40].copy_from_slice(&inverse.columns.concat());
+            }
+            params[40] = scene.camera.position.x;
+            params[41] = scene.camera.position.y;
+            params[42] = scene.camera.position.z;
+            // PBR 用 `l = -light.direction`，这里存“指向光”的单位向量。
+            params[44] = -scene.light.direction.x;
+            params[45] = -scene.light.direction.y;
+            params[46] = -scene.light.direction.z;
+            params[47] = params[6];
+        }
+        if fog && fog_density.is_finite() && fog_density > 0.0 {
+            params[48] = fog_density;
+            params[49] = 0.62;
+            params[50] = 0.68;
+            params[51] = 0.76;
+        }
+        if dof {
+            params[52] = 1.0;
+            params[53] = if dof_focus.is_finite() {
+                dof_focus.max(0.0)
+            } else {
+                20.0
+            };
+            params[54] = if dof_range.is_finite() {
+                dof_range.max(0.1)
+            } else {
+                30.0
+            };
+            params[55] = if dof_strength.is_finite() {
+                dof_strength.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+        }
+        // 天空只在“有场景相机”的 HDR 帧启用；与雾共用开关。
+        if fog && scene.is_some() {
+            params[56] = 1.0;
+            params[57] = 2.4;
+            params[58] = 0.55;
+        }
         self.queue
             .write_buffer(&self.tonemap_params, 0, bytemuck::cast_slice(&params));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rustlua-tonemap-bind-group"),
-            layout: &self.post_process_layout,
+            layout: &self.tonemap_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -119,6 +190,26 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.tonemap_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&self.ssr_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
                 },
             ],
         });
@@ -195,6 +286,7 @@ impl Renderer {
             scene3d,
             &view,
             (self.config.width, self.config.height),
+            true,
         );
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
@@ -213,6 +305,302 @@ impl Renderer {
     /// Renders the current frame into an offscreen texture view (no present).
     /// The caller owns the target texture and supplies its view + dimensions;
     /// the depth attachment is rebuilt to match the target size.
+    /// 半分辨率 SSAO 目标随渲染尺寸重建；1×1 白图是关闭/未执行时的安全默认。
+    fn ensure_ssao_target(&mut self, width: u32, height: u32) {
+        let size = (width.max(1).div_ceil(2), height.max(1).div_ceil(2));
+        if self.ssao_size == size {
+            return;
+        }
+        let create = |label: &str| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: size.0,
+                        height: size.1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        self.ssao_raw_view = create("rustlua-ssao-raw");
+        self.ssao_view = create("rustlua-ssao-blur");
+        self.ssao_size = size;
+    }
+
+    fn ensure_ssr_target(&mut self, width: u32, height: u32) {
+        let size = (width.max(1).div_ceil(2), height.max(1).div_ceil(2));
+        if self.ssr_size == size {
+            return;
+        }
+        let create = |label: &str, _copy_src: bool| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let raw = create("rustlua-ssr-raw", false);
+        let current = create("rustlua-ssr-current", true);
+        let history = create("rustlua-ssr-history", true);
+        self.ssr_raw_view = raw.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ssr_view = current.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ssr_history_view = history.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ssr_texture = current;
+        self.ssr_history_texture = history;
+        self.ssr_prev_view_projection = None;
+        self.ssr_size = size;
+    }
+
+    /// 半分辨率 SSR：读 HDR 场景颜色与深度，写 `ssr_view`。
+    fn draw_ssr(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        scene: &Scene3d,
+        target: (u32, u32),
+    ) -> bool {
+        let Ok(view_projection) = scene.camera.view_projection_matrix(scene.view.viewport) else {
+            return false;
+        };
+        let Ok(inverse) = view_projection.inverse() else {
+            return false;
+        };
+        self.ensure_ssr_target(target.0, target.1);
+        let mut params = [0.0_f32; 36];
+        params[0..16].copy_from_slice(&inverse.columns.concat());
+        params[16..32].copy_from_slice(&view_projection.columns.concat());
+        params[32] = scene.camera.position.x;
+        params[33] = scene.camera.position.y;
+        params[34] = scene.camera.position.z;
+        self.queue
+            .write_buffer(&self.ssr_params, 0, bytemuck::cast_slice(&params));
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-ssr-bind-group"),
+            layout: &self.ssr_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.ssr_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rustlua-ssr-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.ssr_raw_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.ssr_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        let mut blur_params = [0.0_f32; 36];
+        blur_params[0] = 1.0 / self.ssr_size.0 as f32;
+        blur_params[1] = 1.0 / self.ssr_size.1 as f32;
+        blur_params[3] = if self.ssr_prev_view_projection.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        blur_params[4..20].copy_from_slice(&inverse.columns.concat());
+        let previous = self.ssr_prev_view_projection.unwrap_or(view_projection);
+        blur_params[20..36].copy_from_slice(&previous.columns.concat());
+        self.queue
+            .write_buffer(&self.ssr_blur_params, 0, bytemuck::cast_slice(&blur_params));
+        let blur_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-ssr-blur-bind-group"),
+            layout: &self.ssr_blur_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.ssr_raw_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.ssr_blur_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.ssr_history_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+            ],
+        });
+        let mut blur_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rustlua-ssr-blur-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.ssr_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        blur_pass.set_pipeline(&self.ssr_blur_pipeline);
+        blur_pass.set_bind_group(0, &blur_bind_group, &[]);
+        blur_pass.draw(0..3, 0..1);
+        self.ssr_prev_view_projection = Some(view_projection);
+        true
+    }
+
+    /// 在 Tonemap 前把半分辨率 AO 写进 `ssao_view`；没有相机/尺寸时跳过。
+    fn draw_ssao(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &Scene3d,
+        target: (u32, u32),
+    ) -> bool {
+        let Ok(view_projection) = scene.camera.view_projection_matrix(scene.view.viewport) else {
+            return false;
+        };
+        let Ok(inverse) = view_projection.inverse() else {
+            return false;
+        };
+        self.ensure_ssao_target(target.0, target.1);
+        let mut params = [0.0_f32; 36];
+        params[0..16].copy_from_slice(&inverse.columns.concat());
+        params[16..32].copy_from_slice(&view_projection.columns.concat());
+        params[32] = scene.camera.position.x;
+        params[33] = scene.camera.position.y;
+        params[34] = scene.camera.position.z;
+        self.queue
+            .write_buffer(&self.ssao_params, 0, bytemuck::cast_slice(&params));
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-ssao-bind-group"),
+            layout: &self.ssao_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.ssao_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rustlua-ssao-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.ssao_raw_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.ssao_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        let blur_params = [
+            1.0 / self.ssao_size.0 as f32,
+            1.0 / self.ssao_size.1 as f32,
+            0.0,
+            0.0,
+        ];
+        self.queue.write_buffer(
+            &self.ssao_blur_params,
+            0,
+            bytemuck::cast_slice(&blur_params),
+        );
+        let blur_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-ssao-blur-bind-group"),
+            layout: &self.ssao_blur_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_raw_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_depth_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.ssao_blur_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut blur_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rustlua-ssao-blur-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.ssao_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        blur_pass.set_pipeline(&self.ssao_blur_pipeline);
+        blur_pass.set_bind_group(0, &blur_bind_group, &[]);
+        blur_pass.draw(0..3, 0..1);
+        true
+    }
+
     pub fn render_into_texture(
         &mut self,
         mesh: &SceneMesh,
@@ -220,8 +608,15 @@ impl Renderer {
         view: &wgpu::TextureView,
         width: u32,
         height: u32,
+        include_ui: bool,
     ) -> RenderOutcome {
         self.ensure_depth_view(width, height);
+        if self.render_settings.ssao {
+            self.ensure_ssao_target(width, height);
+        }
+        if self.render_settings.ssr {
+            self.ensure_ssr_target(width, height);
+        }
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -235,8 +630,35 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
-        let (mut metrics, timestamp_layout) =
-            self.render_passes(&mut encoder, mesh, scene3d, view, (width, height));
+        let (mut metrics, timestamp_layout) = self.render_passes(
+            &mut encoder,
+            mesh,
+            scene3d,
+            view,
+            (width, height),
+            include_ui,
+        );
+        if self.render_settings.ssr {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.ssr_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.ssr_history_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: self.ssr_size.0,
+                    height: self.ssr_size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
@@ -262,6 +684,7 @@ impl Renderer {
         scene3d: Option<&Scene3d>,
         view: &wgpu::TextureView,
         target: (u32, u32),
+        include_ui: bool,
     ) -> (RenderFrameMetrics, PassTimestampLayout) {
         // E06-3：查询集暂时移出字段，避免 `&mut self` 的借用与跨通道写入冲突；函数末尾归还。
         let timestamp_query_set = self.timestamp_query_set.take();
@@ -446,6 +869,22 @@ impl Renderer {
         };
         metrics.hdr_active = hdr_active;
         metrics.tonemap = hdr_active.then(|| post_process.unwrap_or_default().tonemap);
+        let post = post_process.unwrap_or_default();
+        metrics.bloom_active = hdr_active && (post.bloom > 0.0 || self.render_settings.bloom);
+        metrics.fxaa_active = hdr_active && self.render_settings.fxaa;
+        metrics.ssao_active = hdr_active && self.render_settings.ssao;
+        metrics.ssr_active = hdr_active && self.render_settings.ssr;
+        metrics.contact_shadows_active = hdr_active && self.render_settings.contact_shadows;
+        metrics.fog_active = hdr_active
+            && self.render_settings.fog
+            && self.render_settings.fog_density.is_finite()
+            && self.render_settings.fog_density > 0.0;
+        // 天空与距离雾同一开关：HDR + 雾 + 有场景相机时，Tonemap 把 depth=1 的
+        // 背景替换成程序化天空（地平线/天顶/太阳盘）；没有相机时保持清屏色。
+        metrics.sky_active = metrics.fog_active && scene3d.is_some();
+        metrics.god_rays_active = hdr_active && self.render_settings.god_rays;
+        metrics.dof_active = hdr_active && self.render_settings.dof;
+        metrics.soft_shadows_active = self.render_settings.soft_shadows;
         metrics.scene_format = if hdr_active {
             SceneColorFormat::Rgba16Float
         } else if self.config.format.is_srgb() {
@@ -561,68 +1000,164 @@ impl Renderer {
         };
         if plan.contains(RenderPass::Shadow) {
             pass_timestamps.begin(encoder);
-            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rustlua-shadow-pass"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+            for cascade in 0..4 {
+                let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("rustlua-shadow-pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.shadow_views[cascade],
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            record_set_pass(&mut metrics);
-            let mut bound_shadow_pipeline = None;
-            for (index, draw) in frame_draws.iter().enumerate() {
-                // blend 材质不投影；mask 走带 alpha 剔除的阴影变体，双面走独立剔除状态。
-                let (key, skip) = if shading == Shading::Pbr {
-                    (
-                        ShaderVariantKey::shadow_with_alpha(
-                            SkinMode::from(draw.material.skinned),
-                            draw.material.alpha_mode,
-                            draw.material.double_sided,
-                        ),
-                        draw.material.alpha_mode == MaterialAlphaMode::Blend,
-                    )
-                } else {
-                    (
-                        ShaderVariantKey::shadow(SkinMode::from(draw.material.skinned)),
-                        false,
-                    )
-                };
-                if skip {
-                    continue;
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                shadow_pass.set_bind_group(0, &self.shadow_pass_bind_groups[cascade], &[]);
+                record_set_pass(&mut metrics);
+                let mut bound_shadow_pipeline = None;
+                for (index, draw) in frame_draws.iter().enumerate() {
+                    // blend 材质不投影；mask 走带 alpha 剔除的阴影变体，双面走独立剔除状态。
+                    let (key, skip) = if shading == Shading::Pbr {
+                        (
+                            ShaderVariantKey::shadow_with_alpha(
+                                SkinMode::from(draw.material.skinned),
+                                draw.material.alpha_mode,
+                                draw.material.double_sided,
+                            ),
+                            draw.material.alpha_mode == MaterialAlphaMode::Blend,
+                        )
+                    } else {
+                        (
+                            ShaderVariantKey::shadow(SkinMode::from(draw.material.skinned)),
+                            false,
+                        )
+                    };
+                    if skip {
+                        continue;
+                    }
+                    if bound_shadow_pipeline != Some(key) {
+                        let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
+                            panic!("阴影管线变体未在构造期预编译：{}", key.label())
+                        });
+                        shadow_pass.set_pipeline(pipeline.as_ref());
+                        bound_shadow_pipeline = Some(key);
+                    }
+                    shadow_pass.set_bind_group(1, &material_binds[index], &[]);
+                    shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                    shadow_pass.set_index_buffer(
+                        draw.geometry.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    shadow_pass.draw_indexed(
+                        0..draw.geometry.index_count,
+                        0,
+                        0..draw.models.len() as u32,
+                    );
                 }
-                if bound_shadow_pipeline != Some(key) {
-                    let pipeline = self
-                        .pipelines
-                        .get(&key)
-                        .unwrap_or_else(|| panic!("阴影管线变体未在构造期预编译：{}", key.label()));
-                    shadow_pass.set_pipeline(pipeline.as_ref());
-                    bound_shadow_pipeline = Some(key);
-                }
-                shadow_pass.set_bind_group(1, &material_binds[index], &[]);
-                shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
-                shadow_pass.set_index_buffer(
-                    draw.geometry.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
-                shadow_pass.draw_indexed(
-                    0..draw.geometry.index_count,
-                    0,
-                    0..draw.models.len() as u32,
-                );
+                drop(shadow_pass);
             }
-            drop(shadow_pass);
+            if self.render_settings.filtered_shadows {
+                for cascade in 0..4 {
+                    let mut esm_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("rustlua-esm-shadow-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.esm_layer_views[cascade],
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    esm_pass.set_pipeline(&self.esm_pipeline);
+                    esm_pass.set_bind_group(0, &self.esm_bind_groups[cascade], &[]);
+                    esm_pass.draw(0..3, 0..1);
+                }
+                metrics.filtered_shadows_active = true;
+            }
+            // 前八盏（最多 8 盏）点光：每盏 6 个立方体面各一次深度 pass；主着色器按光源位置找槽位、
+            // 主着色器按 cube array 方向交给硬件跨面过滤。
+            let point_shadow_lights = if self.render_settings.point_shadows {
+                scene3d
+                    .map(|scene| scene.point_lights.len().min(POINT_SHADOW_LIGHTS))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let point_shadow_active = point_shadow_lights > 0;
+            metrics.point_shadows_active = point_shadow_active;
+            if point_shadow_active {
+                for layer in 0..point_shadow_lights * 6 {
+                    let mut point_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("rustlua-point-shadow-pass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.point_shadow_face_views[layer],
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    point_pass.set_bind_group(0, &self.point_shadow_bind_groups[layer], &[]);
+                    record_set_pass(&mut metrics);
+                    let mut bound_shadow_pipeline = None;
+                    for (index, draw) in frame_draws.iter().enumerate() {
+                        let (key, skip) = if shading == Shading::Pbr {
+                            (
+                                ShaderVariantKey::shadow_with_alpha(
+                                    SkinMode::from(draw.material.skinned),
+                                    draw.material.alpha_mode,
+                                    draw.material.double_sided,
+                                ),
+                                draw.material.alpha_mode == MaterialAlphaMode::Blend,
+                            )
+                        } else {
+                            (
+                                ShaderVariantKey::shadow(SkinMode::from(draw.material.skinned)),
+                                false,
+                            )
+                        };
+                        if skip {
+                            continue;
+                        }
+                        if bound_shadow_pipeline != Some(key) {
+                            let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
+                                panic!("阴影管线变体未在构造期预编译：{}", key.label())
+                            });
+                            point_pass.set_pipeline(pipeline.as_ref());
+                            bound_shadow_pipeline = Some(key);
+                        }
+                        point_pass.set_bind_group(1, &material_binds[index], &[]);
+                        point_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                        point_pass.set_index_buffer(
+                            draw.geometry.index_buffer.slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        point_pass.draw_indexed(
+                            0..draw.geometry.index_count,
+                            0,
+                            0..draw.models.len() as u32,
+                        );
+                    }
+                    drop(point_pass);
+                }
+            }
             pass_timestamps.end(encoder, RenderPass::Shadow);
             executed.push(RenderPass::Shadow);
         }
         if plan.contains(RenderPass::DepthOpaque) {
+            self.ssao_depth_view = self.depth_view.clone();
             pass_timestamps.begin(encoder);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-mesh3d-pass"),
@@ -754,14 +1289,49 @@ impl Renderer {
                 pass_timestamps.abandon();
             }
         }
+        if self.render_settings.ssr
+            && let Some(scene) = scene3d
+            && let Some(source) = hdr_view.as_ref()
+        {
+            metrics.ssr_active = self.draw_ssr(encoder, source, scene, target);
+        }
+        if self.render_settings.ssao
+            && let Some(scene) = scene3d
+        {
+            let executed_ssao = self.draw_ssao(encoder, scene, target);
+            metrics.ssao_active = self.render_settings.ssao && executed_ssao;
+        }
         // P3-R01：Tonemap 必须在 3D/世界内容之后、所有 2D/UI/矢量文字之前执行，
         // 否则 ACES/Reinhard 会连带改掉 UI 颜色。HDR 关闭时计划里没有这条通道。
         if plan.contains(RenderPass::Tonemap)
             && let Some(source) = hdr_view.as_ref()
         {
-            let settings = post_process.unwrap_or_default();
+            let mut settings = post_process.unwrap_or_default();
+            // 场景声明 Environment 时宿主给 RenderSettings 打开泛光；显式 PostProcess
+            // 已经设了非零 bloom 时尊重显式值，避免两个入口互相覆盖。
+            if self.render_settings.bloom && settings.bloom == 0.0 {
+                settings.bloom = 0.18;
+            }
             pass_timestamps.begin(encoder);
-            let vertices = self.draw_tonemap(encoder, source, draw_target, settings, target);
+            let vertices = self.draw_tonemap(
+                encoder,
+                source,
+                draw_target,
+                settings,
+                self.render_settings.fxaa,
+                self.render_settings.ssao,
+                self.render_settings.ssr,
+                self.render_settings.contact_shadows,
+                self.render_settings.fog,
+                self.render_settings.fog_density,
+                self.render_settings.god_rays,
+                self.render_settings.dof,
+                self.render_settings.dof_focus,
+                self.render_settings.dof_range,
+                self.render_settings.dof_strength,
+                scene3d,
+                target,
+            );
             pass_timestamps.end(encoder, RenderPass::Tonemap);
             record_set_pass(&mut metrics);
             record_triangle_draw(&mut metrics, vertices as u32);
@@ -830,7 +1400,7 @@ impl Renderer {
             // 为什么值得：2D 主路径原来**每个 `SceneDraw` 一次 draw call**，一千个相邻精灵就是
             // 一千次提交。`draw_calls` 与设备无关，软件光栅上也能量（本片读数就是这么取的）。
             for stage in [RenderPass::Legacy2DOverlay, RenderPass::ScreenUI] {
-                if !plan.contains(stage) {
+                if !plan.contains(stage) || !include_ui {
                     continue;
                 }
                 let mut batch: Option<OverlayBatch> = None;

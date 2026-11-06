@@ -5,7 +5,7 @@ use rustlua_render::render_settings::{
 };
 use rustlua_render::runtime_gpu::{EnvironmentRenderer, ParticleRenderer, ParticleStepReport};
 
-use crate::{GpuParticleConfig, Renderer};
+use crate::{GpuParticleConfig, GpuParticleConfig3D, GpuParticleStreamConfig, Renderer};
 
 impl EnvironmentRenderer for Renderer {
     fn ibl_mode(&self) -> IblMode {
@@ -65,8 +65,70 @@ impl ParticleRenderer for Renderer {
         .map_err(|error| error.to_string())
     }
 
+    fn push_particle_burst_3d(
+        &mut self,
+        origin: [f32; 3],
+        emitter: ParticleEmitter,
+        capacity: u32,
+    ) -> Result<(), String> {
+        self.push_gpu_particle_burst_3d(GpuParticleConfig3D {
+            origin,
+            emitter,
+            capacity,
+        })
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
     fn particle_systems(&self) -> usize {
         self.gpu_particle_systems()
+    }
+
+    fn supports_particle_streams(&self) -> bool {
+        true
+    }
+
+    fn create_particle_stream(
+        &mut self,
+        key: u64,
+        origin: [f32; 3],
+        emitter: ParticleEmitter,
+        capacity: u32,
+    ) -> Result<(), String> {
+        self.push_gpu_particle_stream(
+            key,
+            GpuParticleStreamConfig {
+                origin,
+                emitter,
+                capacity,
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    fn update_particle_stream(&mut self, key: u64, origin: [f32; 3]) -> bool {
+        self.set_gpu_particle_stream_origin(key, origin)
+    }
+
+    fn remove_particle_stream(&mut self, key: u64) -> bool {
+        self.remove_gpu_particle_stream(key)
+    }
+
+    fn set_particle_wind(&mut self, wind: [f32; 2]) {
+        Renderer::set_gpu_particle_wind(self, wind);
+    }
+
+    fn set_particle_wind_3d(&mut self, wind: [f32; 3]) {
+        Renderer::set_gpu_particle_wind_3d(self, wind);
+    }
+
+    fn set_particle_wind_profile(&mut self, profile: [f32; 3]) {
+        let _ = Renderer::set_gpu_particle_wind_profile(self, profile);
+    }
+
+    fn set_particle_wind_sources(&mut self, sources: [[f32; 6]; 4]) {
+        let _ = Renderer::set_gpu_particle_wind_sources(self, sources);
     }
 
     fn step_particles(&mut self, delta_seconds: f32) -> Result<ParticleStepReport, String> {

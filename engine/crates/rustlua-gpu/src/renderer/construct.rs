@@ -295,12 +295,12 @@ impl Renderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         // P3-R02：PBR 片元要读相机世界位置算视线；旧网格着色器只声明 64 字节
-                        // 结构，读写同一块 buffer 的前半段。尺寸 80 = mat4 + vec4。
+                        // 结构，读写同一块 buffer 的前半段。尺寸 96 = mat4 + 位置 + 裁剪平面。
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(80),
+                            min_binding_size: wgpu::BufferSize::new(96),
                         },
                         count: None,
                     },
@@ -321,7 +321,8 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(64),
+                            // 四级阴影：4 × mat4 = 256B。
+                            min_binding_size: wgpu::BufferSize::new(256),
                         },
                         count: None,
                     },
@@ -330,7 +331,7 @@ impl Renderer {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
                             multisampled: false,
                         },
                         count: None,
@@ -339,6 +340,51 @@ impl Renderer {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            // 48 个面矩阵 + 8 组点光位置/远平面 = 3200B。
+                            min_binding_size: wgpu::BufferSize::new(
+                                super::POINT_SHADOW_UNIFORM_BYTES as u64,
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::CubeArray,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 11,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                 ],
@@ -499,8 +545,8 @@ impl Renderer {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    // P3-R02：5×vec4 = 基色 / 表面 / 自发光 / 参数 / 贴图开关。
-                    min_binding_size: wgpu::BufferSize::new(80),
+                    // P3-R02：6×vec4 = 基色 / 表面 / 自发光 / 参数 / 贴图开关 / 动画。
+                    min_binding_size: wgpu::BufferSize::new(96),
                 },
                 count: None,
             },
@@ -623,7 +669,7 @@ impl Renderer {
             ],
         };
         let light_matrix = light_projection * light_view;
-        let shadow_view = Self::create_shadow_view(&device, 2048);
+        let (shadow_sample_view, shadow_views) = Self::create_shadow_view(&device, 2048);
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rustlua-shadow-comparison-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -634,23 +680,73 @@ impl Renderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        let point_shadow_plain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("rustlua-point-shadow-plain-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rustlua-camera3d-buffer"),
-            contents: bytemuck::cast_slice(&camera_uniform(&camera_matrix, camera.position)),
+            contents: bytemuck::cast_slice(&camera_uniform(
+                &camera_matrix,
+                camera.position,
+                0.0,
+                camera.clip_plane,
+            )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rustlua-light-buffer"),
             // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负；
             // 点光数组先全部补零，由 `write_light_uniforms` 每帧重写。
-            contents: &super::light_uniform_bytes(rustlua_render::light::Light::default(), &[]),
+            contents: &super::light_uniform_bytes(
+                rustlua_render::light::Light::default(),
+                &[],
+                false,
+                false,
+                None,
+            ),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rustlua-shadow-camera-buffer"),
-            contents: bytemuck::cast_slice(&light_matrix.columns),
+            contents: bytemuck::cast_slice(
+                &[
+                    light_matrix.columns,
+                    light_matrix.columns,
+                    light_matrix.columns,
+                    light_matrix.columns,
+                ]
+                .concat(),
+            ),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let shadow_pass_camera_buffers = [
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-shadow-pass-camera-near"),
+                contents: bytemuck::cast_slice(&light_matrix.columns),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-shadow-pass-camera-mid"),
+                contents: bytemuck::cast_slice(&light_matrix.columns),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-shadow-pass-camera-far"),
+                contents: bytemuck::cast_slice(&light_matrix.columns),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-shadow-pass-camera-ultra"),
+                contents: bytemuck::cast_slice(&light_matrix.columns),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+        ];
         let identity_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("rustlua-identity-joint-palette"),
             contents: bytemuck::cast_slice(&identity_palette_data()),
@@ -676,6 +772,8 @@ impl Renderer {
             label: Some("rustlua-albedo-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            // 只有内置地形细节图集上传 mip 链；三线性过滤让远景按米制 LOD 平滑过渡。
+            mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         // 1x1 white texture bound when a material has no base-color texture.
@@ -713,6 +811,168 @@ impl Renderer {
             },
         );
         let white_albedo_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // 前八盏（最多 8 盏）点光的立方体阴影：8×6 个 1024² 深度面，主着色器按光源位置找槽位、
+        // 主着色器按 cube array 方向交给硬件跨面过滤。
+        let point_shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-point-shadow-array"),
+            size: wgpu::Extent3d {
+                width: super::POINT_SHADOW_SIZE,
+                height: super::POINT_SHADOW_SIZE,
+                depth_or_array_layers: super::POINT_SHADOW_LAYERS as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let point_shadow_array_view =
+            point_shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("rustlua-point-shadow-cube-array-view"),
+                dimension: Some(wgpu::TextureViewDimension::CubeArray),
+                base_array_layer: 0,
+                array_layer_count: Some(super::POINT_SHADOW_LAYERS as u32),
+                ..wgpu::TextureViewDescriptor::default()
+            });
+        let point_shadow_face_views: [wgpu::TextureView; super::POINT_SHADOW_LAYERS] =
+            std::array::from_fn(|layer| {
+                point_shadow_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("rustlua-point-shadow-face-view"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer as u32,
+                    array_layer_count: Some(1),
+                    ..wgpu::TextureViewDescriptor::default()
+                })
+            });
+        let point_shadow_uniform_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-point-shadow-uniform"),
+                contents: &[0u8; super::POINT_SHADOW_UNIFORM_BYTES],
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let point_shadow_camera_buffers: [wgpu::Buffer; super::POINT_SHADOW_LAYERS] =
+            std::array::from_fn(|_layer| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("rustlua-point-shadow-camera"),
+                    contents: bytemuck::cast_slice(&Mat4::identity().columns),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+            });
+        // P3-R24：方向光 ESM。4 层 2048² `R16Float`，与 CSM 同分辨率。
+        let esm_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-esm-shadow"),
+            size: wgpu::Extent3d {
+                width: super::ESM_SIZE,
+                height: super::ESM_SIZE,
+                depth_or_array_layers: super::ESM_LAYERS as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let esm_array_view = esm_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("rustlua-esm-array-view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let esm_layer_views: [wgpu::TextureView; super::ESM_LAYERS] =
+            std::array::from_fn(|layer| {
+                esm_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("rustlua-esm-layer-view"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer as u32,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            });
+        let esm_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-esm-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(16),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let esm_layer_buffers: [wgpu::Buffer; super::ESM_LAYERS] = std::array::from_fn(|layer| {
+            let words = [layer as u32, 0, 0, 0];
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("rustlua-esm-layer"),
+                contents: bytemuck::cast_slice(&words),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        });
+        let esm_bind_groups: [wgpu::BindGroup; super::ESM_LAYERS] = std::array::from_fn(|layer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rustlua-esm-bind-group"),
+                layout: &esm_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: esm_layer_buffers[layer].as_entire_binding(),
+                    },
+                ],
+            })
+        });
+        let esm_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rustlua-esm-shadow-shader"),
+            source: wgpu::ShaderSource::Wgsl(crate::shader::ESM.source.into()),
+        });
+        let esm_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rustlua-esm-pipeline-layout"),
+            bind_group_layouts: &[&esm_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let esm_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("rustlua-esm-pipeline"),
+            layout: Some(&esm_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &esm_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &esm_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rustlua-camera3d-bind-group"),
             layout: &camera_bind_group_layout,
@@ -731,11 +991,31 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: point_shadow_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&esm_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
                 },
             ],
         });
@@ -753,14 +1033,27 @@ impl Renderer {
                     count: None,
                 }],
             });
-        let shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rustlua-shadow-bind-group"),
-            layout: &shadow_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: shadow_camera_buffer.as_entire_binding(),
-            }],
+        let shadow_pass_bind_groups = [0, 1, 2, 3].map(|cascade| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rustlua-shadow-pass-bind-group"),
+                layout: &shadow_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: shadow_pass_camera_buffers[cascade].as_entire_binding(),
+                }],
+            })
         });
+        let point_shadow_bind_groups: [wgpu::BindGroup; super::POINT_SHADOW_LAYERS] =
+            std::array::from_fn(|layer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("rustlua-point-shadow-pass-bind-group"),
+                    layout: &shadow_bind_group_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: point_shadow_camera_buffers[layer].as_entire_binding(),
+                    }],
+                })
+            });
         // P3-R03：环境 group（uniform + 预过滤 cubemap + 采样器）。即使 IBL 关闭也绑定一份
         // 全零 SH 与 1×1 黑 cube，这样 PBR 管线布局只有一种，不需要为 Off/On 切换布局。
         // 浮点线性过滤不可用时按 nearest/不可过滤声明（Tier B），避免绑定校验失败。
@@ -1106,8 +1399,89 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // P3-R01：Tonemap 全屏管线。复用后处理的绑定布局（HDR 纹理 + 线性过滤采样器 + uniform），
-        // 片元先把线性值乘 `2^exposure_ev` 再走曲线。能力不足时不创建，HDR 因此不会被启用。
+        // Tonemap 需要额外的深度与逆视图投影做 SSAO，因此单独一份绑定布局；
+        // 后处理 LDR 路径继续用上面 3 项的布局，不去读深度。
+        let tonemap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rustlua-tonemap-bind-group-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(240),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let tonemap_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rustlua-tonemap-pipeline-layout"),
+                bind_group_layouts: &[&tonemap_layout],
+                push_constant_ranges: &[],
+            });
+        // P3-R01：Tonemap 全屏管线。片元先把线性值乘 `2^exposure_ev` 再走曲线；
+        // P3-R09 起还可读深度做 SSAO。能力不足时不创建，HDR 因此不会被启用。
         let tonemap_pipeline = if capabilities.hdr_usable() {
             let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("rustlua-tonemap-shader"),
@@ -1115,7 +1489,7 @@ impl Renderer {
             });
             Some(build_fullscreen_pipeline(
                 &device,
-                &post_process_pipeline_layout,
+                &tonemap_pipeline_layout,
                 &tonemap_shader,
                 format,
                 "rustlua-tonemap-pipeline",
@@ -1125,8 +1499,427 @@ impl Renderer {
         };
         let tonemap_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-tonemap-params"),
-            // 16 字节：exposure_ev + tonemap code + 两个填充位。
+            // 240 字节：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 光照方向 + 雾 + 景深 + 天空。
+            size: 240,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssao_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-ssao-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(144),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let ssao_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rustlua-ssao-pipeline-layout"),
+            bind_group_layouts: &[&ssao_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rustlua-ssao-shader"),
+            source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO.source.into()),
+        });
+        let ssao_pipeline = build_fullscreen_pipeline(
+            &device,
+            &ssao_pipeline_layout,
+            &ssao_shader,
+            wgpu::TextureFormat::R8Unorm,
+            "rustlua-ssao-pipeline",
+        );
+        let ssao_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-ssao-params"),
+            size: 144,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssao_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-ssao-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &ssao_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let ssao_raw_view = ssao_white.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssao_blur_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-ssao-blur-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &ssao_blur_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let ssao_view = ssao_blur_white.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssao_blur_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-ssao-blur-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(16),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let ssao_blur_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rustlua-ssao-blur-pipeline-layout"),
+                bind_group_layouts: &[&ssao_blur_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let ssao_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rustlua-ssao-blur-shader"),
+            source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO_BLUR.source.into()),
+        });
+        let ssao_blur_pipeline = build_fullscreen_pipeline(
+            &device,
+            &ssao_blur_pipeline_layout,
+            &ssao_blur_shader,
+            wgpu::TextureFormat::R8Unorm,
+            "rustlua-ssao-blur-pipeline",
+        );
+        let ssao_blur_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-ssao-blur-params"),
             size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssr_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-ssr-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(144),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let ssr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("rustlua-ssr-pipeline-layout"),
+            bind_group_layouts: &[&ssr_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let ssr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rustlua-ssr-shader"),
+            source: wgpu::ShaderSource::Wgsl(crate::shader::SSR.source.into()),
+        });
+        let ssr_pipeline = build_fullscreen_pipeline(
+            &device,
+            &ssr_pipeline_layout,
+            &ssr_shader,
+            wgpu::TextureFormat::Rgba16Float,
+            "rustlua-ssr-pipeline",
+        );
+        let ssr_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-ssr-params"),
+            size: 144,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssr_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-ssr-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &ssr_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let ssr_raw_view = ssr_white.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssr_blur_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-ssr-blur-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &ssr_blur_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let ssr_view = ssr_blur_white.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssr_history_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-ssr-history-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &ssr_history_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(16),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let ssr_history_view =
+            ssr_history_white.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssr_blur_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-ssr-blur-bind-group-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(144),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let ssr_blur_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("rustlua-ssr-blur-pipeline-layout"),
+                bind_group_layouts: &[&ssr_blur_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let ssr_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rustlua-ssr-blur-shader"),
+            source: wgpu::ShaderSource::Wgsl(crate::shader::SSR_BLUR.source.into()),
+        });
+        let ssr_blur_pipeline = build_fullscreen_pipeline(
+            &device,
+            &ssr_blur_pipeline_layout,
+            &ssr_blur_shader,
+            wgpu::TextureFormat::Rgba16Float,
+            "rustlua-ssr-blur-pipeline",
+        );
+        let ssr_blur_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-ssr-blur-params"),
+            size: 144,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1134,6 +1927,7 @@ impl Renderer {
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?} gpu_timestamp={timestamp_enabled}",
             config.present_mode
         );
+        let ssao_depth_view = depth_view.clone();
         Ok(Self {
             surface,
             device,
@@ -1168,10 +1962,19 @@ impl Renderer {
             environment_map: None,
             environment: None,
             camera_bind_group,
-            shadow_bind_group,
+            shadow_pass_bind_groups,
+            shadow_pass_camera_buffers,
+            point_shadow_face_views,
+            point_shadow_uniform_buffer,
+            point_shadow_camera_buffers,
+            point_shadow_bind_groups,
             depth_view,
             depth_size: depth_init,
-            shadow_view,
+            shadow_views,
+            esm_layer_views,
+            esm_pipeline,
+            esm_bind_groups,
+            ssao_depth_view,
             texture_bind_group_layout,
             sampler,
             texture_samplers,
@@ -1208,6 +2011,12 @@ impl Renderer {
             capabilities,
             compute_state: ComputeState::new(),
             gpu_particles: Vec::new(),
+            gpu_particle_wind: [0.0, 0.0],
+            gpu_particle_wind_z: 0.0,
+            gpu_particle_wind_shear: 0.0,
+            gpu_particle_wind_gust: 0.0,
+            gpu_particle_wind_gust_hz: 0.0,
+            gpu_particle_wind_sources: [[0.0; 6]; 4],
             gpu_particle_generation: 0,
             gpu_particle_draw_layout,
             gpu_particle_pipeline_layout,
@@ -1249,6 +2058,7 @@ impl Renderer {
             cull_enabled,
             instancing_enabled,
             frame_count: 0,
+            clock: web_time::Instant::now(),
             _material_bind_group_layout: material_bind_group_layout,
             readback_slots: Vec::new(),
             readback_submitted: 0,
@@ -1291,6 +2101,7 @@ impl Renderer {
             post_process_layout,
             post_process_sampler,
             post_process_params,
+            tonemap_layout,
             post_process_texture: None,
             post_process_scene_view: None,
             post_process_size: (0, 0),
@@ -1303,6 +2114,28 @@ impl Renderer {
             hdr_world_sprite_opaque_pipeline,
             tonemap_pipeline,
             tonemap_params,
+            ssao_pipeline,
+            ssao_bind_group_layout,
+            ssao_params,
+            ssao_blur_pipeline,
+            ssao_blur_bind_group_layout,
+            ssao_blur_params,
+            ssao_raw_view,
+            ssao_view,
+            ssao_size: (1, 1),
+            ssr_pipeline,
+            ssr_bind_group_layout,
+            ssr_params,
+            ssr_blur_pipeline,
+            ssr_blur_bind_group_layout,
+            ssr_blur_params,
+            ssr_raw_view,
+            ssr_view,
+            ssr_history_view,
+            ssr_texture: ssr_blur_white,
+            ssr_history_texture: ssr_history_white,
+            ssr_prev_view_projection: None,
+            ssr_size: (1, 1),
         })
     }
 }

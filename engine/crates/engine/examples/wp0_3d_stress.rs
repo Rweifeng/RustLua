@@ -299,7 +299,7 @@ fn render_once(
     let extract_us = started_extract.map_or(0, |t| t.elapsed().as_micros());
     let started_render = profile.then(Instant::now);
     assert!(matches!(
-        renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360),
+        renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360, true),
         RenderOutcome::Presented
     ));
     let render_us = started_render.map_or(0, |t| t.elapsed().as_micros());

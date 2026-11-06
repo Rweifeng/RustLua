@@ -465,6 +465,7 @@ impl EngineCore {
             &view,
             self.stack.config.width,
             self.stack.config.height,
+            true,
         );
         let metrics = self.renderer.last_frame_metrics();
         if !matches!(outcome, RenderOutcome::Presented) {

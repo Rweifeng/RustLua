@@ -86,7 +86,7 @@ fn main() {
         "关掉屏幕 UI 后不该还有 ScreenUI 层的 draw"
     );
     assert!(matches!(
-        renderer.render_into_texture(&mesh_without_ui, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_without_ui, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_without_ui = renderer
@@ -109,7 +109,7 @@ fn main() {
         "开关屏幕 UI 不该改变世界层与叠加层的 draw 数"
     );
     assert!(matches!(
-        renderer.render_into_texture(&mesh_with_ui, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_with_ui, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_with_ui = renderer

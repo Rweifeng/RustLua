@@ -1863,6 +1863,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
             far: 500.0,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         };
         let iterations = 20usize;
         let mut samples = Vec::with_capacity(iterations);

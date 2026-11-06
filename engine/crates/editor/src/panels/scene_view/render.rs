@@ -333,7 +333,7 @@ impl EditorApp {
                 overlay: None,
             });
         }
-        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h);
+        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h, true);
         if self.render_state.is_some() {
             // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
             // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
@@ -559,7 +559,7 @@ impl EditorApp {
             )),
             overlay: None,
         });
-        renderer.render_into_texture(&mesh, None, view, width, height);
+        renderer.render_into_texture(&mesh, None, view, width, height, true);
         if self.render_state.is_some() {
             // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
             // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
@@ -698,7 +698,7 @@ impl EditorApp {
             viewport,
             scene3d.is_some(),
         ));
-        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, dw, dh);
+        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, dw, dh, true);
         self.sync_scene_screen_texture();
         self.scene_screen_cache_key = key;
         ctx.request_repaint();

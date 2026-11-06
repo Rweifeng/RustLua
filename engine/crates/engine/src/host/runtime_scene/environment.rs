@@ -184,6 +184,21 @@ pub fn apply_to_renderer(
         pbr: true,
         ibl: ToggleMode::On,
         variants: renderer.render_settings().variants,
+        bloom: true,
+        soft_shadows: true,
+        fxaa: true,
+        ssao: true,
+        ssr: true,
+        contact_shadows: true,
+        filtered_shadows: false,
+        fog: true,
+        fog_density: 0.0015,
+        god_rays: true,
+        dof: false,
+        dof_focus: 20.0,
+        dof_range: 30.0,
+        dof_strength: 1.0,
+        point_shadows: true,
     };
     renderer.set_render_settings(settings);
     let mut fallback = None;

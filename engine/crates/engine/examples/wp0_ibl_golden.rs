@@ -98,6 +98,16 @@ fn main() {
         "cubemap 应为 128px/5mip：{applied:?}"
     );
     assert_eq!(renderer.ibl_mode(), IblMode::Full);
+    // Environment 默认还会打开 SSR/接触阴影；这枚 golden 只看 IBL 预过滤的 roughness
+    // 轮廓，两者都会混入自己的能量，必须显式关掉再量。
+    renderer.set_render_settings(
+        renderer
+            .render_settings()
+            .with_ssr(false)
+            .with_contact_shadows(false)
+            .with_fog(false)
+            .with_god_rays(false),
+    );
     let full = render(&mut renderer, &mesh, &extracted, texture, view);
     let (full_vs_off, full_vs_off_at) = max_channel_delta(&full, &env_off);
     assert!(
@@ -171,6 +181,21 @@ fn main() {
         pbr: true,
         ibl: ToggleMode::On,
         variants: false,
+        bloom: false,
+        soft_shadows: false,
+        fxaa: false,
+        ssao: false,
+        ssr: false,
+        contact_shadows: false,
+        filtered_shadows: false,
+        fog: false,
+        fog_density: 0.0015,
+        god_rays: false,
+        dof: false,
+        dof_focus: 20.0,
+        dof_range: 30.0,
+        dof_strength: 1.0,
+        point_shadows: false,
     });
     renderer.set_environment(lighting);
     assert_eq!(
@@ -359,7 +384,7 @@ fn render(
     view: &wgpu::TextureView,
 ) -> Vec<u8> {
     assert!(matches!(
-        renderer.render_into_texture(mesh, Some(scene3d), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(mesh, Some(scene3d), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     renderer

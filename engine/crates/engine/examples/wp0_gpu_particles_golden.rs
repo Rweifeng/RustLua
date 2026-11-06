@@ -102,6 +102,10 @@ fn main() -> ExitCode {
         size_start: 8.0,
         size_end: 2.0,
         gravity: Vec2::zero(),
+        gravity_z: 0.0,
+        speed_z: 0.0,
+        spread_z: 0.0,
+        spawn_area: [0.0; 3],
         drag: 0.0,
         rotation: 0.0,
         rotation_speed: 0.5,
@@ -365,7 +369,7 @@ fn render_frame(renderer: &mut Renderer, fixture: &OffscreenTarget) -> FrameRead
     )));
     let texture = fixture.texture();
     let view = fixture.view();
-    let outcome = renderer.render_into_texture(&empty_mesh(), None, view, TARGET, TARGET);
+    let outcome = renderer.render_into_texture(&empty_mesh(), None, view, TARGET, TARGET, true);
     assert!(
         matches!(outcome, RenderOutcome::Presented),
         "离屏渲染没有产出画面"

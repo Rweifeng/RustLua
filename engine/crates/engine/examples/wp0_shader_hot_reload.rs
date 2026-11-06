@@ -128,7 +128,7 @@ fn center_pixel(
     let mesh = runtime.vertices(SIZE, SIZE).expect("2D extraction");
     assert!(
         matches!(
-            renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE),
+            renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE, true),
             RenderOutcome::Presented
         ),
         "帧必须正常提交"

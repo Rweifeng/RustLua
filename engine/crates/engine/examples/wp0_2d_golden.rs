@@ -66,7 +66,7 @@ fn main() {
     let mesh = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     // 2D 场景没有 3D 提取物：这里必须能只画 overlay 而不依赖 3D 快照。
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer
@@ -160,7 +160,7 @@ fn main() {
         "collider 调试轮廓的顶点数不对（box 4 段 × 6 顶点）"
     );
     assert!(matches!(
-        renderer.render_into_texture(&debug_mesh, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&debug_mesh, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let debug_pixels = renderer
@@ -209,7 +209,7 @@ fn main() {
         "交换瓦片行不该改变顶点数"
     );
     assert!(matches!(
-        renderer.render_into_texture(&swapped_mesh, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&swapped_mesh, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let swapped = renderer
@@ -501,7 +501,7 @@ fn prove_culling_keeps_pixels(
             .vertices(WIDTH, HEIGHT)
             .expect("2D extraction for the culling proof");
         assert!(matches!(
-            renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
+            renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT, true),
             RenderOutcome::Presented
         ));
         let pixels = renderer

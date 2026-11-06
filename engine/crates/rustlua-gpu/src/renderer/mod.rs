@@ -53,13 +53,16 @@ mod world_sprite;
 pub use capabilities::RendererCapabilities;
 pub use compute::{ComputeBinding, ComputeDispatch, ComputeError, ComputeRequest, ComputeStats};
 pub use gpu_particles::{
-    GpuParticleConfig, GpuParticleSnapshot, GpuParticleState, GpuParticleStatus, GpuParticleStep,
-    MAX_GPU_PARTICLE_SLOTS, MAX_GPU_PARTICLE_SYSTEMS,
+    GpuParticleConfig, GpuParticleConfig3D, GpuParticleSnapshot, GpuParticleState,
+    GpuParticleStatus, GpuParticleStep, GpuParticleStreamConfig, MAX_GPU_PARTICLE_SLOTS,
+    MAX_GPU_PARTICLE_SYSTEMS,
 };
 pub use pbr::{DirectBrdf, direct_brdf, normal_matrix};
 use pipeline_cache::PipelineCache;
 pub use pipeline_cache::PipelineCacheStats;
-pub use readback::{ReadbackMetrics, ReadbackStatus, SceneColorReadback};
+pub use readback::{
+    ReadbackMetrics, ReadbackStatus, SceneColorReadback, write_capture_placeholder,
+};
 use timestamp::{GpuTimestampState, TimestampSlot};
 
 /// 需要深度附件的那几条管线（WP6）。把"要不要写深度"从散落的字段字面量收成一处**类型化**
@@ -204,6 +207,9 @@ struct GpuMaterial {
     alpha_cutoff: f32,
     /// 双面材质选独立剔除状态的管线（背面不再被光栅化掉）。
     double_sided: bool,
+    /// Built-in terrain detail-atlas tile size in world units; `0` = flat
+    /// procedural ground. Reaches the shader as `Material.surface.w`.
+    detail_scale: f32,
 }
 
 /// Cached GPU geometry + file materials for one mesh path.
@@ -239,6 +245,7 @@ impl GpuMaterial {
             alpha_mode: material.alpha_mode,
             alpha_cutoff: material.alpha_cutoff,
             double_sided: material.double_sided,
+            detail_scale: material.detail_scale,
         }
     }
 }
@@ -321,6 +328,30 @@ pub struct RenderFrameMetrics {
     pub tonemap: Option<Tonemap>,
     /// 本帧场景颜色目标的格式类别（HDR 为 `Rgba16Float`，LDR 按 sRGB/线性归类）。
     pub scene_format: SceneColorFormat,
+    /// 本帧 Tonemap 是否实际执行了泛光（HDR 且 bloom > 0）。
+    pub bloom_active: bool,
+    /// 本帧 Tonemap 是否实际执行了 FXAA-lite（HDR 且 `RenderSettings.fxaa`）。
+    pub fxaa_active: bool,
+    /// 本帧方向光是否走了 3×3 PCF 软阴影分支。
+    pub soft_shadows_active: bool,
+    /// 本帧 Tonemap 是否实际执行了 SSAO-lite（HDR 且 `RenderSettings.ssao`）。
+    pub ssao_active: bool,
+    /// 本帧 Tonemap 是否实际执行了 SSR-lite（HDR 且 `RenderSettings.ssr`）。
+    pub ssr_active: bool,
+    /// 本帧 Tonemap 是否实际执行了屏幕空间接触阴影。
+    pub contact_shadows_active: bool,
+    /// 本帧方向光是否走了 ESM filtered shadow。
+    pub filtered_shadows_active: bool,
+    /// 本帧 Tonemap 是否实际执行了距离雾。
+    pub fog_active: bool,
+    /// 本帧 Tonemap 是否实际画了程序化天空（HDR + 雾 + 有场景相机）。
+    pub sky_active: bool,
+    /// 本帧 Tonemap 是否实际执行了屏幕空间神光。
+    pub god_rays_active: bool,
+    /// 本帧 Tonemap 是否实际执行了屏幕空间景深。
+    pub dof_active: bool,
+    /// 本帧是否渲染了前八盏（最多 8 盏）点光的立方体阴影。
+    pub point_shadows_active: bool,
 }
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
@@ -558,18 +589,27 @@ fn scaled_model(model: Mat4, scale: f32) -> Mat4 {
     Mat4 { columns }
 }
 /// 3D 相机 uniform 的 CPU 侧布局（与 `mesh3d_pbr.wgsl` 的 `Camera` 对应）：
-/// 16 个 f32 的列主序视图投影 + 4 个 f32 的世界坐标位置（w 留 1）。
+/// 16 个 f32 的列主序视图投影 + 4 个 f32 的世界坐标位置（w 现在装渲染时钟秒数）。
 ///
-/// 旧 `mesh3d.wgsl` 只声明前 64 字节；同一个 buffer 因此能同时服务回滚档与 PBR 档。
-pub(super) fn camera_uniform(view_projection: &Mat4, position: Vec3) -> [f32; 20] {
-    let mut data = [0.0; 20];
+/// `position.w` 原先固定为 1；P3-R02 起没有着色器读它，因此复用成水面等
+/// 程序化材质的动画时钟。旧 `mesh3d.wgsl` 只声明前 64 字节；同一个 buffer
+/// 因此仍能同时服务回滚档与 PBR 档。
+pub(super) fn camera_uniform(
+    view_projection: &Mat4,
+    position: Vec3,
+    time: f32,
+    clip_plane: [f32; 4],
+) -> [f32; 24] {
+    let mut data = [0.0; 24];
     for (index, column) in view_projection.columns.iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(column);
     }
     data[16] = position.x;
     data[17] = position.y;
     data[18] = position.z;
-    data[19] = 1.0;
+    data[19] = time.max(0.0);
+    // 世界空间裁剪平面：`n·x + d >= 0` 保留。零向量 = 不裁剪（着色器跳过分支）。
+    data[20..24].copy_from_slice(&clip_plane);
     data
 }
 
@@ -587,6 +627,16 @@ pub struct Renderer {
     /// M74-03 P2：GPU 粒子（第一个真实消费者）。P3-R07-2 起是**池**：一次 burst 一个系统，
     /// 空 = 未启用，不产生任何额外 pass。
     gpu_particles: Vec<gpu_particles::GpuParticleSystem>,
+    /// 全局风加速度（与 CPU 粒子池同口径）；NaN/Infinity 不写入。
+    gpu_particle_wind: [f32; 2],
+    /// 全局风的 Z 分量；与 `gpu_particle_wind` 分开存，旧的 2D getter 口径不变。
+    gpu_particle_wind_z: f32,
+    /// 风场：高度剪切 + 空间阵风 `(shear, gust, gust_hz)`；与 CPU 池同一公式。
+    gpu_particle_wind_shear: f32,
+    gpu_particle_wind_gust: f32,
+    gpu_particle_wind_gust_hz: f32,
+    /// 最多 4 个局部风源，`[x, y(height), z, radius, radial, lift]`。
+    gpu_particle_wind_sources: [[f32; 6]; 4],
     /// 分配给下一个 GPU 粒子系统的绑定组身份（单调递增，回收时按它剔除缓存）。
     gpu_particle_generation: u64,
     /// P3-R07-3：instanced 粒子 draw 段自己的 group2 布局（参数 uniform + 状态只读存储）。
@@ -660,11 +710,27 @@ pub struct Renderer {
     /// 已设置的环境光照；`None` = 本帧 IBL 为 Off（保留 R02 的常数环境光）。
     environment: Option<EnvironmentLighting>,
     camera_bind_group: wgpu::BindGroup,
-    shadow_bind_group: wgpu::BindGroup,
+    /// 四级 CSM 阴影 pass 的相机 bind group（各自引用一份 64B 相机 buffer）。
+    shadow_pass_bind_groups: [wgpu::BindGroup; 4],
+    /// 每级阴影 pass 的相机 buffer；`[0]` 近级、`[1]` 中级、`[2]` 远级、`[3]` 超远级。
+    shadow_pass_camera_buffers: [wgpu::Buffer; 4],
+    /// 6 个面分别作为深度附件渲染用的 D2 视图。
+    point_shadow_face_views: [wgpu::TextureView; POINT_SHADOW_LAYERS],
+    /// 主着色器 group0 的点光阴影 uniform（6 面矩阵 + 位置/远平面，400B）。
+    point_shadow_uniform_buffer: wgpu::Buffer,
+    point_shadow_camera_buffers: [wgpu::Buffer; POINT_SHADOW_LAYERS],
+    point_shadow_bind_groups: [wgpu::BindGroup; POINT_SHADOW_LAYERS],
     depth_view: wgpu::TextureView,
     /// Current depth-view size; rebuilt when the render target changes size.
     depth_size: (u32, u32),
-    shadow_view: wgpu::TextureView,
+    /// 每级阴影图的单层渲染视图。
+    shadow_views: [wgpu::TextureView; 4],
+    /// ESM 的 4 个半分辨率层视图；方向光 filtered shadow 打开时才写。
+    esm_layer_views: [wgpu::TextureView; 4],
+    esm_pipeline: wgpu::RenderPipeline,
+    esm_bind_groups: [wgpu::BindGroup; 4],
+    /// 本帧实际被写入的深度视图（3D 共用 depth_view；纯世界 Sprite 用独立视图）。
+    ssao_depth_view: wgpu::TextureView,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// M79 P1-3c：**逐纹理**采样器表（`滤镜 × 寻址` 全组合，构造时一次建好）。
@@ -779,7 +845,7 @@ pub struct Renderer {
     linear_textures: Vec<CachedMaterialTexture>,
     /// 贴图内容 → 槽位。同一份内嵌像素被多个图元/材质引用时只上传一次；
     /// 键含尺寸与色彩空间，sRGB 与线性语义不会互相顶替。
-    texture_content_cache: HashMap<(u64, u32, u32, bool), u32>,
+    texture_content_cache: HashMap<(u64, u32, u32, bool, u32), u32>,
     /// `.material` 路径 → 已解析的 GPU 材质。`None` = 加载/解析失败（已告警，
     /// 后续帧不再重复尝试，绘制回退到 glTF 内嵌材质）。
     material_cache: HashMap<String, Option<GpuMaterial>>,
@@ -799,6 +865,9 @@ pub struct Renderer {
     instancing_enabled: bool,
     /// Frames rendered since startup, for periodic baseline logging.
     frame_count: u64,
+    /// Monotonic render clock. Only the `w` lane of the camera position is used
+    /// (water ripples); gameplay time stays authoritative in the 10 Hz sim.
+    clock: web_time::Instant,
     _material_bind_group_layout: wgpu::BindGroupLayout,
     /// 非阻塞回读槽（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
     readback_slots: Vec<ReadbackSlot>,
@@ -847,6 +916,8 @@ pub struct Renderer {
     post_process_layout: wgpu::BindGroupLayout,
     post_process_sampler: wgpu::Sampler,
     post_process_params: wgpu::Buffer,
+    /// Tonemap/SSAO 专用布局：额外深度纹理与逆视图投影。
+    tonemap_layout: wgpu::BindGroupLayout,
     /// 场景离屏颜色纹理（打开后处理时才创建）。视图单独存一份，好让每帧"取出 → 用完放回"，
     /// 从而不必在 `render_passes` 里同时持有 `&self` 与 `&mut self`。
     post_process_texture: Option<wgpu::Texture>,
@@ -865,9 +936,47 @@ pub struct Renderer {
     /// Tonemap 全屏管线（输入 HDR 场景、输出 LDR 目标）。能力不足时为 `None`。
     tonemap_pipeline: Option<wgpu::RenderPipeline>,
     tonemap_params: wgpu::Buffer,
+    /// 半分辨率 SSAO 生成 pass 与目标；Tonemap 只读这张 AO 图。
+    ssao_pipeline: wgpu::RenderPipeline,
+    ssao_bind_group_layout: wgpu::BindGroupLayout,
+    ssao_params: wgpu::Buffer,
+    ssao_blur_pipeline: wgpu::RenderPipeline,
+    ssao_blur_bind_group_layout: wgpu::BindGroupLayout,
+    ssao_blur_params: wgpu::Buffer,
+    ssao_raw_view: wgpu::TextureView,
+    ssao_view: wgpu::TextureView,
+    ssao_size: (u32, u32),
+    /// 半分辨率 SSR：rgb=反射颜色，a=命中。
+    ssr_pipeline: wgpu::RenderPipeline,
+    ssr_bind_group_layout: wgpu::BindGroupLayout,
+    ssr_params: wgpu::Buffer,
+    ssr_blur_pipeline: wgpu::RenderPipeline,
+    ssr_blur_bind_group_layout: wgpu::BindGroupLayout,
+    ssr_blur_params: wgpu::Buffer,
+    ssr_raw_view: wgpu::TextureView,
+    ssr_view: wgpu::TextureView,
+    ssr_history_view: wgpu::TextureView,
+    ssr_texture: wgpu::Texture,
+    ssr_history_texture: wgpu::Texture,
+    ssr_prev_view_projection: Option<Mat4>,
+    ssr_size: (u32, u32),
 }
 
 /// 光照 uniform 的浮点字数：方向光 12（direction / color_intensity / params）+ 点光 8×8。
+/// 点光阴影每面边长；前 `POINT_SHADOW_LIGHTS` 盏各 6 面，共 `POINT_SHADOW_LAYERS` 层。
+pub(super) const POINT_SHADOW_SIZE: u32 = 1024;
+const POINT_SHADOW_NEAR: f32 = 0.1;
+pub(super) const POINT_SHADOW_LIGHTS: usize = 8;
+pub(super) const POINT_SHADOW_LAYERS: usize = POINT_SHADOW_LIGHTS * 6;
+/// 6 面 × 8 盏矩阵（48×64B）+ 8 组位置/远平面（8×16B）= 3200B。
+pub(super) const POINT_SHADOW_UNIFORM_BYTES: usize =
+    POINT_SHADOW_LAYERS * 64 + POINT_SHADOW_LIGHTS * 16;
+
+/// ESM filtered shadow 的边长：与方向光 CSM 同分辨率，4 层。
+/// `R16Float` 每层 2 B/px ⇒ 4 × 2048² × 2 B = 32 MiB。
+pub(super) const ESM_SIZE: u32 = 2048;
+pub(super) const ESM_LAYERS: usize = 4;
+
 const LIGHT_UNIFORM_WORDS: usize = 12 + 8 * 8;
 /// 对应字节数。`construct.rs` 的绑定尺寸与着色器结构必须同时等于它。
 pub(super) const LIGHT_UNIFORM_BYTES: u64 = (LIGHT_UNIFORM_WORDS * 4) as u64;
@@ -875,14 +984,26 @@ pub(super) const LIGHT_UNIFORM_BYTES: u64 = (LIGHT_UNIFORM_WORDS * 4) as u64;
 /// 打包一帧的光照 uniform。
 ///
 /// 布局（与 `mesh3d_pbr.wgsl` 的 `Light` 一一对应）：
-/// `direction` / `color_intensity` / `params = [count, 0, 0, 0]`，
+/// `direction` / `color_intensity` / `params = [count, soft_shadow, 0, 0]`，
 /// 随后 8 组 `[position.xyz, range]` + `[color.rgb, intensity]`，未用的槽位补零。
-fn light_uniform_bytes(light: Light, points: &[PointLight]) -> Vec<u8> {
+fn light_uniform_bytes(
+    light: Light,
+    points: &[PointLight],
+    soft_shadows: bool,
+    filtered_shadows: bool,
+    point_shadow: Option<(usize, f32)>,
+) -> Vec<u8> {
     let (direction, color_intensity) = light.uniform();
     let mut words = [0.0_f32; LIGHT_UNIFORM_WORDS];
     words[0..4].copy_from_slice(&direction);
     words[4..8].copy_from_slice(&color_intensity);
     words[8] = points.len().min(MAX_POINT_LIGHTS) as f32;
+    words[9] = if soft_shadows { 1.0 } else { 0.0 };
+    // z = 方向光 ESM 开关；w = 点光远平面（旧的 slot 索引没有消费者）。
+    words[10] = if filtered_shadows { 1.0 } else { 0.0 };
+    if let Some((_index, far)) = point_shadow {
+        words[11] = far;
+    }
     for (index, point) in points.iter().take(MAX_POINT_LIGHTS).enumerate() {
         let (position_range, tint) = point.uniform();
         let base = 12 + index * 8;
@@ -912,7 +1033,12 @@ impl Renderer {
         };
         // P3-R02：相机 uniform 扩成「视图投影 + 世界位置」。位置只在 PBR 片元的视线向量里
         // 用到；旧路径的着色器结构仍是 64 字节，读同一个缓冲区的前 64 字节，像素不变。
-        let camera_uniform = camera_uniform(&matrix, scene.camera.position);
+        let camera_uniform = camera_uniform(
+            &matrix,
+            scene.camera.position,
+            self.clock.elapsed().as_secs_f32(),
+            scene.camera.clip_plane,
+        );
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -927,17 +1053,73 @@ impl Renderer {
 
     /// 光照与阴影 uniform（与相机矩阵分开写，缺相机时也要更新）。
     fn write_light_uniforms(&mut self, scene: &Scene3d) {
+        let point_shadow = self.render_settings.point_shadows.then(|| {
+            scene
+                .point_lights
+                .first()
+                .map(|point| (0usize, point_shadow_far(point.range)))
+        });
+        let point_shadow = point_shadow.flatten();
         self.queue.write_buffer(
             &self.light_buffer,
             0,
-            &light_uniform_bytes(scene.light, &scene.point_lights),
+            &light_uniform_bytes(
+                scene.light,
+                &scene.point_lights,
+                self.render_settings.soft_shadows,
+                self.render_settings.filtered_shadows,
+                point_shadow,
+            ),
         );
-        let light_matrix = light_view_projection(scene.light);
+        // 前八盏（最多 8 盏）点光各写 6 面矩阵；未用槽位保持全零，着色器用 params.w>0 判定有效性。
+        let mut bytes = vec![0u8; POINT_SHADOW_UNIFORM_BYTES];
+        if self.render_settings.point_shadows {
+            for (slot, point) in scene
+                .point_lights
+                .iter()
+                .take(POINT_SHADOW_LIGHTS)
+                .enumerate()
+            {
+                let far = point_shadow_far(point.range);
+                let cameras = point_shadow_view_projections(point.position, far);
+                let matrix_base = slot * 6 * 64;
+                for (face, camera) in cameras.iter().enumerate() {
+                    let offset = matrix_base + face * 64;
+                    bytes[offset..offset + 64]
+                        .copy_from_slice(bytemuck::cast_slice(&camera.columns));
+                    self.queue.write_buffer(
+                        &self.point_shadow_camera_buffers[slot * 6 + face],
+                        0,
+                        bytemuck::cast_slice(&camera.columns),
+                    );
+                }
+                let params_offset = POINT_SHADOW_LAYERS * 64 + slot * 16;
+                bytes[params_offset..params_offset + 16].copy_from_slice(bytemuck::cast_slice(&[
+                    point.position.x,
+                    point.position.y,
+                    point.position.z,
+                    far,
+                ]));
+            }
+        }
+        self.queue
+            .write_buffer(&self.point_shadow_uniform_buffer, 0, &bytes);
+        // 阴影跟着相机焦点走：四级阴影图都以 target 为中心，近/中/远/超远半宽随距离伸缩。
+        let distance = (scene.camera.position - scene.camera.target).length();
+        let cascades = shadow_view_projections(scene.light, scene.camera.target, distance);
+        let matrices: Vec<[[f32; 4]; 4]> = cascades.iter().map(|matrix| matrix.columns).collect();
         self.queue.write_buffer(
             &self.shadow_camera_buffer,
             0,
-            bytemuck::cast_slice(&light_matrix.columns),
+            bytemuck::cast_slice(&matrices.concat()),
         );
+        for (index, matrix) in cascades.iter().enumerate() {
+            self.queue.write_buffer(
+                &self.shadow_pass_camera_buffers[index],
+                0,
+                bytemuck::cast_slice(&matrix.columns),
+            );
+        }
     }
 
     /// WP5：声明本帧的相机侧视图（清屏策略 + 视口）。
@@ -1366,23 +1548,150 @@ fn identity_palette_data() -> Vec<[f32; 4]> {
 /// 是"光往上照"）因此把阴影相机放到地面之上、而光照却来自下方，结果是所有朝上的表面 `diffuse = 0`
 /// （只剩 0.15 环境光）、阴影完全不可见。docs/54 §10 第 ⑩ 行记着这次量测（地面像素恒为环境色、
 /// 阴影落点与受光点像素相同）。
+#[cfg(test)]
 fn light_view_projection(light: Light) -> Mat4 {
+    light_view_projection_focused(light, Vec3::ZERO, 10.0)
+}
+
+/// 两级阴影的半宽随相机距离变化：近级保住细节，远级覆盖大范围。
+///
+/// 上帝视角 270 m 时约 40 / 140 m 半宽（80 / 280 m 覆盖），比单级 60 m 多出
+/// 一倍多的有效阴影范围；近景仍收在 20 / 60 m，不会为了远处牺牲脚下。
+fn shadow_half_extents_for(distance: f32) -> [f32; 4] {
+    let near = (distance * 0.16).clamp(20.0, 40.0);
+    let mid = (distance * 0.34).clamp(45.0, 85.0);
+    let far = (distance * 0.58).clamp(85.0, 150.0);
+    // 第四级只兜住远端：半宽 160–260 m，270 m 视角下覆盖约 486 m 半径，
+    // 补上三级 CSM 在 300 m 外的无阴影区；前三级保持原值，近景读数和既有 golden 不变。
+    let ultra = (distance * 0.90).clamp(160.0, 260.0);
+    // P3-R17 级联缩放量化：连续缩放的半宽会让纹素尺寸每帧变一点，焦点 snap 只能对齐
+    // 平移、对不上缩放。把 2 m 作为一档向上取整，相机距离轻微变化时四级尺寸保持不变；
+    // 上限仍夹在 40/85/150/260，不改变覆盖语义。
+    let quantize = |value: f32, min: f32, max: f32| {
+        if value <= min {
+            min
+        } else if value >= max {
+            max
+        } else {
+            (value / 2.0).ceil() * 2.0
+        }
+    };
+    [
+        quantize(near, 20.0, 40.0),
+        quantize(mid, 45.0, 85.0),
+        quantize(far, 85.0, 150.0),
+        quantize(ultra, 160.0, 260.0),
+    ]
+}
+
+/// 点光阴影远平面：跟随灯的范围，至少 5 m、最多 100 m，避免远处小物体也进 6 个面。
+fn point_shadow_far(range: f32) -> f32 {
+    (range.max(5.0) * 1.2).clamp(5.0, 100.0)
+}
+
+/// 6 个立方体面的透视视图投影（+X、-X、+Y、-Y、+Z、-Z）。
+fn point_shadow_view_projections(position: Vec3, far: f32) -> [Mat4; 6] {
+    let viewport = Viewport::new(POINT_SHADOW_SIZE as f32, POINT_SHADOW_SIZE as f32)
+        .expect("point-shadow viewport is non-zero");
+    let directions = [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(-1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(0.0, 0.0, -1.0),
+    ];
+    let ups = [
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    ];
+    let mut result = [Mat4::identity(); 6];
+    for face in 0..6 {
+        // `Camera3D::perspective` 固定世界 +Y 为上；±Y 面需要用 Z 作不共线参考，
+        // 因此直接构造字段，让 `view_projection_matrix` 在最终 up 上做校验。
+        let camera = Camera3D {
+            position,
+            target: position + directions[face],
+            up: ups[face],
+            fov_y: std::f32::consts::FRAC_PI_2,
+            near: POINT_SHADOW_NEAR,
+            far,
+            ..Camera3D::default()
+        };
+        result[face] = camera
+            .view_projection_matrix(viewport)
+            .expect("constant point-shadow projection");
+    }
+    result
+}
+
+fn shadow_view_projections(light: Light, focus: Vec3, distance: f32) -> [Mat4; 4] {
+    let [near, mid, far, ultra] = shadow_half_extents_for(distance);
+    [
+        light_view_projection_focused(light, focus, near),
+        light_view_projection_focused(light, focus, mid),
+        light_view_projection_focused(light, focus, far),
+        light_view_projection_focused(light, focus, ultra),
+    ]
+}
+
+/// 跟随相机焦点的方向光阴影：把 2048² 阴影图铺在以 `focus` 为中心的正方形上。
+///
+/// 旧的固定原点 ±10 m 只够盖住出生点；上帝视角一拉远/平移，队列就走出阴影图，
+/// 这是“看起来有阴影、实际上远处没有”的根因。这里用相机 `target` 做焦点，
+/// 半宽 30 m（60 m 覆盖），并把焦点**在光源平面内**按纹素对齐；斜射光下只 snap
+/// 世界 x/z 仍会抖，因此在 `right/up` 基上 snap，再重建焦点。
+fn light_view_projection_focused(light: Light, focus: Vec3, half_extent: f32) -> Mat4 {
     let direction = light
         .direction
         .normalized()
         .unwrap_or(Vec3::new(0.0, -1.0, 0.0));
+    let half = half_extent.max(1.0);
+    let texel = 2.0 * half / 2048.0;
+    let snap = |value: f32| (value / texel).round() * texel;
+    // 光源平面的正交基：`right × up` 与光方向一致时，相机姿态可复现。
+    let up_hint = if direction.y.abs() > 0.99 {
+        Vec3::new(0.0, 0.0, 1.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let right = direction
+        .cross(up_hint)
+        .normalized()
+        .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+    let up = right
+        .cross(direction)
+        .normalized()
+        .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+    let right_coord = focus.dot(right);
+    let up_coord = focus.dot(up);
+    let forward_coord = focus.dot(direction);
+    // 三轴都在光源空间对齐：只对齐 right/up 时，焦点沿光方向的分量仍会改矩阵平移，
+    // 斜射光下依旧逐帧抖。
+    let focus = direction * snap(forward_coord) + right * snap(right_coord) + up * snap(up_coord);
     // 阴影相机**只消费姿态**（`view_matrix`）：它自带一份正交式投影（见下），透视投影的
     // 宽高比在这里从来不参与，因此拆分批 7 之后这台相机也不需要任何视口。
-    let Ok(camera) = Camera3D::perspective(-direction * 12.0, Vec3::ZERO, 1.3, 0.1, 30.0) else {
-        return Mat4::identity();
+    let camera = Camera3D {
+        position: focus - direction * 12.0,
+        target: focus,
+        up: up_hint,
+        fov_y: 1.3,
+        near: 0.1,
+        far: 30.0,
+        ..Camera3D::default()
     };
     let Ok(view) = camera.view_matrix() else {
         return Mat4::identity();
     };
+    let scale = 1.0 / half;
     let projection = Mat4 {
         columns: [
-            [0.1, 0.0, 0.0, 0.0],
-            [0.0, 0.1, 0.0, 0.0],
+            [scale, 0.0, 0.0, 0.0],
+            [0.0, scale, 0.0, 0.0],
             [0.0, 0.0, -1.0 / 29.9, 0.0],
             [0.0, 0.0, -0.1 / 29.9, 1.0],
         ],

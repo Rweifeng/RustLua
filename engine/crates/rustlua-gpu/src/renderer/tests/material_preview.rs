@@ -64,7 +64,7 @@ fn render_ground(
     let extracted = runtime.scene_3d(viewport).expect("preview 3D extraction");
     let mesh = runtime.vertices(SIZE, SIZE).expect("preview 2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer

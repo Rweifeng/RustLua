@@ -48,6 +48,156 @@ fn shadow_camera_sits_on_the_light_side_of_the_documented_direction() {
     );
 }
 
+/// 方向光阴影必须跟着相机焦点走：焦点在 40,-20 时仍落在阴影图中心，且覆盖半径
+/// 对应半宽 30 m；旧的固定原点 ±10 m 会把它裁掉。
+#[test]
+fn focused_shadow_camera_centers_on_the_camera_target() {
+    let sun = Light {
+        direction: Vec3::new(0.4, -0.8, 0.5),
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        ..Light::default()
+    };
+    let focus = Vec3::new(40.0, 0.0, -20.0);
+    let matrix = light_view_projection_focused(sun, focus, 30.0);
+    let centre = matrix.transform_point(focus).expect("focus clip");
+    assert!(
+        centre.x.abs() < 0.01 && centre.y.abs() < 0.01,
+        "焦点必须落在阴影图中心：{centre:?}"
+    );
+    // 半宽 30 m：焦点 + 30 m 应落在右边界附近（方向取阴影相机局部 x 轴较难，
+    // 这里只验证“同一偏移 30 m 的深度点仍在裁剪体内”，防止半径退化成旧的 10 m）。
+    let edge = Vec3::new(focus.x + 25.0, focus.y, focus.z);
+    let edge_clip = matrix.transform_point(edge).expect("edge clip");
+    assert!(
+        edge_clip.x.abs() <= 1.0 && edge_clip.y.abs() <= 1.0,
+        "25 m 偏移必须仍在 30 m 半宽阴影图内：{edge_clip:?}"
+    );
+}
+
+/// 小于一个纹素的焦点平移不应改变四级阴影矩阵：斜射光下按光源平面 snap 后，
+/// 相机平移不会让阴影边缘逐帧抖动。
+#[test]
+fn shadow_projection_is_stable_under_sub_texel_focus_motion() {
+    let sun = Light {
+        direction: Vec3::new(0.4, -0.8, 0.5),
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        ..Light::default()
+    };
+    let a = shadow_view_projections(sun, Vec3::new(40.0, 0.0, -20.0), 270.0);
+    let b = shadow_view_projections(sun, Vec3::new(40.0005, 0.0, -20.0005), 270.0);
+    for (index, (left, right)) in a.iter().zip(b.iter()).enumerate() {
+        assert_eq!(
+            left.columns, right.columns,
+            "第 {index} 级在亚纹素平移下必须保持同一矩阵"
+        );
+    }
+}
+
+/// 阴影半宽随相机距离伸缩：近景收紧、远景覆盖更大，且有上下限防止退化。
+#[test]
+fn shadow_extent_tracks_camera_distance_with_clamps() {
+    assert_eq!(shadow_half_extents_for(0.0), [20.0, 45.0, 85.0, 160.0]);
+    assert_eq!(shadow_half_extents_for(40.0), [20.0, 45.0, 85.0, 160.0]);
+    assert_eq!(shadow_half_extents_for(120.0), [20.0, 45.0, 85.0, 160.0]);
+    assert_eq!(shadow_half_extents_for(270.0), [40.0, 85.0, 150.0, 244.0]);
+    assert_eq!(shadow_half_extents_for(1000.0), [40.0, 85.0, 150.0, 260.0]);
+}
+
+/// P3-R17：半宽按 2 m 一档量化，相机距离轻微变化时级联尺寸不逐帧变；缩放量化不
+/// 改变上下限，也不让覆盖范围掉到 clamp 之外。
+#[test]
+fn shadow_extents_quantize_scale_steps() {
+    let a = shadow_half_extents_for(270.0);
+    let b = shadow_half_extents_for(270.4);
+    assert_eq!(a, b, "0.4 m 距离变化应落在同一档：{a:?} vs {b:?}");
+    for (distance, extents) in [
+        (150.0, shadow_half_extents_for(150.0)),
+        (210.0, shadow_half_extents_for(210.0)),
+        (300.0, shadow_half_extents_for(300.0)),
+    ] {
+        for (i, value) in extents.into_iter().enumerate() {
+            let endpoint = matches!(value, 40.0 | 85.0 | 150.0 | 260.0);
+            assert!(
+                endpoint || value % 2.0 == 0.0,
+                "distance={distance} cascade={i} 半宽 {value} 未量化到 2 m"
+            );
+        }
+    }
+    assert_eq!(shadow_half_extents_for(1000.0), [40.0, 85.0, 150.0, 260.0]);
+}
+
+/// 四级阴影的近/中/远必须覆盖近级之外：120 m 偏移在近/中级裁剪体外、远级内。
+#[test]
+fn far_shadow_cascade_covers_beyond_the_near_cascade() {
+    let sun = Light {
+        direction: Vec3::new(0.4, -0.8, 0.5),
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        ..Light::default()
+    };
+    let focus = Vec3::new(40.0, 0.0, -20.0);
+    let [near, mid, far, _ultra] = shadow_view_projections(sun, focus, 270.0);
+    let point = Vec3::new(focus.x + 120.0, focus.y, focus.z);
+    let near_clip = near.transform_point(point).expect("near clip");
+    let mid_clip = mid.transform_point(point).expect("mid clip");
+    let far_clip = far.transform_point(point).expect("far clip");
+    assert!(
+        near_clip.x.abs() > 1.0 || near_clip.y.abs() > 1.0,
+        "120 m 偏移应落在近级 40 m 半宽之外：{near_clip:?}"
+    );
+    assert!(
+        mid_clip.x.abs() > 1.0 || mid_clip.y.abs() > 1.0,
+        "120 m 偏移应落在中级 85 m 半宽之外：{mid_clip:?}"
+    );
+    assert!(
+        far_clip.x.abs() <= 1.0 && far_clip.y.abs() <= 1.0,
+        "120 m 偏移必须落在远级 150 m 半宽之内：{far_clip:?}"
+    );
+}
+
+/// 第四级只兜远端：200 m 偏移在前三级裁剪体外，但必须在超远级 243 m 半宽内。
+#[test]
+fn ultra_shadow_cascade_covers_beyond_the_far_cascade() {
+    let sun = Light {
+        direction: Vec3::new(0.4, -0.8, 0.5),
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        ..Light::default()
+    };
+    let focus = Vec3::new(40.0, 0.0, -20.0);
+    let [near, mid, far, ultra] = shadow_view_projections(sun, focus, 270.0);
+    let point = Vec3::new(focus.x + 200.0, focus.y, focus.z);
+    for (name, clip) in [
+        ("near", near.transform_point(point).expect("near clip")),
+        ("mid", mid.transform_point(point).expect("mid clip")),
+        ("far", far.transform_point(point).expect("far clip")),
+    ] {
+        assert!(
+            clip.x.abs() > 1.0 || clip.y.abs() > 1.0,
+            "{name} 级 150 m 半宽不应覆盖 200 m 偏移：{clip:?}"
+        );
+    }
+    let ultra_clip = ultra.transform_point(point).expect("ultra clip");
+    assert!(
+        ultra_clip.x.abs() <= 1.0 && ultra_clip.y.abs() <= 1.0,
+        "200 m 偏移必须落在超远级 243 m 半宽之内：{ultra_clip:?}"
+    );
+}
+
+/// 软阴影开关必须写进 `Light.params.y`：着色器用这一位在单次比较与 3×3 PCF 之间分叉。
+#[test]
+fn soft_shadow_flag_is_packed_into_light_params_y() {
+    let sun = Light::default();
+    let hard = light_uniform_bytes(sun, &[], false, false, None);
+    let soft = light_uniform_bytes(sun, &[], true, false, None);
+    let hard_words: &[f32] = bytemuck::cast_slice(&hard);
+    let soft_words: &[f32] = bytemuck::cast_slice(&soft);
+    assert_eq!(hard_words[9], 0.0);
+    assert_eq!(soft_words[9], 1.0);
+}
+
 /// WP6：三条管线的深度策略逐条钉住。
 ///
 /// 回归背景：这三个设置曾是散落的字段字面量，一次脚本化编辑把 **mesh3d 与 shadow** 的
@@ -151,7 +301,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
     };
     let render_and_read = |renderer: &mut Renderer, target: &wgpu::Texture| {
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.render_into_texture(&empty, None, &view, SIZE, SIZE);
+        renderer.render_into_texture(&empty, None, &view, SIZE, SIZE, true);
         renderer
             .copy_texture_to_cpu(target, SIZE, SIZE)
             .expect("readback")
@@ -330,7 +480,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
     let clipped = {
         let target = new_target("rustlua-view-overlay");
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.render_into_texture(&quad, None, &view, SIZE, SIZE);
+        renderer.render_into_texture(&quad, None, &view, SIZE, SIZE, true);
         renderer
             .copy_texture_to_cpu(&target, SIZE, SIZE)
             .expect("readback")

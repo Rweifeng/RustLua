@@ -74,7 +74,7 @@ fn main() {
     // push 被 cull 拒绝的净效果一致——预筛跳过的实体仍占序号，不产顶点）。因此
     // 开/关索引的顶点数可以不同（这是预筛的预期副作用）；**像素逐字节一致**才是契约。
 
-    let render_off = renderer.render_into_texture(&mesh_off, None, view, WIDTH, HEIGHT);
+    let render_off = renderer.render_into_texture(&mesh_off, None, view, WIDTH, HEIGHT, true);
     assert!(
         matches!(render_off, RenderOutcome::Presented),
         "index-off 渲染未呈现"
@@ -83,7 +83,7 @@ fn main() {
         .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (index off)");
 
-    let render_on = renderer.render_into_texture(&mesh_on, None, view, WIDTH, HEIGHT);
+    let render_on = renderer.render_into_texture(&mesh_on, None, view, WIDTH, HEIGHT, true);
     assert!(
         matches!(render_on, RenderOutcome::Presented),
         "index-on 渲染未呈现"

@@ -199,7 +199,7 @@ fn main() -> Result<(), String> {
     )
     .map_err(|error| format!("renderer：{error}"))?;
     if !matches!(
-        renderer.render_into_texture(&mesh, None, fixture.view(), out_w, out_h),
+        renderer.render_into_texture(&mesh, None, fixture.view(), out_w, out_h, true),
         RenderOutcome::Presented
     ) {
         return Err("离屏渲染没有出帧".to_owned());

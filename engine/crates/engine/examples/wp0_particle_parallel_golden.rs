@@ -66,7 +66,7 @@ fn main() {
         .vertices(WIDTH, HEIGHT)
         .expect("2D extraction (seq)");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_seq, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_seq, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_seq = renderer
@@ -78,7 +78,7 @@ fn main() {
         .vertices(WIDTH, HEIGHT)
         .expect("2D extraction (par)");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_par, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_par, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_par = renderer

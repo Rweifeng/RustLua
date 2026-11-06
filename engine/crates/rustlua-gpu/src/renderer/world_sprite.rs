@@ -174,6 +174,11 @@ impl Renderer {
             );
             return;
         };
+        if world.shared_depth {
+            self.ssao_depth_view = self.depth_view.clone();
+        } else {
+            self.ssao_depth_view = self.world_sprite_depth_view.clone();
+        }
         let depth_view = if world.shared_depth {
             &self.depth_view
         } else {

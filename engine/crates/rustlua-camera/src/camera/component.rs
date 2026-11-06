@@ -317,6 +317,11 @@ pub struct Camera3D {
     /// docs/54 §4.2：相机是否**启用**（组件串里的 `enabled=false`）。默认启用；禁用的相机不参与
     /// 选择（`camera.set_active` 选中禁用相机会回退到下一台可用相机并记 warning）。
     pub enabled: bool,
+    /// 世界空间裁剪平面 `n·x + d >= 0` 保留、负侧丢弃；`[0,0,0,0]` 表示不裁剪。
+    ///
+    /// **会话级**视觉参数：不进场景组件串（`to_component_str` 不写），由 Lua
+    /// `camera.set_clip_plane` 设置，渲染器每帧从活动相机读取。
+    pub clip_plane: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
@@ -342,6 +347,7 @@ impl Default for Camera3D {
             far: 100.0,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         }
     }
 }
@@ -363,6 +369,7 @@ impl Camera3D {
             far,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         };
         camera.validate()?;
         Ok(camera)

@@ -87,6 +87,9 @@ pub struct PostProcess {
     pub tonemap: Tonemap,
     /// 曝光档位（EV）：线性增益 = `2^exposure_ev`。HDR 由 Tonemap pass 消费；LDR 折进后处理。
     pub exposure_ev: f32,
+    /// HDR Tonemap 前的全屏泛光强度（0 = 关闭，1 = 最强）。只在 HDR Tonemap pass
+    /// 生效，不污染 2D/UI；LDR 帧没有 Tonemap pass，因此不产生泛光。
+    pub bloom: f32,
 }
 
 impl Default for PostProcess {
@@ -97,6 +100,7 @@ impl Default for PostProcess {
             vignette: 0.0,
             tonemap: Tonemap::Aces,
             exposure_ev: 0.0,
+            bloom: 0.0,
         }
     }
 }
@@ -155,7 +159,20 @@ impl PostProcess {
             vignette,
             tonemap,
             exposure_ev,
+            bloom: 0.0,
         })
+    }
+
+    /// 设置 HDR 泛光强度；非有限值或越界值当场拒绝，不静默夹紧。
+    pub fn with_bloom(mut self, bloom: f32) -> Result<Self, PostProcessError> {
+        if !bloom.is_finite() {
+            return Err(PostProcessError::NonFiniteBloom(bloom));
+        }
+        if !(0.0..=1.0).contains(&bloom) {
+            return Err(PostProcessError::BloomOutOfRange(bloom));
+        }
+        self.bloom = bloom;
+        Ok(self)
     }
 
     /// 参数是否"什么都不做"。
@@ -221,6 +238,10 @@ pub enum PostProcessError {
     ExposureEvOutOfRange(f32),
     #[error("HDR mode requires PostProcess.exposure == 1.0 (exposure belongs to exposure_ev): {0}")]
     HdrExposureNotUnity(f32),
+    #[error("bloom must be finite: {0}")]
+    NonFiniteBloom(f32),
+    #[error("bloom must be in 0.0..=1.0: {0}")]
+    BloomOutOfRange(f32),
 }
 
 #[cfg(test)]
@@ -238,6 +259,24 @@ mod tests {
         );
         assert_eq!(settings.tonemap, Tonemap::Aces);
         assert_eq!(settings.exposure_ev, 0.0);
+        assert_eq!(settings.bloom, 0.0);
+    }
+
+    #[test]
+    fn bloom_is_opt_in_and_validated() {
+        let settings = PostProcess::default()
+            .with_bloom(0.25)
+            .expect("valid bloom");
+        assert_eq!(settings.bloom, 0.25);
+        assert!(!settings.is_identity(), "开了泛光就不再是恒等参数");
+        assert!(matches!(
+            PostProcess::default().with_bloom(f32::NAN),
+            Err(PostProcessError::NonFiniteBloom(_))
+        ));
+        assert_eq!(
+            PostProcess::default().with_bloom(1.5),
+            Err(PostProcessError::BloomOutOfRange(1.5))
+        );
     }
 
     /// 非法值必须当场报错：静默夹紧会让"我调了参数但没变化"变成无从查起的问题。

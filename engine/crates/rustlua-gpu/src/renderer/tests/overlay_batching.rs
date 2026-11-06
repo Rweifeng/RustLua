@@ -143,7 +143,7 @@ fn adjacent_same_texture_draws_collapse_into_one_draw_call() {
         .collect();
     let target = target(&device, "rustlua-batch-merged");
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE);
+    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE, true);
 
     let metrics = renderer.last_frame_metrics();
     assert_eq!(
@@ -213,7 +213,7 @@ fn different_texture_breaks_the_batch() {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut scene = mesh(vertices, draws);
     scene.paths = vec![BLUE_KEY.to_owned()];
-    renderer.render_into_texture(&scene, None, &view, SIZE, SIZE);
+    renderer.render_into_texture(&scene, None, &view, SIZE, SIZE, true);
     let metrics = renderer.last_frame_metrics();
     assert_eq!(
         metrics.draw_calls, 3,
@@ -253,7 +253,7 @@ fn a_thousand_adjacent_quads_become_one_draw_call() {
         .collect();
     let target = target(&device, "rustlua-batch-scale");
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE);
+    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE, true);
     let metrics = renderer.last_frame_metrics();
     assert_eq!(
         metrics.draw_calls, 1,
@@ -293,7 +293,7 @@ fn alternating_textures_never_merge() {
     scene.paths = vec![ALT_KEY.to_owned()];
     let target = target(&device, "rustlua-batch-alternating");
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.render_into_texture(&scene, None, &view, SIZE, SIZE);
+    renderer.render_into_texture(&scene, None, &view, SIZE, SIZE, true);
     let metrics = renderer.last_frame_metrics();
     assert_eq!(
         metrics.draw_calls,
@@ -325,7 +325,7 @@ fn non_contiguous_ranges_never_merge() {
     ];
     let target = target(&device, "rustlua-batch-gap");
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE);
+    renderer.render_into_texture(&mesh(vertices, draws), None, &view, SIZE, SIZE, true);
     assert_eq!(
         renderer.last_frame_metrics().draw_calls,
         2,

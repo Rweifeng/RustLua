@@ -150,7 +150,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
     };
 
     let handle = AssetHandle::new(0, 1);
-    renderer.render_into_texture(&quad(handle), None, &view, size, size);
+    renderer.render_into_texture(&quad(handle), None, &view, size, size, true);
     let first_metrics = renderer.last_frame_metrics();
     assert_eq!(
         first_metrics.draw_calls, 1,
@@ -175,7 +175,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
         "贴图上传后应记录显存字节：{resources:?}"
     );
     assert_eq!(resources.texture_identity_misses, 1);
-    renderer.render_into_texture(&quad(handle), None, &view, size, size);
+    renderer.render_into_texture(&quad(handle), None, &view, size, size, true);
     assert_eq!(
         renderer.texture_identity_stats(),
         (1, 1),
@@ -190,7 +190,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
     // 没有身份（宿主手写网格）时走旧路径：仍能画，但句柄统计不动。
     let mut legacy = quad(handle);
     legacy.path_handles.clear();
-    renderer.render_into_texture(&legacy, None, &view, size, size);
+    renderer.render_into_texture(&legacy, None, &view, size, size, true);
     assert_eq!(
         renderer.texture_identity_stats(),
         (1, 1),
@@ -288,7 +288,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         vector_segments: Vec::new(),
     };
 
-    renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size);
+    renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size, true);
     assert_eq!(
         renderer.mesh_identity_stats(),
         (0, 1),
@@ -309,7 +309,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         renderer.last_frame_metrics().set_pass_calls >= 2,
         "阴影 + 主网格两条通道各设置一次管线"
     );
-    renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size);
+    renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size, true);
     assert_eq!(
         renderer.mesh_identity_stats(),
         (1, 1),
@@ -318,7 +318,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
     assert_eq!(renderer.cached_mesh_count(), 1, "命中不该重复解析");
 
     // 没有身份：按路径解析（旧路径），身份统计不应变化。
-    renderer.render_into_texture(&mesh, Some(&scene(None)), &view, size, size);
+    renderer.render_into_texture(&mesh, Some(&scene(None)), &view, size, size, true);
     assert_eq!(
         renderer.mesh_identity_stats(),
         (1, 1),

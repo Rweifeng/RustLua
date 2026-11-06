@@ -81,7 +81,7 @@ fn main() -> Result<(), String> {
         .vertices(WIDTH, HEIGHT)
         .map_err(|error| format!("vertices: {error}"))?;
     if !matches!(
-        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ) {
         return Err("render did not present".to_owned());

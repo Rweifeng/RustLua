@@ -450,6 +450,7 @@ mod tests {
             far: 10.0,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         };
         assert!(CameraView::from_camera3d(degenerate, viewport).is_err());
 

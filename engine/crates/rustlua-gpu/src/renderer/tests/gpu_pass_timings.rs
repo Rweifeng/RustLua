@@ -119,7 +119,7 @@ fn per_pass_timestamps_cover_the_frame_and_agree_within_five_percent() {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = overlay_mesh();
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE),
+        renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE, true),
         RenderOutcome::Presented
     ));
     let frame_us = renderer
@@ -168,7 +168,7 @@ fn device_without_timestamp_features_reports_unsupported_not_zero() {
     let texture = target(&device);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     assert!(matches!(
-        renderer.render_into_texture(&overlay_mesh(), None, &view, SIZE, SIZE),
+        renderer.render_into_texture(&overlay_mesh(), None, &view, SIZE, SIZE, true),
         RenderOutcome::Presented
     ));
     assert_eq!(

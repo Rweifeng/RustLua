@@ -90,7 +90,7 @@ fn render_metal_center(
     let extracted = runtime.scene_3d(viewport).expect("IBL 3D extraction");
     let mesh = runtime.vertices(SIZE, SIZE).expect("IBL 2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer

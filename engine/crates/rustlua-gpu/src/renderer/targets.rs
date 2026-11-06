@@ -25,30 +25,48 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    }
-
-    pub(super) fn create_shadow_view(device: &Device, size: u32) -> wgpu::TextureView {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("rustlua-shadow-map"),
-                size: wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    pub(super) fn create_shadow_view(
+        device: &Device,
+        size: u32,
+    ) -> (wgpu::TextureView, [wgpu::TextureView; 4]) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-shadow-map-array"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 4,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let sample = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("rustlua-shadow-sample-view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            base_array_layer: 0,
+            array_layer_count: Some(4),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+        let layer = |cascade: u32| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("rustlua-shadow-layer-view"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: cascade,
+                array_layer_count: Some(1),
+                ..wgpu::TextureViewDescriptor::default()
+            })
+        };
+        (sample, [layer(0), layer(1), layer(2), layer(3)])
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -74,6 +92,7 @@ impl Renderer {
         let height = height.max(1);
         if self.depth_size != (width, height) {
             self.depth_view = Self::create_depth_view(&self.device, width, height);
+            self.ssao_depth_view = self.depth_view.clone();
             self.depth_size = (width, height);
         }
     }

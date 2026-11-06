@@ -77,6 +77,7 @@ fn main() {
         far: 100.0,
         pose_from_transform: false,
         enabled: true,
+        clip_plane: [0.0; 4],
     };
     let near = runtime
         .scene_3d_with_camera(viewport, Some(near_camera))
@@ -102,6 +103,7 @@ fn main() {
         far: 100.0,
         pose_from_transform: false,
         enabled: true,
+        clip_plane: [0.0; 4],
     };
     let far = runtime
         .scene_3d_with_camera(viewport, Some(far_camera))
@@ -131,7 +133,7 @@ fn main() {
 
     let mesh_near = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_near, Some(&near), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_near, Some(&near), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_near = renderer
@@ -141,7 +143,7 @@ fn main() {
 
     let mesh_far = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_far, Some(&far), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_far, Some(&far), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels_far = renderer

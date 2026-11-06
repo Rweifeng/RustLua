@@ -68,7 +68,7 @@ fn main() -> ExitCode {
     // ① HDR 开启：世界 8.0 → 线性 f16 场景目标 → ACES → LDR；UI 在之后。
     renderer.set_render_settings(RenderSettings::default().with_hdr(ToggleMode::On));
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let hdr_metrics = renderer.last_frame_metrics();
@@ -121,7 +121,7 @@ fn main() -> ExitCode {
     // ② 同一帧关闭 HDR：UI 像素必须一致（UI 画在 Tonemap 之后）。
     renderer.set_render_settings(RenderSettings::default());
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     assert!(

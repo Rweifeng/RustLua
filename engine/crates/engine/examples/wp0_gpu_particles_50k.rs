@@ -105,6 +105,10 @@ fn main() -> ExitCode {
         size_start: 8.0,
         size_end: 2.0,
         gravity: Vec2::zero(),
+        gravity_z: 0.0,
+        speed_z: 0.0,
+        spread_z: 0.0,
+        spawn_area: [0.0; 3],
         drag: 0.1,
         rotation: 0.0,
         rotation_speed: 0.5,
@@ -200,7 +204,7 @@ fn main() -> ExitCode {
         }
         gpu_dispatch += started.elapsed();
         let started = Instant::now();
-        renderer.render_into_texture(&mesh, None, view, TARGET, TARGET);
+        renderer.render_into_texture(&mesh, None, view, TARGET, TARGET, true);
         gpu_draw += started.elapsed();
         if let Err(error) = device.poll(wgpu::PollType::Wait {
             submission_index: None,

@@ -139,13 +139,23 @@ impl Renderer {
         models: &[Mat4],
         normals: bool,
     ) -> (wgpu::BindGroup, Option<NormalMatrixSlice>) {
-        let material_data: [[f32; 4]; 5] = [
+        // 第 6 个 vec4 是程序化表面开关：-1 内建水面，-2 内建地形。
+        // 负 normal_scale 不会进入法线采样（两种内建表面都没有法线贴图）。
+        let animated = if material.normal_scale < -1.5 {
+            2.0
+        } else if material.normal_scale < 0.0 {
+            1.0
+        } else {
+            0.0
+        };
+        let material_data: [[f32; 4]; 6] = [
             material.base_color,
             [
                 material.metallic,
                 material.roughness,
                 if material.skinned { 1.0 } else { 0.0 },
-                0.0,
+                // Built-in terrain detail atlas tile size in world units; 0 = off.
+                material.detail_scale,
             ],
             // 自发光已乘强度（alpha 恒 0）。
             [
@@ -171,6 +181,7 @@ impl Renderer {
                 },
                 material.alpha_cutoff,
             ],
+            [animated, 0.0, 0.0, 0.0],
         ];
         let (material_buffer, material_offset, material_size) =
             self.push_frame_uniform(bytemuck::cast_slice(&material_data));

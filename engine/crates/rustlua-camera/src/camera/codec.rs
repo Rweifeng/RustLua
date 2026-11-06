@@ -195,6 +195,7 @@ impl Camera3D {
             far: 0.0,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         };
         let mut seen = [false; 5];
         for field in value.split(';') {

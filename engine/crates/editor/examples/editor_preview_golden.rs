@@ -145,7 +145,7 @@ fn main() {
         let vertices = mesh.vertices.len();
         let draws = mesh.draws.len();
         assert!(matches!(
-            renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT),
+            renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT, true),
             RenderOutcome::Presented
         ));
         (

@@ -70,7 +70,7 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
         vector_glyphs: Vec::new(),
         vector_segments: Vec::new(),
     };
-    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32, true);
     assert!(
         matches!(outcome, RenderOutcome::Presented),
         "丢一个 draw 不该让整帧失败"
@@ -90,7 +90,7 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
     // （把 `sdf` 关掉才会走 `bind_group_for` 那条路；上面那条走的是 `sdf_bind_for`。）
     mesh.draws[0].sdf = false;
     mesh.draws[0].texture = 99;
-    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32, true);
     assert!(
         matches!(outcome, RenderOutcome::Presented),
         "越界下标不该 panic，整帧仍要出图"
@@ -161,7 +161,7 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
         vector_segments: Vec::new(),
     };
     // 空帧 + 未声明视图 ⇒ 只有回滚档的清屏（历史默认色）。
-    renderer.render_into_texture(&empty_mesh(), None, &view, size, size);
+    renderer.render_into_texture(&empty_mesh(), None, &view, size, size, true);
     assert_eq!(
         renderer.last_frame_plan().passes(),
         [RenderPass::Clear],
@@ -236,7 +236,7 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
         ],
         ..empty_mesh()
     };
-    renderer.render_into_texture(&quad, None, &view, size, size);
+    renderer.render_into_texture(&quad, None, &view, size, size, true);
     assert_eq!(
         renderer.last_frame_plan().passes(),
         [RenderPass::Legacy2DOverlay, RenderPass::ScreenUI],
@@ -312,7 +312,7 @@ fn post_process_pass_changes_pixels_in_the_documented_way() {
         vector_segments: Vec::new(),
     };
     let render_and_read = |renderer: &mut Renderer| -> Vec<u8> {
-        renderer.render_into_texture(&mesh, None, &view, size, size);
+        renderer.render_into_texture(&mesh, None, &view, size, size, true);
         renderer
             .copy_texture_to_cpu(&texture, size, size)
             .expect("post-process readback")

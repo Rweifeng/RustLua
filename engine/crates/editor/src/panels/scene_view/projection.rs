@@ -28,6 +28,7 @@ impl EditorApp {
             pose_from_transform: false,
             // 编辑器取景相机永远启用（`enabled` 是场景相机参与选帧的开关，见 docs/54 §4.2）。
             enabled: true,
+            clip_plane: [0.0; 4],
         }
     }
 

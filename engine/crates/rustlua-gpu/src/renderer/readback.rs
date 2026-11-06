@@ -6,6 +6,8 @@
 //! `mod.rs`：本模块是它的后代，读写它的私有字段本来就不需要放宽任何可见性（计划 §3.1.2）。
 
 use super::{ReadbackSlot, Renderer};
+use rustlua_render::frame::{Scene3d, SceneMesh};
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReadbackMetrics {
@@ -107,7 +109,168 @@ enum ReadbackPoll {
     Failed(String),
 }
 
+/// 在 PNG 内侧画一圈相框。照片模式用，不参与窗口逐帧路径。
+fn paint_frame(image: &mut image::RgbaImage, style: u8) {
+    let (width, height) = image.dimensions();
+    let short = width.min(height);
+    let border = ((short as f32) * 0.035).round().clamp(3.0, 24.0) as u32;
+    let (r, g, b) = match style {
+        2 => (178, 142, 74),
+        3 => (96, 124, 88),
+        4 => (22, 22, 22),
+        _ => (78, 54, 36),
+    };
+    let color = image::Rgba([r, g, b, 255]);
+    for y in 0..height {
+        for x in 0..width {
+            if x < border || y < border || x >= width - border || y >= height - border {
+                image.put_pixel(x, y, color);
+            }
+        }
+    }
+    // 第二道细线让相框不像纯色块；只对 2/3/4 档画。
+    if style >= 2 {
+        let inner = border + 3;
+        let line = image::Rgba([
+            r.saturating_add(30),
+            g.saturating_add(26),
+            b.saturating_add(18),
+            255,
+        ]);
+        for y in inner..height.saturating_sub(inner) {
+            for x in inner..width.saturating_sub(inner) {
+                if x == inner || y == inner || x + 1 == width - inner || y + 1 == height - inner {
+                    image.put_pixel(x, y, line);
+                }
+            }
+        }
+    }
+}
+
+/// 右下角烧一个 5×7 点阵的 `MYRMEX` 标记；只给照片模式，不依赖 UI 字体。
+fn paint_mark(image: &mut image::RgbaImage) {
+    const GLYPHS: [[&str; 7]; 6] = [
+        [
+            "10001", "11011", "10101", "10101", "10001", "10001", "10001",
+        ], // M
+        [
+            "10001", "10001", "01010", "00100", "00100", "00100", "00100",
+        ], // Y
+        [
+            "11110", "10001", "10001", "11110", "10100", "10010", "10001",
+        ], // R
+        [
+            "10001", "11011", "10101", "10101", "10001", "10001", "10001",
+        ], // M
+        [
+            "11111", "10000", "10000", "11110", "10000", "10000", "11111",
+        ], // E
+        [
+            "10001", "10001", "01010", "00100", "01010", "10001", "10001",
+        ], // X
+    ];
+    let (width, height) = image.dimensions();
+    let border = (((width.min(height) as f32) * 0.035).round() as u32).clamp(3, 24);
+    let scale = if width.min(height) < 200 { 1 } else { 2 };
+    let gap = scale;
+    let glyph_w = 5 * scale;
+    let text_w = GLYPHS.len() as u32 * glyph_w + (GLYPHS.len() as u32 - 1) * gap;
+    let text_h = 7 * scale;
+    if width < text_w + border + 16 || height < text_h + border + 16 {
+        return;
+    }
+    let x0 = width - border - 8 - text_w;
+    let y0 = height - border - 8 - text_h;
+    let color = image::Rgba([240, 232, 210, 255]);
+    for (g, glyph) in GLYPHS.iter().enumerate() {
+        let gx = x0 + g as u32 * (glyph_w + gap);
+        for (row, line) in glyph.iter().enumerate() {
+            for (col, ch) in line.chars().enumerate() {
+                if ch != '1' {
+                    continue;
+                }
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let x = gx + col as u32 * scale + dx;
+                        let y = y0 + row as u32 * scale + dy;
+                        if x < width && y < height {
+                            image.put_pixel(x, y, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 抓帧失败时的占位 PNG：深绿底 + 黄铜框 + MYRMEX 标记，避免存档缩略图全白。
+pub fn write_capture_placeholder(path: &Path) -> anyhow::Result<()> {
+    let mut image = image::RgbaImage::from_pixel(320, 180, image::Rgba([18, 22, 18, 255]));
+    paint_frame(&mut image, 2);
+    paint_mark(&mut image);
+    image
+        .save_with_format(path, image::ImageFormat::Png)
+        .map_err(|error| anyhow::anyhow!("save capture placeholder failed: {error}"))
+}
+
 impl Renderer {
+    /// 把当前帧额外渲染进离屏纹理并存成 PNG（M-screenshot）。
+    ///
+    /// 复用窗口渲染器的全部帧视图/环境/管线；离屏目标的格式与 surface 一致，
+    /// 因此 BGRA surface 会在这里换回 RGBA 再编码。调用方只在用户按 F2 时走一次，
+    /// 不进入逐帧路径。
+    /// `frame` 是照片模式相框档位（0 = 不烧边框）；1..4 用不同颜色画一圈内边框。
+    pub fn capture_surface_png(
+        &mut self,
+        mesh: &SceneMesh,
+        scene3d: Option<&Scene3d>,
+        path: &Path,
+        frame: u8,
+        include_ui: bool,
+    ) -> anyhow::Result<()> {
+        let (width, height) = (self.config.width, self.config.height);
+        if width == 0 || height == 0 {
+            anyhow::bail!("surface has zero size ({width}x{height})");
+        }
+        let format = self.config.format;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-capture-frame"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_into_texture(mesh, scene3d, &view, width, height, include_ui);
+        let mut pixels = self.copy_texture_to_cpu(&texture, width, height)?;
+        // Surface 常用 Bgra8UnormSrgb；PNG 要的是 RGB 顺序。
+        if matches!(
+            format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        ) {
+            for px in pixels.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+        let mut image = image::RgbaImage::from_raw(width, height, pixels)
+            .ok_or_else(|| anyhow::anyhow!("capture pixel buffer size mismatch"))?;
+        if frame > 0 && !include_ui {
+            paint_frame(&mut image, frame);
+            paint_mark(&mut image);
+        }
+        image
+            .save_with_format(path, image::ImageFormat::Png)
+            .map_err(|error| anyhow::anyhow!("save capture PNG failed: {error}"))?;
+        Ok(())
+    }
+
     /// Copies an RGBA8 texture back to the CPU (synchronous readback), used by
     /// the editor to display the embedded preview. The texture must have
     /// `COPY_SRC` usage.

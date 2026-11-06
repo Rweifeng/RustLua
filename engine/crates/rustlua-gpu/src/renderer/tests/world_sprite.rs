@@ -112,7 +112,7 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
     });
     let center_of = |renderer: &mut Renderer, mesh: &SceneMesh, texture: &wgpu::Texture| {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.render_into_texture(mesh, None, &view, SIZE, SIZE);
+        renderer.render_into_texture(mesh, None, &view, SIZE, SIZE, true);
         let pixels = renderer
             .copy_texture_to_cpu(texture, SIZE, SIZE)
             .expect("readback");
@@ -322,7 +322,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
     });
     let center_of = |renderer: &mut Renderer, mesh: &SceneMesh| {
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        renderer.render_into_texture(mesh, Some(&scene), &view, SIZE, SIZE);
+        renderer.render_into_texture(mesh, Some(&scene), &view, SIZE, SIZE, true);
         let pixels = renderer
             .copy_texture_to_cpu(&target, SIZE, SIZE)
             .expect("readback");

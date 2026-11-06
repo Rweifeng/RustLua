@@ -242,7 +242,7 @@ fn render_scene(
         .vertices(WIDTH, HEIGHT)
         .expect("point light 2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer

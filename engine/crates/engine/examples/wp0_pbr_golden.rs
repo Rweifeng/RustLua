@@ -305,7 +305,7 @@ fn render_scene(
     let extracted = runtime.scene_3d(viewport).expect("PBR 3D extraction");
     let mesh = runtime.vertices(WIDTH, HEIGHT).expect("PBR 2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer

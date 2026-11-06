@@ -19,6 +19,7 @@ use rustlua_render::frame::WorldSpriteVertex;
 use wgpu::DeviceDescriptor;
 
 mod capacity_and_caches;
+mod clip_plane;
 mod compute;
 mod depth_and_frame_views;
 mod gpu_pass_timings;
@@ -32,11 +33,13 @@ mod overlay_batching;
 mod particle_dispatch;
 mod passes;
 mod pbr;
+mod point_shadow;
 mod readback;
 mod render_metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod shader_hot_reload;
 mod shader_variants;
+mod ssao;
 mod texture_sampling;
 mod texture_upload;
 mod world_sprite;

@@ -58,7 +58,7 @@ fn render_once(
     let extracted = runtime.scene_3d(viewport).expect("3D extraction");
     let mesh = runtime.vertices(SIZE, SIZE).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE, true),
         RenderOutcome::Presented
     ));
     renderer

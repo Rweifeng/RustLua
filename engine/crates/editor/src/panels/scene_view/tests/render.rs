@@ -48,7 +48,7 @@ fn ui_test_scene_renders_offscreen_with_gpu() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     // GPU 渲染 ui_test 网格：若 panic/校验失败则测试失败。
-    renderer.render_into_texture(&mesh, None, &view, 1280, 720);
+    renderer.render_into_texture(&mesh, None, &view, 1280, 720, true);
     let _ = fs::remove_dir_all(&root);
 }
 

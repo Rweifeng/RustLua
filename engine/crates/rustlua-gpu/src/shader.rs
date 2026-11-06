@@ -130,8 +130,52 @@ pub const TONEMAP: ShaderSource = ShaderSource::new(
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/tonemap.wgsl")),
 );
 
+/// 方向光 ESM 的生成 pass：把 4 级 2048² 深度图降成 1024² 的 `exp(depth*8)`。
+pub const ESM: ShaderSource = ShaderSource::new(
+    "esm_shadow",
+    "engine/crates/rustlua-gpu/shaders/esm_shadow.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/esm_shadow.wgsl"
+    )),
+);
+
+/// 半分辨率 SSAO 生成 pass。
+pub const SSAO: ShaderSource = ShaderSource::new(
+    "ssao",
+    "engine/crates/rustlua-gpu/shaders/ssao.wgsl",
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/ssao.wgsl")),
+);
+
+/// SSAO 双边 3×3 模糊。
+pub const SSAO_BLUR: ShaderSource = ShaderSource::new(
+    "ssao_blur",
+    "engine/crates/rustlua-gpu/shaders/ssao_blur.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/ssao_blur.wgsl"
+    )),
+);
+
+/// 半分辨率 SSR。
+pub const SSR: ShaderSource = ShaderSource::new(
+    "ssr",
+    "engine/crates/rustlua-gpu/shaders/ssr.wgsl",
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/ssr.wgsl")),
+);
+
+/// SSR 双边 3×3 去噪。
+pub const SSR_BLUR: ShaderSource = ShaderSource::new(
+    "ssr_blur",
+    "engine/crates/rustlua-gpu/shaders/ssr_blur.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/ssr_blur.wgsl"
+    )),
+);
+
 /// 全部内嵌 shader（顺序稳定；新增 shader 必须同时进这里，测试会断言数量）。
-pub const ALL_SHADERS: [&ShaderSource; 8] = [
+pub const ALL_SHADERS: [&ShaderSource; 13] = [
     &VECTOR_TEXT,
     &TEXTURED,
     &WORLD_SPRITE,
@@ -140,6 +184,11 @@ pub const ALL_SHADERS: [&ShaderSource; 8] = [
     &SHADOW,
     &POST_PROCESS,
     &TONEMAP,
+    &ESM,
+    &SSAO,
+    &SSAO_BLUR,
+    &SSR,
+    &SSR_BLUR,
 ];
 
 /// 按稳定短名查找。
@@ -167,7 +216,7 @@ mod tests {
     /// 注册表必须覆盖全部内嵌 shader，名字/路径唯一，哈希与源一致。
     #[test]
     fn registry_is_unique_and_hashes_match_sources() {
-        assert_eq!(ALL_SHADERS.len(), 8, "新增 shader 必须同步注册表与别名");
+        assert_eq!(ALL_SHADERS.len(), 13, "新增 shader 必须同步注册表与别名");
         for (index, shader) in ALL_SHADERS.iter().enumerate() {
             assert!(!shader.name.is_empty(), "{shader:?}");
             assert!(
@@ -244,6 +293,33 @@ mod tests {
                 "{} 不应以空行开头（搬运时已去掉）",
                 shader.path
             );
+        }
+    }
+
+    /// 内嵌 PBR WGSL 至少要在 naga 里解析通过：着色器语法错误不该等到
+    /// 打开 PBR 那一帧才在 `create_shader_module` 里崩。四个 feature 组合都覆盖。
+    #[test]
+    fn mesh3d_pbr_parses_with_every_feature_combination() {
+        use crate::shader_preprocess::{PreprocessOptions, preprocess};
+        let known = ["STORAGE_INSTANCES", "SKIN", "IBL_DIFFUSE", "IBL_SPECULAR"];
+        for features in [
+            &[][..],
+            &["SKIN"][..],
+            &["STORAGE_INSTANCES"][..],
+            &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR"][..],
+        ] {
+            let processed = preprocess(
+                MESH3D_PBR.path,
+                MESH3D_PBR.source,
+                PreprocessOptions {
+                    features,
+                    known_features: &known,
+                    ..PreprocessOptions::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{features:?} 预处理失败：{error}"));
+            naga::front::wgsl::parse_str(processed.source())
+                .unwrap_or_else(|error| panic!("{features:?} WGSL 解析失败：{error}"));
         }
     }
 }

@@ -52,7 +52,7 @@ fn main() {
     let view = fixture.view();
     let mesh = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&extracted), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer

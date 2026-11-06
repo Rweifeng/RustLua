@@ -180,7 +180,7 @@ fn ground_center(
     let mesh = runtime.vertices(SIZE, SIZE).expect("2D extraction");
     assert!(
         matches!(
-            renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE),
+            renderer.render_into_texture(&mesh, Some(&extracted), view, SIZE, SIZE, true),
             RenderOutcome::Presented
         ),
         "覆盖目录下的 3D 帧必须正常提交"
@@ -427,7 +427,7 @@ fn ui_center(renderer: &mut Renderer, target: &wgpu::Texture, view: &wgpu::Textu
     let mesh = ui_mesh();
     assert!(
         matches!(
-            renderer.render_into_texture(&mesh, None, view, SIZE, SIZE),
+            renderer.render_into_texture(&mesh, None, view, SIZE, SIZE, true),
             RenderOutcome::Presented
         ),
         "2D 覆盖帧必须正常提交"

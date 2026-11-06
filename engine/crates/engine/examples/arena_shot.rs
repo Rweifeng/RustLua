@@ -81,7 +81,7 @@ fn main() -> Result<(), String> {
     .map_err(|error| format!("renderer：{error}"))?;
     let texture = fixture.texture();
     if !matches!(
-        renderer.render_into_texture(&mesh, Some(&extracted), fixture.view(), WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&extracted), fixture.view(), WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ) {
         return Err("离屏渲染没有出帧".to_owned());

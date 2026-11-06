@@ -58,7 +58,7 @@ fn offscreen_renderer_produces_pixels() {
         vector_glyphs: Vec::new(),
         vector_segments: Vec::new(),
     };
-    let outcome = renderer.render_into_texture(&mesh, None, &view, 64, 64);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, 64, 64, true);
     assert!(matches!(outcome, RenderOutcome::Presented));
     let pixels = renderer
         .copy_texture_to_cpu(&texture, 64, 64)
@@ -125,7 +125,7 @@ fn tetris_blocks_are_visible_pixels() {
     let scene = rustlua_scene::scene::Scene::load(root.join("scenes/main.scene")).unwrap();
     let mut runtime = engine::host::RuntimeScene::from_scene(Some(&root), scene).unwrap();
     let mesh = runtime.vertices(1280, 720).expect("vertices");
-    renderer.render_into_texture(&mesh, None, &view, 1280, 720);
+    renderer.render_into_texture(&mesh, None, &view, 1280, 720, true);
     let pixels = renderer
         .copy_texture_to_cpu(&texture, 1280, 720)
         .expect("readback");
@@ -215,7 +215,7 @@ fn tetris_restart_clears_field() {
     // 统计字段区域（屏幕 486..794 × 56..664）内的亮块像素（方块）。
     let mut count_blocks = |runtime: &mut engine::host::RuntimeScene| -> usize {
         let mesh = runtime.vertices(1280, 720).unwrap();
-        renderer.render_into_texture(&mesh, None, &view, 1280, 720);
+        renderer.render_into_texture(&mesh, None, &view, 1280, 720, true);
         let pixels = renderer.copy_texture_to_cpu(&texture, 1280, 720).unwrap();
         let mut n = 0;
         for y in 56..664usize {
@@ -314,7 +314,7 @@ fn editor_preview_path_renders_game_scene() {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.render_into_texture(&mesh, scene3d.as_ref(), &view, 640, 360);
+    renderer.render_into_texture(&mesh, scene3d.as_ref(), &view, 640, 360, true);
     let pixels = renderer
         .copy_texture_to_cpu(&texture, 640, 360)
         .expect("readback");

@@ -150,7 +150,7 @@ fn paint(renderer: &mut Renderer, key: &str, uv_scale: f32) -> Vec<u8> {
         RenderView::main_2d(camera, viewport, clear_black),
         RenderView::overlay_2d(camera, viewport),
     ));
-    let outcome = renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE, true);
     assert!(
         matches!(outcome, RenderOutcome::Presented),
         "离屏渲染没有走通（key={key}）"

@@ -781,6 +781,7 @@ impl PreviewSession {
             &self.texture_view,
             self.width,
             self.height,
+            true,
         );
         if self.uses_native_texture() && !self.downscales() {
             self.diagnostic = self.current_note();

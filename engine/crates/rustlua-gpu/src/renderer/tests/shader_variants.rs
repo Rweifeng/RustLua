@@ -283,6 +283,261 @@ fn uniform_instance_variant_passes_naga_validation() {
 }
 
 /// 变体键与缓存的行为（不依赖 GPU）：同键复用、不同键分开、超限报错不淘汰。
+/// 四级 CSM 的级联接缝必须在着色器里真的做了边界混合，而不是只改了 CPU 层数。
+#[test]
+fn shadow_cascades_blend_at_their_edges() {
+    for shader in [MESH3D, MESH3D_PBR] {
+        assert!(
+            shader.source.contains("fn cascade_edge"),
+            "{} 缺少级联边界函数",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("smoothstep(0.86, 1.0, edge)"),
+            "{} 必须在每级最后 14% 边界带做 smoothstep 混合",
+            shader.path
+        );
+        assert!(
+            shader.source.matches("return mix(").count() >= 3,
+            "{} 的 near→mid / mid→far / far→ultra 三处接缝都要混合",
+            shader.path
+        );
+        for layer in 0..4 {
+            assert!(
+                shader
+                    .source
+                    .contains(&format!("sample_shadow(mid.xy, mid.z - 0.002, {layer})"))
+                    || shader
+                        .source
+                        .contains(&format!("sample_shadow(far.xy, far.z - 0.002, {layer})"))
+                    || shader.source.contains(&format!(
+                        "sample_shadow(ultra.xy, ultra.z - 0.002, {layer})"
+                    ))
+                    || shader
+                        .source
+                        .contains(&format!("sample_shadow(near.xy, near.z - 0.002, {layer})")),
+                "{} 缺少第 {layer} 层采样",
+                shader.path
+            );
+        }
+    }
+}
+
+/// 水面：世界空间波法线 + 菲涅尔；有 bed 的水面不再乘 UV 边缘淡出（否则 10 单位
+/// 一块的水面会画出方格）。这两条是连续河道的着色器契约。
+#[test]
+fn terrain_cloud_shadows_use_world_space_and_camera_time() {
+    let shader = &MESH3D_PBR;
+    assert!(shader.source.contains("fn cloud_shadow"));
+    assert!(shader.source.contains("camera.position.w"));
+    assert!(
+        shader
+            .source
+            .contains("base_rgb * vec3<f32>(0.72, 0.78, 0.86)")
+    );
+    assert!(
+        shader
+            .source
+            .contains("base_rgb * vec3<f32>(0.74, 0.80, 0.88)")
+    );
+}
+
+#[test]
+fn water_shader_bends_normals_and_skips_tile_edges_for_bed() {
+    let shader = MESH3D_PBR;
+    assert!(
+        shader.source.contains("let slope = vec2<f32>("),
+        "{} 缺少世界空间水面斜率",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("-slope.x * 0.16"),
+        "{} 必须把波斜率传给法线",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("let fresnel = pow(1.0 - clamp(dot(n, view_dir)"),
+        "{} 缺少水面菲涅尔",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("select(smoothstep(0.0, 0.10, edge), 1.0, has_bed)"),
+        "{} 的有 bed 水面不得再乘 UV 边缘淡出",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("textureSampleLevel(normal_map, albedo_sampler, uv, 0.0).r * 9.0 - 1.0"),
+        "{} 的水面必须能读逐像素河床深度",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("material.surface.w < -0.5"),
+        "{} 必须用 detail_scale=-1 识别水面深度图",
+        shader.path
+    );
+}
+
+/// 地形贴图 splat：世界坐标采样内嵌 2x2 图集、按顶点权重混合、走 mip，
+/// 并保留原来的纯色路径（`surface.w == 0`）作为逐字节不变的回退。
+#[test]
+fn terrain_detail_atlas_is_sampled_in_world_space() {
+    let shader = MESH3D_PBR;
+    assert!(
+        shader.source.contains("fn terrain_atlas_sample"),
+        "{} 缺少地形图集采样函数",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("textureSampleLevel(albedo"),
+        "{} 的地形图集必须显式选 mip",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("material.surface.w > 0.001"),
+        "{} 必须用 surface.w 作为贴图开关/瓦片米数",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("world_position.xz / tile_scale"),
+        "{} 必须按世界坐标而不是高度/坡度 UV 采样",
+        shader.path
+    );
+    for tile in [
+        "vec2<f32>(0.0, 0.0)",
+        "vec2<f32>(1.0, 0.0)",
+        "vec2<f32>(0.0, 1.0)",
+        "vec2<f32>(1.0, 1.0)",
+    ] {
+        assert!(
+            shader.source.contains(tile),
+            "{} 缺少图集瓦片 {tile}",
+            shader.path
+        );
+    }
+    assert!(
+        shader
+            .source
+            .contains("let grass = vec3<f32>(0.20, 0.31, 0.15);"),
+        "{} 的无贴图回退色不能丢",
+        shader.path
+    );
+    // 地形法线图集：世界空间混合；通用切线基法线路径必须跳过地形。
+    assert!(
+        shader.source.contains("fn terrain_normal_atlas"),
+        "{} 缺少地形法线图集采样",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("terrain_normal.x * 2.0"),
+        "{} 必须把地形法线混进 PBR n",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("material.animation.x < 0.5 && material.params.z > 0.5"),
+        "{} 的通用法线贴图路径必须跳过地形与水",
+        shader.path
+    );
+}
+
+/// 点光软阴影必须与方向光共用 `light.params.y`，并真的做 3×3 比较采样。
+#[test]
+fn point_shadow_pcf_reuses_the_soft_shadow_flag() {
+    for shader in [MESH3D, MESH3D_PBR] {
+        assert!(
+            shader.source.contains("fn sample_point_shadow"),
+            "{} 缺少点光采样函数",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("cameras: array<mat4x4<f32>, 48>")
+                && shader.source.contains("params: array<vec4<f32>, 8>"),
+            "{} 必须给前八盏点光各留 6 层（48 矩阵 + 8 组参数）",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("fn point_shadow_slot"),
+            "{} 必须按光源位置分配点光阴影槽位",
+            shader.path
+        );
+        assert!(
+            shader
+                .source
+                .contains("var point_shadow_cube: texture_depth_cube_array"),
+            "{} 的点光阴影必须走 cube array，靠硬件跨面过滤",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("sum / 25.0"),
+            "{} 的点光 PCSS 必须是 5×5 平均",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("light.params.y < 0.5"),
+            "{} 的点光软阴影必须复用 Light.params.y 开关",
+            shader.path
+        );
+        assert!(
+            shader
+                .source
+                .contains("return sample_point_shadow(delta, i32(slot), depth_ref)"),
+            "{} 的 cube 方向必须交给点光 PCF 采样",
+            shader.path
+        );
+    }
+}
+
+/// P3-R18：方向光软阴影必须是 PCSS-lite（遮挡体搜索 + 接触硬化半径 + 5×5 PCF），
+/// 硬阴影仍走一次硬件比较；点光的 3×3 PCF 不被改写。
+#[test]
+fn directional_pcss_searches_blockers_before_filtering() {
+    for shader in [MESH3D, MESH3D_PBR] {
+        assert!(
+            shader.source.contains("fn sample_shadow"),
+            "{} 缺少方向光采样函数",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("average_blocker")
+                && shader.source.contains("blocker_sum")
+                && shader.source.contains("blocker_count"),
+            "{} 的 PCSS 必须先求遮挡体平均深度",
+            shader.path
+        );
+        assert!(
+            shader
+                .source
+                .contains("clamp((shadow_depth - average_blocker) * 48.0, 1.0, 3.0)"),
+            "{} 的 PCSS 半径必须随遮挡距离放大并夹在 1–3 纹素",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("textureLoad(shadow_map"),
+            "{} 的遮挡体搜索必须读原始深度而不是复用比较结果",
+            shader.path
+        );
+        assert!(
+            shader.source.contains("sum / 25.0"),
+            "{} 的 PCSS 必须是 5×5 平均",
+            shader.path
+        );
+        assert!(
+            shader
+                .source
+                .contains("return textureSampleCompare(shadow_map, shadow_sampler, shadow_uv, layer, shadow_depth);"),
+            "{} 的硬阴影仍必须是一次硬件比较",
+            shader.path
+        );
+    }
+}
+
 #[test]
 fn variant_keys_and_cache_are_consistent() {
     let keys = [

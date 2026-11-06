@@ -86,7 +86,7 @@ fn main() {
     let texture = fixture.texture();
     let view = fixture.view();
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&scene3d), view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&scene3d), view, WIDTH, HEIGHT, true),
         RenderOutcome::Presented
     ));
     let pixels = renderer
