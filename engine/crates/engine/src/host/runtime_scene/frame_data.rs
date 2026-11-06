@@ -102,6 +102,36 @@ impl RuntimeScene {
                         }),
                         source: BoundsSource::Fallback,
                     }
+                } else if rustlua_render::terrain::TerrainSpec::is_terrain_path(&renderer.mesh) {
+                    let (min, max) = rustlua_render::terrain::TerrainSpec::parse(&renderer.mesh)
+                        .map(|spec| spec.bounds())
+                        .unwrap_or(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+                    Scene3dBounds {
+                        local_aabb: rustlua_math::math3d::Aabb3::new(
+                            Vec3::new(min[0], min[1], min[2]),
+                            Vec3::new(max[0], max[1], max[2]),
+                        )
+                        .unwrap_or_else(|_| rustlua_math::math3d::Aabb3 {
+                            min: Vec3::new(-1.0, -1.0, -1.0),
+                            max: Vec3::new(1.0, 1.0, 1.0),
+                        }),
+                        source: BoundsSource::Fallback,
+                    }
+                } else if rustlua_render::water::WaterSpec::is_water_path(&renderer.mesh) {
+                    let (min, max) = rustlua_render::water::WaterSpec::parse(&renderer.mesh)
+                        .map(|spec| spec.bounds())
+                        .unwrap_or(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+                    Scene3dBounds {
+                        local_aabb: rustlua_math::math3d::Aabb3::new(
+                            Vec3::new(min[0], min[1], min[2]),
+                            Vec3::new(max[0], max[1], max[2]),
+                        )
+                        .unwrap_or_else(|_| rustlua_math::math3d::Aabb3 {
+                            min: Vec3::new(-1.0, -1.0, -1.0),
+                            max: Vec3::new(1.0, 1.0, 1.0),
+                        }),
+                        source: BoundsSource::Fallback,
+                    }
                 } else {
                     Scene3dBounds {
                         local_aabb: rustlua_math::math3d::Aabb3 {
@@ -289,6 +319,7 @@ impl RuntimeScene {
             far: 100.0,
             pose_from_transform: false,
             enabled: true,
+            clip_plane: [0.0; 4],
         });
         // WP5：多相机选择只有一条规则（显式选中优先，否则排序序第一个），由
         // `CameraSelection` 表述；宿主只在遍历候选时套用它，不再自己写一遍判断。
@@ -876,7 +907,12 @@ impl RuntimeScene {
         // 同一效果，通道是帧级的——默认实体也跟着进，这条写进 docs/16 避免意外）。
         // `mode=overlay` / `mode=screen` 是退出世界通道：它们**永远**走 NDC overlay 通道，
         // 分别落在 `Overlay2D` 与 `ScreenUI` 桶里（HUD 语义：画在世界内容之上）。
-        let explicit_world = self.render_mode_routed.0 > 0;
+        // 3D CPU 粒子（z != 0）是隐式的世界通道请求：只要池里有一颗离面粒子，
+        // 这一帧的粒子就必须走带 z 的世界 Sprite 路径，否则 z 会被 overlay 丢弃。
+        let particles_world = self.script.with_particles(|particles| {
+            particles.iter().any(|particle| particle.position_z != 0.0)
+        });
+        let explicit_world = self.render_mode_routed.0 > 0 || particles_world;
         let world_channel = self.world_sprite_depth || explicit_world;
         if world_channel {
             // WP6：世界 Sprite 走带深度的通道——世界坐标 + `Sprite::z`，投影交给顶点着色器。
@@ -1245,6 +1281,7 @@ impl RuntimeScene {
                 let color = particle.color();
                 let sprite = match Sprite::new(Vec2::new(size, size))
                     .and_then(|sprite| sprite.with_tint([color[0], color[1], color[2], color[3]]))
+                    .map(|sprite| sprite.with_z(particle.position_z))
                 {
                     Ok(sprite) => sprite,
                     Err(error) => {

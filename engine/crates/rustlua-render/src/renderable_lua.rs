@@ -9,7 +9,7 @@
 //! 兜底**：这条优先级本来就是渲染规则，搬进渲染域后它与 `frame_data.rs` 的读取同源。
 
 use crate::atlas::resolve_atlas_reference;
-use crate::light::Light;
+use crate::light::{Light, LightKind};
 use crate::mesh3d::MeshRenderer;
 use crate::sprite::{SpriteAsset, SpriteComponent};
 use mlua::{Lua, Result as LuaResult};
@@ -297,6 +297,28 @@ pub fn install(
     )?;
     let s = Bindings::new(world, state, project_root);
     mesh.set(
+        "set_material",
+        lua.create_function(move |_, (id, path): (i64, Option<String>)| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut renderer = {
+                let world = state.world()?;
+                world.get::<MeshRenderer>(id).map_err(world_error)?.cloned()
+            }
+            .ok_or_else(|| api_error("entity has no mesh renderer"))?;
+            // `None`/空串清除覆盖，回到 glTF 内嵌材质；路径存在性由渲染器加载时
+            // 校验，失败会告警并回退，不会把实体变成不可见。
+            renderer.material = path.filter(|value| !value.is_empty());
+            state
+                .world_mut()?
+                .insert(id, renderer)
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
         "get",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
@@ -364,7 +386,42 @@ pub fn install(
             t.set("g", light.color[1])?;
             t.set("b", light.color[2])?;
             t.set("intensity", light.intensity)?;
+            t.set(
+                "kind",
+                match light.kind {
+                    LightKind::Directional => "directional",
+                    LightKind::Point => "point",
+                },
+            )?;
+            t.set("px", light.position.x)?;
+            t.set("py", light.position.y)?;
+            t.set("pz", light.position.z)?;
+            t.set("range", light.range)?;
             Ok(t)
+        })?,
+    )?;
+    // §21.164 点光运行时移动：篝火/火堆跟着燃烧物走，不再钉死在场景坐标。
+    // 只允许改 Point 光源的 position；方向光的主光方向仍走 `light.set`。
+    let s = Bindings::new(world, state, project_root);
+    light.set(
+        "move",
+        lua.create_function(move |_, (id, x, y, z): (i64, f32, f32, f32)| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            if [x, y, z].iter().any(|value| !value.is_finite()) {
+                return Err(api_error("light position must be finite"));
+            }
+            let mut world = state.world_mut()?;
+            let light = world
+                .get_mut::<Light>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no light"))?;
+            if light.kind != LightKind::Point {
+                return Err(api_error("light.move only accepts point lights"));
+            }
+            light.position = Vec3::new(x, y, z);
+            Ok(())
         })?,
     )?;
     let s = Bindings::new(world, state, project_root);
@@ -406,5 +463,255 @@ pub fn install(
     )?;
     lua.globals().set("light", light)?;
 
+    // Built-in procedural terrain sampling. The spec is exactly the
+    // `MeshRenderer.mesh` string (`__terrain__?size=..&...`), so gameplay
+    // placement and the rendered mesh cannot drift apart.
+    let terrain3d = lua.create_table()?;
+    terrain3d.set(
+        "height_at",
+        lua.create_function(move |_, (spec, x, z): (String, f32, f32)| {
+            let spec = crate::terrain::TerrainSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            if !x.is_finite() || !z.is_finite() {
+                return Err(api_error("terrain3d.height_at coordinates must be finite"));
+            }
+            Ok(spec.height(x, z))
+        })?,
+    )?;
+    terrain3d.set(
+        "bounds",
+        lua.create_function(move |lua, spec: String| {
+            let spec = crate::terrain::TerrainSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            let (min, max) = spec.bounds();
+            let table = lua.create_table()?;
+            for (index, value) in min.iter().enumerate() {
+                table.set(index + 1, *value)?;
+            }
+            for (index, value) in max.iter().enumerate() {
+                table.set(index + 4, *value)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+    terrain3d.set(
+        "normal_at",
+        lua.create_function(move |_, (spec, x, z): (String, f32, f32)| {
+            let spec = crate::terrain::TerrainSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            if !x.is_finite() || !z.is_finite() {
+                return Err(api_error("terrain3d.normal_at coordinates must be finite"));
+            }
+            let n = spec.normal(x, z);
+            Ok((n[0], n[1], n[2]))
+        })?,
+    )?;
+    terrain3d.set(
+        "slope_at",
+        lua.create_function(move |_, (spec, x, z): (String, f32, f32)| {
+            let spec = crate::terrain::TerrainSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            if !x.is_finite() || !z.is_finite() {
+                return Err(api_error("terrain3d.slope_at coordinates must be finite"));
+            }
+            Ok(spec.slope_degrees(x, z))
+        })?,
+    )?;
+    terrain3d.set(
+        "raise",
+        lua.create_function(
+            move |_, (spec, x, z, radius, delta): (String, f32, f32, f32, f32)| {
+                let mut spec = crate::terrain::TerrainSpec::parse(&spec)
+                    .map_err(|error| api_error(error.to_string()))?;
+                if !x.is_finite() || !z.is_finite() || !radius.is_finite() || !delta.is_finite() {
+                    return Err(api_error(
+                        "terrain3d.raise coordinates, radius and delta must be finite",
+                    ));
+                }
+                spec.push_edit(crate::terrain::TerrainEdit {
+                    x,
+                    z,
+                    radius,
+                    delta,
+                })
+                .map_err(|error| api_error(error.to_string()))?;
+                spec.validate()
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(spec.mesh_path())
+            },
+        )?,
+    )?;
+    terrain3d.set(
+        "splat_at",
+        lua.create_function(move |_, (spec, x, z): (String, f32, f32)| {
+            let spec = crate::terrain::TerrainSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            if !x.is_finite() || !z.is_finite() {
+                return Err(api_error("terrain3d.splat_at coordinates must be finite"));
+            }
+            let weights = spec.splat_weights(x, z);
+            Ok((weights[0], weights[1], weights[2], weights[3]))
+        })?,
+    )?;
+    terrain3d.set(
+        "raycast",
+        lua.create_function(
+            move |lua,
+                  (spec, ox, oy, oz, dx, dy, dz, max): (
+                String,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+                f32,
+            )| {
+                let spec = crate::terrain::TerrainSpec::parse(&spec)
+                    .map_err(|error| api_error(error.to_string()))?;
+                if [ox, oy, oz, dx, dy, dz, max]
+                    .iter()
+                    .any(|value| !value.is_finite())
+                {
+                    return Err(api_error("terrain3d.raycast arguments must be finite"));
+                }
+                if max <= 0.0 {
+                    return Err(api_error("terrain3d.raycast distance must be positive"));
+                }
+                let Some(hit) = spec.raycast([ox, oy, oz], [dx, dy, dz], max) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let table = lua.create_table()?;
+                let values = [
+                    hit.position[0],
+                    hit.position[1],
+                    hit.position[2],
+                    hit.normal[0],
+                    hit.normal[1],
+                    hit.normal[2],
+                    hit.distance,
+                ];
+                for (index, value) in values.iter().enumerate() {
+                    table.set(index + 1, *value)?;
+                }
+                Ok(mlua::Value::Table(table))
+            },
+        )?,
+    )?;
+    lua.globals().set("terrain3d", terrain3d)?;
+
+    // Built-in procedural water surface. Same spec string as the MeshRenderer.
+    let water3d = lua.create_table()?;
+    water3d.set(
+        "height_at",
+        lua.create_function(move |_, (spec, x, z): (String, f32, f32)| {
+            let spec = crate::water::WaterSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            if !x.is_finite() || !z.is_finite() {
+                return Err(api_error("water3d.height_at coordinates must be finite"));
+            }
+            Ok(spec.height(x, z))
+        })?,
+    )?;
+    water3d.set(
+        "level",
+        lua.create_function(move |_, spec: String| {
+            let spec = crate::water::WaterSpec::parse(&spec)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(spec.level)
+        })?,
+    )?;
+    water3d.set(
+        "depth_at",
+        lua.create_function(
+            move |_, (water_spec, terrain_spec, x, z): (String, String, f32, f32)| {
+                let water = crate::water::WaterSpec::parse(&water_spec)
+                    .map_err(|error| api_error(error.to_string()))?;
+                let terrain = crate::terrain::TerrainSpec::parse(&terrain_spec)
+                    .map_err(|error| api_error(error.to_string()))?;
+                if !x.is_finite() || !z.is_finite() {
+                    return Err(api_error("water3d.depth_at coordinates must be finite"));
+                }
+                Ok(water.depth(&terrain, x, z))
+            },
+        )?,
+    )?;
+    lua.globals().set("water3d", water3d)?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustlua_lua_api::ProjectRoot;
+
+    fn install_render_lua(lua: &Lua) {
+        let state = RenderableState::handle();
+        let world = Handle::new(World::new(), "world");
+        let root = ProjectRoot::handle();
+        install(lua, &state, &world, &root).unwrap();
+    }
+
+    /// The terrain raycast binding must return the same surface the height
+    /// probe sees, and a miss must be `nil` rather than an error.
+    #[test]
+    fn terrain_raycast_binding_returns_hit_or_nil() {
+        let lua = Lua::new();
+        install_render_lua(&lua);
+        let hit: mlua::Table = lua
+            .load(
+                r#"return terrain3d.raycast(
+                    "__terrain__?size=240&res=96&amp=2.4&seed=7",
+                    12.5, 50.0, -8.0, 0.0, -1.0, 0.0, 200.0)"#,
+            )
+            .eval()
+            .unwrap();
+        let x: f32 = hit.get(1).unwrap();
+        let y: f32 = hit.get(2).unwrap();
+        let z: f32 = hit.get(3).unwrap();
+        let distance: f32 = hit.get(7).unwrap();
+        let expected = crate::terrain::TerrainSpec::default().height(12.5, -8.0);
+        assert!((x - 12.5).abs() < 1e-3);
+        assert!((z + 8.0).abs() < 1e-3);
+        assert!((y - expected).abs() < 1e-3);
+        assert!((distance - (50.0 - expected)).abs() < 1e-3);
+
+        let (grass, moss, litter, bare): (f32, f32, f32, f32) = lua
+            .load(
+                r#"return terrain3d.splat_at(
+                    "__terrain__?size=240&res=96&amp=2.4&seed=7", 12.5, -8.0)"#,
+            )
+            .eval()
+            .unwrap();
+        assert!((grass + moss + litter + bare - 1.0).abs() < 1e-5);
+        assert!(
+            [grass, moss, litter, bare]
+                .iter()
+                .all(|weight| *weight >= 0.0)
+        );
+
+        let raised: String = lua
+            .load(
+                r#"local base = "__terrain__?size=240&res=96&amp=2.4&seed=7"
+                local edited = terrain3d.raise(base, 0.0, 0.0, 5.0, 1.5)
+                local before = terrain3d.height_at(base, 0.0, 0.0)
+                local after = terrain3d.height_at(edited, 0.0, 0.0)
+                assert(after - before > 1.4, "edit must raise the center")
+                return edited"#,
+            )
+            .eval()
+            .unwrap();
+        assert!(raised.contains("&edit=0:0:5:1.5"));
+
+        let miss: mlua::Value = lua
+            .load(
+                r#"return terrain3d.raycast(
+                    "__terrain__?size=240&res=96&amp=2.4&seed=7",
+                    0.0, 50.0, 0.0, 0.0, 1.0, 0.0, 50.0)"#,
+            )
+            .eval()
+            .unwrap();
+        assert!(matches!(miss, mlua::Value::Nil));
+    }
 }

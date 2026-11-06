@@ -69,6 +69,14 @@ pub struct MaterialAsset {
     pub alpha_cutoff: f32,
     pub double_sided: bool,
     pub ibl_intensity: f32,
+    /// Built-in surface detail scale in **world units per tile**; `0` = none.
+    ///
+    /// Only generated built-ins set this: the `__terrain__` material uses a
+    /// positive value for the ground detail atlas size, and `__water__` uses
+    /// `-1` to mark that a per-pixel bed-depth texture is embedded in the
+    /// normal-map slot (sampled linearly by the water branch). It is not
+    /// authored by `.material` files or glTF.
+    pub detail_scale: f32,
 }
 
 impl Default for MaterialAsset {
@@ -91,6 +99,7 @@ impl Default for MaterialAsset {
             alpha_cutoff: 0.5,
             double_sided: false,
             ibl_intensity: 1.0,
+            detail_scale: 0.0,
         }
     }
 }
@@ -396,6 +405,7 @@ impl From<&crate::gltf_asset::GltfMaterial> for MaterialAsset {
             alpha_cutoff: material.alpha_cutoff,
             double_sided: material.double_sided,
             ibl_intensity: 1.0,
+            detail_scale: 0.0,
         }
     }
 }

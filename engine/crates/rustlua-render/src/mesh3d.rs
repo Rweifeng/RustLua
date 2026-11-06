@@ -90,6 +90,16 @@ pub(crate) fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     if mesh == GROUND_PLANE_SENTINEL {
         return Ok(());
     }
+    if crate::terrain::TerrainSpec::is_terrain_path(mesh) {
+        return crate::terrain::TerrainSpec::parse(mesh)
+            .map(|_| ())
+            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
+    if crate::water::WaterSpec::is_water_path(mesh) {
+        return crate::water::WaterSpec::parse(mesh)
+            .map(|_| ())
+            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
     // 与 `entity_script::EntityScript::validate` 共用 `rustlua_infra::paths` 的权威判定：
     // 只用 `Path::is_absolute()` 会放行 Windows 上的 `/etc/x.glb`（根相对但没有盘符），
     // schema 侧的 `FieldRule::ProjectPath` 用的是同一份实现（两边由对拍测试盯住）。
@@ -477,6 +487,44 @@ mod tests {
             GROUND_PLANE_SENTINEL
         );
     }
+    #[test]
+    fn accepts_terrain_sentinel_and_rejects_bad_spec() {
+        let ok = "__terrain__?size=240&res=96&amp=2.4&seed=7";
+        assert_eq!(
+            MeshRenderer::from_component_str(&format!("mesh={ok}"))
+                .unwrap()
+                .mesh,
+            ok
+        );
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=__terrain__?size=0"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=__terrain__nope"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_water_sentinel_and_rejects_bad_spec() {
+        let ok = "__water__?size=10&res=8&y=0.06&amp=0.02&seed=3";
+        assert_eq!(
+            MeshRenderer::from_component_str(&format!("mesh={ok}"))
+                .unwrap()
+                .mesh,
+            ok
+        );
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=__water__?size=0"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=__water__nope"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+    }
+
     #[test]
     fn rejects_incomplete_or_invalid_component_strings() {
         assert!(matches!(

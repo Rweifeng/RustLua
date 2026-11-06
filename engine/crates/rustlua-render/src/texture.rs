@@ -216,6 +216,62 @@ pub fn save_png_rgba8(
     Ok(())
 }
 
+/// Builds an RGBA8 mip chain by repeated 2x2 box filtering.
+///
+/// Returns the base level first, then each half-size level until 1x1. Odd and
+/// non-square sizes are handled by averaging the pixels that actually exist, so
+/// the chain never indexes outside the source. The filter runs on stored bytes
+/// (sRGB for colour textures), matching what the GPU sampler would have done at
+/// generation time; the result is deterministic and platform independent.
+///
+/// Used by the generated terrain detail atlas, whose far-field mips are what
+/// keep the god view from shimmering. Empty or zero-sized input yields an empty
+/// chain rather than panicking.
+#[must_use]
+pub fn mip_chain_rgba8(rgba: &[u8], width: u32, height: u32) -> Vec<(u32, u32, Vec<u8>)> {
+    if width == 0 || height == 0 || rgba.len() < (width as usize) * (height as usize) * 4 {
+        return Vec::new();
+    }
+    let mut levels = Vec::new();
+    let mut current_width = width;
+    let mut current_height = height;
+    let mut current: Vec<u8> = rgba[..(width as usize) * (height as usize) * 4].to_vec();
+    levels.push((current_width, current_height, current.clone()));
+    while current_width > 1 || current_height > 1 {
+        let next_width = (current_width / 2).max(1);
+        let next_height = (current_height / 2).max(1);
+        let mut next = vec![0u8; (next_width as usize) * (next_height as usize) * 4];
+        for y in 0..next_height {
+            for x in 0..next_width {
+                let src_x = x * 2;
+                let src_y = y * 2;
+                let src_x_end = (src_x + 2).min(current_width);
+                let src_y_end = (src_y + 2).min(current_height);
+                let mut sum = [0u32; 4];
+                let mut count = 0u32;
+                for sy in src_y..src_y_end {
+                    for sx in src_x..src_x_end {
+                        let index = ((sy * current_width + sx) * 4) as usize;
+                        for channel in 0..4 {
+                            sum[channel] += u32::from(current[index + channel]);
+                        }
+                        count += 1;
+                    }
+                }
+                let index = ((y * next_width + x) * 4) as usize;
+                for channel in 0..4 {
+                    next[index + channel] = ((sum[channel] + count / 2) / count) as u8;
+                }
+            }
+        }
+        current_width = next_width;
+        current_height = next_height;
+        current = next.clone();
+        levels.push((current_width, current_height, next));
+    }
+    levels
+}
+
 /// Errors returned by PNG decoding and texture data validation.
 ///
 /// 文本字段统一命名为 `reason`（而不是 `source`）：thiserror 会把名为 `source` 的字段
@@ -252,7 +308,7 @@ pub enum TextureError {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextureAsset, TextureColorSpace, TextureError, save_png_rgba8};
+    use super::{TextureAsset, TextureColorSpace, TextureError, mip_chain_rgba8, save_png_rgba8};
 
     #[test]
     fn saved_png_round_trips_through_the_loader() {
@@ -325,5 +381,48 @@ mod tests {
         let texture =
             TextureAsset::from_rgba8(2, 1, vec![0; 8], TextureColorSpace::Linear).unwrap();
         assert_eq!(texture.color_space(), TextureColorSpace::Linear);
+    }
+
+    /// The generated terrain detail atlas is uploaded with a mip chain so the
+    /// far field in the god view does not shimmer. The chain is a plain box
+    /// filter in the texture's stored (sRGB) encoding, includes the base level,
+    /// and always terminates at 1x1 even for non-square/odd sizes.
+    #[test]
+    fn mip_chain_halves_until_one_pixel() {
+        let mut rgba = Vec::new();
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                let value = if (x + y) % 2 == 0 { 0 } else { 255 };
+                rgba.extend_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let levels = mip_chain_rgba8(&rgba, 4, 4);
+        let dims: Vec<(u32, u32)> = levels.iter().map(|(w, h, _)| (*w, *h)).collect();
+        assert_eq!(dims, vec![(4, 4), (2, 2), (1, 1)]);
+        // A 2x2 box of black/white averages to the midpoint at 2x2 and 1x1.
+        let level1 = &levels[1].2;
+        assert_eq!(level1.len(), 2 * 2 * 4);
+        assert!(
+            level1
+                .iter()
+                .step_by(4)
+                .all(|value| (*value as i32 - 128).abs() <= 1)
+        );
+        assert_eq!(&levels[2].2[..], &[128, 128, 128, 255][..]);
+    }
+
+    #[test]
+    fn mip_chain_handles_odd_and_non_square_sizes() {
+        let rgba = vec![7u8; 3 * 5 * 4];
+        let levels = mip_chain_rgba8(&rgba, 3, 5);
+        assert_eq!(
+            levels.iter().map(|(w, h, _)| (*w, *h)).collect::<Vec<_>>(),
+            vec![(3, 5), (1, 2), (1, 1)]
+        );
+        for (width, height, pixels) in &levels {
+            assert_eq!(pixels.len() as u32, width * height * 4);
+            assert!(pixels.iter().step_by(4).all(|value| *value == 7));
+        }
+        assert!(mip_chain_rgba8(&[], 0, 0).is_empty());
     }
 }

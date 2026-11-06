@@ -9,6 +9,7 @@ use rustlua_assets::asset_handle::AssetHandle;
 use rustlua_render::mesh3d::{
     GROUND_PLANE_SENTINEL, MaterialAsset, MaterialTexture, MeshAsset, TangentBasis,
 };
+use rustlua_render::terrain::TerrainSpec;
 use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use std::path::PathBuf;
 use wgpu::util::DeviceExt;
@@ -137,6 +138,29 @@ impl Renderer {
                 .insert(path.to_owned(), self.ground_plane_cached_mesh());
             return;
         }
+        if TerrainSpec::is_terrain_path(path) {
+            // 地形哨兵同样是内建几何：按 mesh path 里的确定性参数生成一次。
+            let Some(spec) = TerrainSpec::parse(path).ok() else {
+                tracing::warn!(target: "render", path = %path, "[render] invalid terrain spec; skipped");
+                return;
+            };
+            let mesh = spec.build_mesh();
+            if let Some(cached) = self.cached_from_meshes(path, &[mesh]) {
+                self.mesh_cache.insert(path.to_owned(), cached);
+            }
+            return;
+        }
+        if rustlua_render::water::WaterSpec::is_water_path(path) {
+            let Some(spec) = rustlua_render::water::WaterSpec::parse(path).ok() else {
+                tracing::warn!(target: "render", path = %path, "[render] invalid water spec; skipped");
+                return;
+            };
+            let mesh = spec.build_mesh();
+            if let Some(cached) = self.cached_from_meshes(path, &[mesh]) {
+                self.mesh_cache.insert(path.to_owned(), cached);
+            }
+            return;
+        }
         let resolved = self
             .project_root
             .as_ref()
@@ -224,26 +248,68 @@ impl Renderer {
 
     /// 上传 glTF 内嵌材质贴图。base color / emissive 走 sRGB，metallic-roughness 走线性，
     /// 否则 ORM 通道会被 gamma 曲线扭曲。
-    fn upload_embedded_textures(&mut self, material: &MaterialAsset) -> MaterialTextureIndices {
-        let upload = |renderer: &mut Self, texture: &Option<MaterialTexture>, space| {
+    ///
+    /// 带内置地形细节图集（`detail_scale > 0`）的 base color 会额外生成并上传整条 mip 链：
+    /// 地形贴图按世界坐标高倍重复，没有 mips 就会在远景闪烁。
+    pub(super) fn upload_embedded_textures(
+        &mut self,
+        material: &MaterialAsset,
+    ) -> MaterialTextureIndices {
+        let upload = |renderer: &mut Self, texture: &Option<MaterialTexture>, space, mips| {
             texture
                 .as_ref()
                 .and_then(|texture| texture.image.as_ref())
                 .map(|image| {
-                    renderer.upload_material_texture(&image.rgba, image.width, image.height, space)
+                    if mips {
+                        renderer.upload_material_texture_mipmapped(
+                            &image.rgba,
+                            image.width,
+                            image.height,
+                            space,
+                        )
+                    } else {
+                        renderer.upload_material_texture(
+                            &image.rgba,
+                            image.width,
+                            image.height,
+                            space,
+                        )
+                    }
                 })
         };
         MaterialTextureIndices {
-            base_color: upload(self, &material.base_color_texture, TextureColorSpace::Srgb),
+            base_color: upload(
+                self,
+                &material.base_color_texture,
+                TextureColorSpace::Srgb,
+                material.detail_scale > 0.0,
+            ),
             metallic_roughness: upload(
                 self,
                 &material.metallic_roughness_texture,
                 TextureColorSpace::Linear,
+                false,
             ),
-            emissive: upload(self, &material.emissive_texture, TextureColorSpace::Srgb),
+            emissive: upload(
+                self,
+                &material.emissive_texture,
+                TextureColorSpace::Srgb,
+                false,
+            ),
             // 法线与遮蔽是数据贴图：必须走线性，否则解码出的法线方向会被 gamma 拉歪。
-            normal: upload(self, &material.normal_texture, TextureColorSpace::Linear),
-            occlusion: upload(self, &material.occlusion_texture, TextureColorSpace::Linear),
+            // 地形法线图集与颜色图集一样需要 mip 链，远景才不会闪。
+            normal: upload(
+                self,
+                &material.normal_texture,
+                TextureColorSpace::Linear,
+                material.detail_scale > 0.0,
+            ),
+            occlusion: upload(
+                self,
+                &material.occlusion_texture,
+                TextureColorSpace::Linear,
+                false,
+            ),
         }
     }
 
@@ -258,8 +324,34 @@ impl Renderer {
     ) -> u32 {
         let width = width.max(1);
         let height = height.max(1);
+        self.upload_material_texture_levels(vec![(width, height, rgba.to_vec())], color_space)
+    }
+
+    /// 上传带完整 mip 链的材质贴图（目前只有内置地形细节图集用到）。
+    fn upload_material_texture_mipmapped(
+        &mut self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        color_space: TextureColorSpace,
+    ) -> u32 {
+        let levels = rustlua_render::texture::mip_chain_rgba8(rgba, width, height);
+        if levels.is_empty() {
+            return self.upload_material_texture(rgba, width, height, color_space);
+        }
+        self.upload_material_texture_levels(levels, color_space)
+    }
+
+    fn upload_material_texture_levels(
+        &mut self,
+        levels: Vec<(u32, u32, Vec<u8>)>,
+        color_space: TextureColorSpace,
+    ) -> u32 {
+        let (width, height, base) = &levels[0];
+        let (width, height) = ((*width).max(1), (*height).max(1));
         let srgb = color_space == TextureColorSpace::Srgb;
-        let key = (hash_bytes(rgba), width, height, srgb);
+        let level_count = levels.len() as u32;
+        let key = (hash_bytes(base), width, height, srgb, level_count);
         if let Some(&index) = self.texture_content_cache.get(&key) {
             return index;
         }
@@ -270,7 +362,7 @@ impl Renderer {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: if srgb {
@@ -278,33 +370,45 @@ impl Renderer {
             } else {
                 wgpu::TextureFormat::Rgba8Unorm
             },
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // COPY_SRC：给"材质贴图真的按原样上传了吗"这类回读门留出通路。
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
+        let mut total_bytes = 0u64;
+        for (level, (level_width, level_height, pixels)) in levels.iter().enumerate() {
+            let (level_width, level_height) = ((*level_width).max(1), (*level_height).max(1));
+            debug_assert_eq!(
+                pixels.len(),
+                (level_width as usize) * (level_height as usize) * 4
+            );
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * level_width),
+                    rows_per_image: Some(level_height),
+                },
+                wgpu::Extent3d {
+                    width: level_width,
+                    height: level_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            total_bytes += u64::from(level_width) * u64::from(level_height) * 4;
+        }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let cached = CachedMaterialTexture {
             texture,
             view,
-            bytes: u64::from(width) * u64::from(height) * 4,
+            bytes: total_bytes,
         };
         let index = if srgb {
             self.albedo_textures.push(cached);
@@ -319,6 +423,7 @@ impl Renderer {
             index,
             width,
             height,
+            mip_levels = level_count,
             srgb,
             "[render] 3D material texture uploaded"
         );

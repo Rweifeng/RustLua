@@ -135,7 +135,7 @@ fn uploaded_rgba_texture_is_sampled_as_uploaded() {
         RenderView::main_2d(camera, viewport, clear_black),
         RenderView::overlay_2d(camera, viewport),
     ));
-    let outcome = renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, SIZE, SIZE, true);
     assert!(matches!(outcome, RenderOutcome::Presented));
     assert_eq!(
         renderer.last_frame_metrics().dropped_draws,
@@ -201,4 +201,257 @@ fn invalid_uploads_are_rejected_without_touching_the_cache() {
         "垃圾字节必须报错"
     );
     assert_eq!(renderer.loaded_texture_count(), 0, "被拒的上传不许留下槽位");
+}
+
+/// 内嵌材质贴图（带 mip 链）的 **level 0** 必须原样保留：地形细节图集靠这条路径。
+/// 只上传 8×8 四色棋盘，回读 level 0；如果 mip 写错层/行距错，这里会立刻红。
+#[test]
+fn embedded_material_texture_keeps_level0_pixels() {
+    use rustlua_assets::gltf_asset::GltfTextureImage;
+    use rustlua_render::mesh3d::{MaterialAsset, MaterialTexture};
+
+    let Some((device, queue)) = request_gpu() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+        .expect("offscreen renderer");
+
+    let width = 8u32;
+    let height = 8u32;
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let (r, g) = if (x + y) % 2 == 0 { (255, 0) } else { (0, 255) };
+            rgba.extend_from_slice(&[r, g, 0, 255]);
+        }
+    }
+    let material = MaterialAsset {
+        detail_scale: 1.0,
+        base_color_texture: Some(MaterialTexture {
+            path: None,
+            image: Some(GltfTextureImage {
+                width,
+                height,
+                rgba: rgba.clone(),
+            }),
+        }),
+        ..MaterialAsset::default()
+    };
+    let indices = renderer.upload_embedded_textures(&material);
+    let index = indices.base_color.expect("base color uploaded");
+    let texture = &renderer.albedo_textures[index as usize].texture;
+
+    let bytes_per_row = 256u32;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("terrain-detail-readback"),
+        size: u64::from(bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("terrain-detail-readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    rx.recv().expect("map callback").expect("map ok");
+    let data = slice.get_mapped_range();
+    for y in 0..height {
+        for x in 0..width {
+            let read = &data[(y * bytes_per_row + x * 4) as usize..][..4];
+            let expected = &rgba[((y * width + x) * 4) as usize..][..4];
+            assert_eq!(read, expected, "level0 texel ({x},{y})");
+        }
+    }
+    drop(data);
+}
+
+/// 地形细节图集走同一内嵌材质上传路径；level 0 必须与 CPU 生成的像素 **逐字节**一致。
+#[test]
+fn embedded_terrain_atlas_matches_cpu_pixels() {
+    use rustlua_assets::gltf_asset::GltfTextureImage;
+    use rustlua_render::mesh3d::{MaterialAsset, MaterialTexture};
+    use rustlua_render::terrain_detail::ground_atlas;
+
+    let Some((device, queue)) = request_gpu() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+        .expect("offscreen renderer");
+    let atlas = ground_atlas(7);
+    let material = MaterialAsset {
+        detail_scale: 1.0,
+        base_color_texture: Some(MaterialTexture {
+            path: None,
+            image: Some(GltfTextureImage {
+                width: atlas.width,
+                height: atlas.height,
+                rgba: atlas.rgba.clone(),
+            }),
+        }),
+        ..MaterialAsset::default()
+    };
+    let indices = renderer.upload_embedded_textures(&material);
+    let index = indices.base_color.expect("base color uploaded");
+    let texture = &renderer.albedo_textures[index as usize].texture;
+    let width = atlas.width;
+    let height = atlas.height;
+    let bytes_per_row = (4 * width).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("terrain-atlas-readback"),
+        size: u64::from(bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("terrain-atlas-readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    rx.recv().expect("map callback").expect("map ok");
+    let data = slice.get_mapped_range();
+    for y in 0..height {
+        let row = &data[(y * bytes_per_row) as usize..][..(width * 4) as usize];
+        let expected = &atlas.rgba[(y * width * 4) as usize..][..(width * 4) as usize];
+        assert_eq!(row, expected, "level0 row {y}");
+    }
+    drop(data);
+}
+
+/// 地形法线图集是线性数据：上传后 level 0 必须逐字节等于 CPU 生成的 normal atlas。
+#[test]
+fn embedded_terrain_normal_atlas_matches_cpu_pixels() {
+    use rustlua_assets::gltf_asset::GltfTextureImage;
+    use rustlua_render::mesh3d::{MaterialAsset, MaterialTexture};
+    use rustlua_render::terrain_detail::{ground_atlas, normal_atlas};
+
+    let Some((device, queue)) = request_gpu() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+        .expect("offscreen renderer");
+    let atlas = normal_atlas(&ground_atlas(7), 6.0);
+    let material = MaterialAsset {
+        detail_scale: 1.0,
+        normal_texture: Some(MaterialTexture {
+            path: None,
+            image: Some(GltfTextureImage {
+                width: atlas.width,
+                height: atlas.height,
+                rgba: atlas.rgba.clone(),
+            }),
+        }),
+        ..MaterialAsset::default()
+    };
+    let indices = renderer.upload_embedded_textures(&material);
+    let index = indices.normal.expect("normal atlas uploaded");
+    let texture = &renderer.linear_textures[index as usize].texture;
+    let width = atlas.width;
+    let height = atlas.height;
+    let bytes_per_row = (4 * width).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("terrain-normal-readback"),
+        size: u64::from(bytes_per_row) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("terrain-normal-readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    rx.recv().expect("map callback").expect("map ok");
+    let data = slice.get_mapped_range();
+    for y in 0..height {
+        let row = &data[(y * bytes_per_row) as usize..][..(width * 4) as usize];
+        let expected = &atlas.rgba[(y * width * 4) as usize..][..(width * 4) as usize];
+        assert_eq!(row, expected, "normal level0 row {y}");
+    }
+    drop(data);
 }

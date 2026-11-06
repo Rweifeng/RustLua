@@ -37,7 +37,15 @@ fn validate_mesh(value: &str) -> Result<(), String> {
 fn mesh_assets(value: &str) -> Vec<String> {
     // 解析失败时返回空：资源缺失的可见性归资源库依赖图，场景编译不重复报同一件事。
     MeshRenderer::from_component_str(value)
-        .map(|renderer| vec![renderer.mesh])
+        .map(|renderer| {
+            if crate::terrain::TerrainSpec::is_terrain_path(&renderer.mesh)
+                || crate::water::WaterSpec::is_water_path(&renderer.mesh)
+            {
+                Vec::new()
+            } else {
+                vec![renderer.mesh]
+            }
+        })
         .unwrap_or_default()
 }
 
@@ -137,6 +145,16 @@ mod tests {
         assert!(MESH.validate("mesh=assets/models/hero.glb").is_ok());
         assert!(MESH.validate("mesh").is_err());
         assert!(
+            MESH.validate("mesh=__terrain__?size=240&res=96&amp=2.4&seed=7")
+                .is_ok()
+        );
+        assert!(MESH.validate("mesh=__terrain__?size=0").is_err());
+        assert!(
+            MESH.validate("mesh=__water__?size=10&res=8&y=0.06&amp=0.02&seed=3")
+                .is_ok()
+        );
+        assert!(MESH.validate("mesh=__water__?size=0").is_err());
+        assert!(
             ENVIRONMENT
                 .validate("map=assets/env/studio.rlenv;intensity=1.5")
                 .is_ok()
@@ -159,6 +177,14 @@ mod tests {
         assert_eq!(
             MESH.asset_paths("mesh=assets/hero.glb"),
             vec!["assets/hero.glb".to_owned()]
+        );
+        assert!(
+            MESH.asset_paths("mesh=__terrain__?size=240&res=96&amp=2.4&seed=7")
+                .is_empty()
+        );
+        assert!(
+            MESH.asset_paths("mesh=__water__?size=10&res=8&y=0.06&amp=0.02&seed=3")
+                .is_empty()
         );
         assert_eq!(
             ENVIRONMENT.asset_paths("map=assets/env/studio.hdr"),
