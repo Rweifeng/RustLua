@@ -4,6 +4,14 @@ struct Camera {
     position: vec4<f32>,
     // xyz = 归一化平面法线，w = 偏移；零向量 = 不裁剪（会话 X-ray/剖面）
     clip: vec4<f32>,
+    // x = 云量（0..1）；yzw 预留
+    cloud: vec4<f32>,
+    // rgb = 水体染色；w = 浑浊度（0..1）
+    water: vec4<f32>,
+    // x = 积雪（0..1），y = 湿润（0..1）；z = 涟漪点打包位，w = 涟漪年龄
+    surface: vec4<f32>,
+    // 另外两圈涟漪：packed0, age0, packed1, age1
+    ripple2: vec4<f32>,
 };
 struct ShadowCameras { view_projection: array<mat4x4<f32>, 4> };
 struct PointShadow {
@@ -17,7 +25,7 @@ struct Light {
     color_intensity: vec4<f32>,
     // x = 点光数量 ..=8），y = 3×3 PCF 软阴影开关，其余保留
     params: vec4<f32>,
-    points: array<PointLight, 8>,
+    points: array<PointLight, 16>,
 };
 struct Material {
     base_color: vec4<f32>,
@@ -171,11 +179,84 @@ fn value_noise(p: vec2<f32>) -> f32 {
 
 // 程序化云影：用相机时间做缓慢漂移，给整片地面/水面一层大尺度明暗。
 // 只压 base color（地形无高光），不参与阴影贴图，因此和现有阴影叠加很便宜。
-fn cloud_shadow(world: vec2<f32>, time: f32) -> f32 {
-    let drift = vec2<f32>(time * 0.35, time * 0.12);
+fn cloud_shadow(world: vec2<f32>, time: f32, coverage: f32, speed: f32) -> f32 {
+    let drift = vec2<f32>(time * speed * 0.35, time * speed * 0.12);
     let p = world * 0.0035 + drift * 0.05;
     let n = value_noise(p) * 0.62 + value_noise(p * 2.3 + vec2<f32>(7.1, 3.7)) * 0.38;
-    return smoothstep(0.50, 0.74, n);
+    let bias = (clamp(coverage, 0.0, 1.0) - 0.5) * 0.18;
+    return smoothstep(0.50 - bias, 0.74 - bias, n);
+}
+
+// 水下焦散（P3-R51）：两束互相调制的正弦脊 + 细噪声，随相机时间缓慢流动。
+// 只在“地形低于岸线”的区域叠到 ground 上，透过半透明水面形成河床光斑。
+fn caustic(world: vec2<f32>, time: f32) -> f32 {
+    let p = world * 0.55 + vec2<f32>(time * 0.05, -time * 0.04);
+    let a = sin(p.x * 3.1 + sin(p.y * 2.7 + time * 0.9));
+    let b = sin(p.y * 3.7 - time * 1.1 + sin(p.x * 2.3));
+    let ridge = 1.0 - abs(a * b);
+    let fine = value_noise(p * 2.7 + vec2<f32>(time * 0.2, 0.0));
+    return smoothstep(0.55, 0.92, ridge) * (0.55 + fine * 0.45);
+}
+
+// 水面波斜率（P3-R50）：三条世界空间长波 + 局部雨点/涡环。深度图与法线共用同一份，
+// 因此岸线/泡沫会随波轻微“折射”漂移，而不是贴死在 UV 上。
+fn water_wave_slope(p: vec2<f32>, time: f32, flow: f32, rain: f32) -> vec2<f32> {
+    let advance = time * (0.9 + flow * 0.35);
+    let k1 = vec2<f32>(0.62, 0.31);
+    let k2 = vec2<f32>(-0.28, 0.74);
+    let k3 = vec2<f32>(1.35, -0.85);
+    let ph1 = dot(p, k1) + advance * 1.3;
+    let ph2 = dot(p, k2) - advance * 1.7;
+    let ph3 = dot(p, k3) + advance * 2.4;
+    var slope = vec2<f32>(
+        cos(ph1) * k1.x * 0.55 + cos(ph2) * k2.x * 0.35 + cos(ph3) * k3.x * 0.16,
+        cos(ph1) * k1.y * 0.55 + cos(ph2) * k2.y * 0.35 + cos(ph3) * k3.y * 0.16
+    );
+    // 雨点环：每 1/0.65 世界单位一个格子，相位错开；只在波峰到波谷之间留下细环。
+    let cell_p = p * 0.65;
+    let cell = floor(cell_p);
+    let local = fract(cell_p) - vec2<f32>(0.5);
+    let phase = fract(time * 0.35 + hash21(cell));
+    let distance = length(local);
+    let ring = sin(distance * 34.0 - phase * 18.0)
+        * exp(-distance * 7.0) * (1.0 - phase) * 0.018
+        * smoothstep(0.55, 0.90, rain);
+    slope = slope + safe_normalize(vec3<f32>(local.x, 0.0, local.y)).xz * ring;
+    return slope;
+}
+
+fn unpack_ripple(packed_bits: f32) -> vec2<f32> {
+    let packed = bitcast<u32>(packed_bits);
+    return vec2<f32>(
+        f32((packed >> 16u) & 0xffffu) / 65535.0 * 512.0 - 256.0,
+        f32(packed & 0xffffu) / 65535.0 * 512.0 - 256.0,
+    );
+}
+
+fn ripple_ring(p: vec2<f32>, packed_bits: f32, age: f32) -> f32 {
+    if age >= 1.5 {
+        return 0.0;
+    }
+    let center = unpack_ripple(packed_bits);
+    let radius = age * 10.0;
+    return (1.0 - smoothstep(0.0, 0.35, abs(distance(p, center) - radius)))
+        * (1.0 - age / 1.5);
+}
+
+fn ripple_slope(p: vec2<f32>, packed_bits: f32, age: f32) -> vec2<f32> {
+    if age >= 1.5 {
+        return vec2<f32>(0.0);
+    }
+    let center = unpack_ripple(packed_bits);
+    let delta = p - center;
+    let dist = length(delta);
+    if dist <= 1e-4 {
+        return vec2<f32>(0.0);
+    }
+    let radius = age * 10.0;
+    let wave = sin((dist - radius) * 12.0) * exp(-abs(dist - radius) * 4.0)
+        * (1.0 - age / 1.5);
+    return (delta / dist) * wave * 0.18;
 }
 
 // 地形细节图集（`terrain_detail.rs` 生成、随材质内嵌）：2x2 = 草/苔/落叶/裸土。
@@ -194,6 +275,21 @@ fn terrain_normal_atlas(local: vec2<f32>, tile: vec2<f32>, lod: f32) -> vec3<f32
     let clamped = clamp(local, vec2<f32>(inset), vec2<f32>(1.0 - inset));
     return textureSampleLevel(normal_map, albedo_sampler, (tile + clamped) * 0.5, lod).rgb
         * 2.0 - vec3<f32>(1.0);
+}
+
+// 地形高度（法线图集的 B 通道，0..1）；用于单步视差偏移。
+fn terrain_atlas_height(local: vec2<f32>, tile: vec2<f32>, lod: f32) -> f32 {
+    let inset = 1.0 / 512.0;
+    let clamped = clamp(local, vec2<f32>(inset), vec2<f32>(1.0 - inset));
+    return textureSampleLevel(normal_map, albedo_sampler, (tile + clamped) * 0.5, lod).b;
+}
+
+fn terrain_height_local(local: vec2<f32>, weights: vec4<f32>, lod: f32) -> f32 {
+    let h0 = terrain_atlas_height(local, vec2<f32>(0.0, 0.0), lod);
+    let h1 = terrain_atlas_height(local, vec2<f32>(1.0, 0.0), lod);
+    let h2 = terrain_atlas_height(local, vec2<f32>(0.0, 1.0), lod);
+    let h3 = terrain_atlas_height(local, vec2<f32>(1.0, 1.0), lod);
+    return dot(weights, vec4<f32>(h0, h1, h2, h3));
 }
 
 // Trowbridge-Reitz（GGX）法线分布。`alpha` = roughness²
@@ -507,11 +603,21 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
 @fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>, @location(3) world_position: vec3<f32>, @location(4) tangent: vec4<f32>, @location(5) splat: vec4<f32>, @location(6) shadow_position_mid: vec4<f32>, @location(7) shadow_position_far: vec4<f32>, @location(8) shadow_position_ultra: vec4<f32>, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
     let albedo_color = textureSample(albedo, albedo_sampler, uv);
     var base_rgb = material.base_color.rgb * albedo_color.rgb;
+    // P3-R68：地形微阴影，函数级作用域（地形分支外还要用它压直接光）。
+    var terrain_shadow = 0.0;
     var base_alpha = material.base_color.a * albedo_color.a;
     // 会话级世界空间裁剪平面（X-ray/剖面）。零向量显式跳过，保证旧路径像素不变
-    if (dot(camera.clip.xyz, camera.clip.xyz) > 1e-8
-        && dot(world_position, camera.clip.xyz) + camera.clip.w < 0.0) {
-        discard;
+    if (dot(camera.clip.xyz, camera.clip.xyz) > 1e-8) {
+        let clip_distance = dot(world_position, camera.clip.xyz) + camera.clip.w;
+        if (clip_distance < 0.0) {
+            // P3-R54：切面封口。双面材质的背面在切面附近时输出实体土壤截面色，
+            // 让 X-ray/剖面看到“实心切面”而不是空壳；更深的背面仍然丢弃。
+            if (!front_facing && clip_distance > -0.08) {
+                let section = mix(vec3<f32>(0.24, 0.18, 0.12), base_rgb, 0.35);
+                return vec4<f32>(section, 1.0);
+            }
+            discard;
+        }
     }
     // P3-R02-4：flags.z = 0/1/2（opaque/mask/blend），flags.w = cutoff
     // opaque 强制 alpha=1；mask 低于阈 discard；blend 保留 alpha 交给管线混合
@@ -535,7 +641,15 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         let sand = vec3<f32>(0.52, 0.44, 0.30);
         let soil = vec3<f32>(0.32, 0.28, 0.20);
         let rock = vec3<f32>(0.38, 0.35, 0.31);
-        let weights = clamp(splat, vec4<f32>(0.0), vec4<f32>(1.0));
+        var weights = clamp(splat, vec4<f32>(0.0), vec4<f32>(1.0));
+        // P3-R48：逐像素四通道 splat。地形材质把世界尺寸放在 animation.y，
+        // 图集从 occlusion 槽位线性采样；归一化后替换逐顶点权重。
+        if (material.animation.y > 0.5) {
+            let world_uv = world_position.xz / material.animation.y + vec2<f32>(0.5);
+            let sampled = textureSampleLevel(occlusion_map, albedo_sampler, world_uv, 0.0).rgba;
+            let total = max(sampled.r + sampled.g + sampled.b + sampled.a, 1e-4);
+            weights = clamp(sampled / total, vec4<f32>(0.0), vec4<f32>(1.0));
+        }
         var bare: vec3<f32>;
         if (material.surface.w > 0.001) {
             let tile_scale = max(material.surface.w, 0.05);            let p = world_position.xz / tile_scale;
@@ -545,17 +659,67 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
             let step_y = length(dpdy(p)) * 0.5;
             let atlas_width = f32(textureDimensions(albedo).x);
             let lod = clamp(log2(max(step_x, step_y) * atlas_width), 0.0, 3.0);
-            let grass_tex = terrain_atlas_sample(local, vec2<f32>(0.0, 0.0), lod);
-            let moss_tex = terrain_atlas_sample(local, vec2<f32>(1.0, 0.0), lod);
-            let litter_tex = terrain_atlas_sample(local, vec2<f32>(0.0, 1.0), lod);
-            let soil_tex = terrain_atlas_sample(local, vec2<f32>(1.0, 1.0), lod);
+            // 多步视差与裂缝 AO 只在近处（lod < 1，纹素足迹仍小）执行；远景 mip 已经
+            // 平均掉细节，继续采 24 次高度只会烧带宽。P3-R60 的自适应门。
+            let near_detail = lod < 1.0;
+            var local_p = local;
+            var crevice = 0.0;
+            if (near_detail) {
+                let view = safe_normalize(camera.position.xyz - world_position);
+                let step_dir = view.xz / max(view.y, 0.25) * 0.035;
+                for (var i: i32 = 0; i < 2; i = i + 1) {
+                    let height = terrain_height_local(local_p, weights, lod);
+                    local_p = fract(local + step_dir * (height - 0.5));
+                }
+                // 高度曲率近似 crevice AO：中心比四邻低时压暗，叶片/石缝更有层次。
+                let texel = 1.0 / 512.0;
+                let hc = terrain_height_local(local, weights, lod);
+                let hl = terrain_height_local(local - vec2<f32>(texel, 0.0), weights, lod);
+                let hr = terrain_height_local(local + vec2<f32>(texel, 0.0), weights, lod);
+                let hu = terrain_height_local(local - vec2<f32>(0.0, texel), weights, lod);
+                let hd = terrain_height_local(local + vec2<f32>(0.0, texel), weights, lod);
+                let curvature = hc * 4.0 - hl - hr - hu - hd;
+                crevice = clamp(-curvature * 6.0, 0.0, 0.35);
+                // 沿太阳方向的微地形阴影：邻接高度更高就压直接光（叶片/石子的短影）。
+                let sun_dir = -light.direction.xz;
+                if (dot(sun_dir, sun_dir) > 1e-6) {
+                    let s = normalize(sun_dir);
+                    let h0 = terrain_height_local(local_p, weights, lod);
+                    let sun_height = max(-light.direction.y, 0.0);
+                    let horizontal = max(length(light.direction.xz), 1e-4);
+                    let ray_slope = clamp(0.55 * sun_height / horizontal, 0.04, 0.8);
+                    var occlusion = 0.0;
+                    for (var i: i32 = 1; i <= 5; i = i + 1) {
+                        let fi = f32(i);
+                        let t = fi * 0.006;
+                        let h = terrain_height_local(local_p + s * t, weights, lod);
+                        let ray = h0 + t * ray_slope;
+                        occlusion += clamp((h - ray) * 10.0, 0.0, 1.0) * (1.0 - fi * 0.15);
+                    }
+                    terrain_shadow = clamp(occlusion * 0.35, 0.0, 1.0)
+                        * smoothstep(0.0, 0.18, sun_height);
+                }
+            }
+            let grass_tex = terrain_atlas_sample(local_p, vec2<f32>(0.0, 0.0), lod);
+            let moss_tex = terrain_atlas_sample(local_p, vec2<f32>(1.0, 0.0), lod);
+            let litter_tex = terrain_atlas_sample(local_p, vec2<f32>(0.0, 1.0), lod);
+            let soil_tex = terrain_atlas_sample(local_p, vec2<f32>(1.0, 1.0), lod);
             let vegetation = grass_tex * weights.x + moss_tex * weights.y
                 + litter_tex * weights.z;
-            bare = mix(vegetation, soil_tex, weights.w);
-            let n0 = terrain_normal_atlas(local, vec2<f32>(0.0, 0.0), lod);
-            let n1 = terrain_normal_atlas(local, vec2<f32>(1.0, 0.0), lod);
-            let n2 = terrain_normal_atlas(local, vec2<f32>(0.0, 1.0), lod);
-            let n3 = terrain_normal_atlas(local, vec2<f32>(1.0, 1.0), lod);
+            bare = mix(vegetation, soil_tex, weights.w) * (1.0 - crevice);
+            // P3-R71：大尺度色斑打散 100 世界单位瓦片的重复感；两层 value noise
+            // 只调明度/冷暖，不改法线与 splat 权重。
+            let macro_a = value_noise(world_position.xz * 0.008);
+            let macro_b = value_noise(world_position.xz * 0.031 + vec2<f32>(19.1, 3.7));
+            let macro_tint = 0.84 + 0.26 * (macro_a * 0.65 + macro_b * 0.35);
+            bare = bare * vec3<f32>(macro_tint * 1.02, macro_tint, macro_tint * 0.96);
+            // P3-R93：运行期积雪/湿润。
+            bare = mix(bare, vec3<f32>(0.86, 0.89, 0.93), camera.surface.x * 0.75);
+            bare = bare * (1.0 - camera.surface.y * 0.18);
+            let n0 = terrain_normal_atlas(local_p, vec2<f32>(0.0, 0.0), lod);
+            let n1 = terrain_normal_atlas(local_p, vec2<f32>(1.0, 0.0), lod);
+            let n2 = terrain_normal_atlas(local_p, vec2<f32>(0.0, 1.0), lod);
+            let n3 = terrain_normal_atlas(local_p, vec2<f32>(1.0, 1.0), lod);
             terrain_normal = vec2<f32>(
                 n0.x * weights.x + n1.x * weights.y + n2.x * weights.z + n3.x * weights.w,
                 n0.y * weights.x + n1.y * weights.y + n2.y * weights.z + n3.y * weights.w
@@ -591,22 +755,32 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
             let shore_t = clamp(material.flags.w, 0.01, 0.98);
             let below = 1.0 - smoothstep(shore_t, shore_t + 0.04, height_t);
             ground = mix(ground, ground * vec3<f32>(0.58, 0.64, 0.62), below * 0.65);
+            // 水下焦散：越远离岸线越明显，避免在干岸上出现光斑。
+            let depth_norm = clamp(shore_t - height_t, 0.0, 1.0);
+            let caustic_strength = below * smoothstep(0.0, 0.06, depth_norm);
+            ground = ground
+                + vec3<f32>(0.20, 0.26, 0.22)
+                    * caustic(world_position.xz, camera.position.w)
+                    * caustic_strength * 0.8;
         }
         base_rgb = ground;
-        let cloud = cloud_shadow(world_position.xz, camera.position.w);
-        base_rgb = mix(base_rgb, base_rgb * vec3<f32>(0.72, 0.78, 0.86), cloud * 0.65);
     }
     // 水面：有 bed 的水面在顶点里烘 depth（splat.x，splat.y=1 标记），
     // 因而可以按真实河床做深浅色/岸线；没 bed 的老水面仍 UV 边缘软边
     var water_wetness = 1.0;
     if (material.animation.x > 0.5 && material.animation.x < 1.5) {
         let has_bed = splat.y > 0.5;
+        let ice = material.flags.w > 1.5;
         // 有 bed 时优先读逐像素河床深度图（normal 槽位、线性上传，`r*9-1`）；
         // 没有深度图/老水面时退回逐顶点 splat.x。
         var signed_depth = splat.x;
         var depth = max(splat.x, 0.0);
         if (has_bed && material.surface.w < -0.5) {
-            signed_depth = textureSampleLevel(normal_map, albedo_sampler, uv, 0.0).r * 9.0 - 1.0;
+            let flow = clamp(material.flags.y, -4.0, 4.0);
+            let slope = water_wave_slope(world_position.xz, camera.position.w, flow, camera.cloud.x);
+            let distorted_uv = clamp(uv + slope * 0.004, vec2<f32>(0.001), vec2<f32>(0.999));
+            signed_depth =
+                textureSampleLevel(normal_map, albedo_sampler, distorted_uv, 0.0).r * 9.0 - 1.0;
             depth = max(signed_depth, 0.0);
         }
         if (has_bed) {
@@ -617,9 +791,28 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
             let shore = 1.0 - smoothstep(0.02, 0.30, depth);
             base_rgb = mix(base_rgb, vec3<f32>(0.78, 0.86, 0.84), shore * 0.55);
             base_alpha = max(base_alpha, shore * 0.55);
-            // 云影同样落在水面上，避免河流在云影里“自己发光”。
-            let cloud = cloud_shadow(world_position.xz, camera.position.w);
-            base_rgb = mix(base_rgb, base_rgb * vec3<f32>(0.74, 0.80, 0.88), cloud * 0.55);
+            // P3-R89：运行期水体染色/浑浊度。
+            base_rgb = mix(base_rgb, base_rgb * camera.water.rgb, 0.65);
+            base_alpha = max(base_alpha, camera.water.w * 0.55);
+            // P3-R125：结冰时加冷灰蓝底与程序化裂纹。
+            if (ice) {                let p = world_position.xz;
+                let crack = abs(
+                    sin(p.x * 0.85 + sin(p.y * 0.70) * 1.9)
+                    + sin(p.y * 1.05 + sin(p.x * 0.55) * 1.6)
+                );
+                let line = 1.0 - smoothstep(0.02, 0.075, crack);
+                let ice_base = mix(vec3<f32>(0.72, 0.82, 0.86), base_rgb, 0.35);
+                base_rgb = mix(ice_base, vec3<f32>(0.45, 0.55, 0.62), line * 0.45);
+                base_alpha = max(base_alpha, 0.85);
+            }
+            // P3-R135/R138：最多 3 圈最近落水/入水的涟漪环。
+            let ring = ripple_ring(world_position.xz, camera.surface.z, camera.surface.w)
+                + ripple_ring(world_position.xz, camera.ripple2.x, camera.ripple2.y)
+                + ripple_ring(world_position.xz, camera.ripple2.z, camera.ripple2.w);
+            if (ring > 0.001) {
+                base_rgb = mix(base_rgb, vec3<f32>(0.82, 0.92, 0.96), ring * 0.45);
+                base_alpha = max(base_alpha, ring * 0.35);
+            }
             // 陆地/水面相交处按深度淡出 0.03 留一点抖动余量
             water_wetness = smoothstep(-0.03, 0.12, signed_depth);
         }
@@ -628,7 +821,7 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         base_alpha *= select(smoothstep(0.0, 0.10, edge), 1.0, has_bed) * water_wetness;
         // 岸线泡沫：有 bed 时按水深；没 bed 时退 UV 边缘 + 时间波纹
         // 强度 `WaterSpec.foam`  flags.w 带到材质
-        let foam_strength = clamp(material.flags.w, 0.0, 1.0);
+        let foam_strength = select(clamp(material.flags.w, 0.0, 1.0), 0.0, ice);
         if (foam_strength > 0.001) {
             let band = 1.0 - smoothstep(0.03, 0.16, edge);
             // flags.y 在水面材质上是沿局 +x 的流速（不是遮蔽强度）；负值倒流
@@ -653,28 +846,51 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     // 自己的采样，不复用下面的切线基法线贴图路径。
     if (material.animation.x > 1.5 && material.surface.w > 0.001) {
         n = safe_normalize(vec3<f32>(terrain_normal.x * 2.0, 1.0, terrain_normal.y * 2.0));
+        // P3-R94：积雪把细节法线压平，近处不再像草叶/石子。
+        n = safe_normalize(mix(n, geometric_normal, camera.surface.x * 0.7));
     }
     // 水面：世界空间程序化波法线 + 菲涅尔。几何仍是平面，但法线参与直射高光、
     // IBL 反射和菲涅尔朝向；因为按世界坐标算，相邻水块之间没有相位接缝。
     if (material.animation.x > 0.5 && material.animation.x < 1.5) {
         let water_t = camera.position.w;
         let flow = clamp(material.flags.y, -4.0, 4.0);
-        let advance = water_t * (0.9 + flow * 0.35);
-        let p = world_position.xz;
-        let k1 = vec2<f32>(0.62, 0.31);
-        let k2 = vec2<f32>(-0.28, 0.74);
-        let k3 = vec2<f32>(1.35, -0.85);
-        let ph1 = dot(p, k1) + advance * 1.3;
-        let ph2 = dot(p, k2) - advance * 1.7;
-        let ph3 = dot(p, k3) + advance * 2.4;
-        let slope = vec2<f32>(
-            cos(ph1) * k1.x * 0.55 + cos(ph2) * k2.x * 0.35 + cos(ph3) * k3.x * 0.16,
-            cos(ph1) * k1.y * 0.55 + cos(ph2) * k2.y * 0.35 + cos(ph3) * k3.y * 0.16
-        );
+        var slope = water_wave_slope(world_position.xz, water_t, flow, camera.cloud.x);
+        // P3-R136/R138：最近三圈涟漪也给法线加环状扰动。
+        slope = slope
+            + ripple_slope(world_position.xz, camera.surface.z, camera.surface.w)
+            + ripple_slope(world_position.xz, camera.ripple2.x, camera.ripple2.y)
+            + ripple_slope(world_position.xz, camera.ripple2.z, camera.ripple2.w);
         n = safe_normalize(vec3<f32>(-slope.x * 0.16, 1.0, -slope.y * 0.16));
         let view_dir = safe_normalize(camera.position.xyz - world_position);
         let fresnel = pow(1.0 - clamp(dot(n, view_dir), 0.0, 1.0), 5.0);
-        base_rgb = mix(base_rgb, vec3<f32>(0.30, 0.42, 0.54), fresnel * 0.35);
+        // 天空反射（P3-R49）：与 Tonemap 的程序化天空同色板，按水面菲涅耳混入；
+        // 这样水面至少能反射地平线/天顶渐变与太阳盘，而不是一块固定的蓝灰。
+        let reflected = safe_normalize(reflect(-view_dir, n));
+        let sky_height = clamp(reflected.y, 0.0, 1.0);
+        let sky = mix(
+            vec3<f32>(0.55, 0.68, 0.80),
+            vec3<f32>(0.055, 0.14, 0.34),
+            pow(sky_height, 0.55),
+        );
+        // P3-R70：水面也反射云层（与地面云影同一片噪声/漂移）；反射视线投到
+        // 相机上方约 140 单位的云平面，按菲涅耳混入，云影不再只出现在地上。
+        let cloud_plane = max(camera.position.y + 80.0, camera.cloud.z + 40.0);
+        let cloud_t = (cloud_plane - camera.position.y) / max(reflected.y, 0.08);
+        let cloud_p = camera.position.xz + reflected.xz * cloud_t;
+        let cloud = cloud_shadow(cloud_p, water_t, camera.cloud.x, camera.cloud.y) * smoothstep(0.03, 0.20, reflected.y);
+        let to_sun = safe_normalize(-light.direction.xyz);
+        let cloud_color = mix(
+            vec3<f32>(0.62, 0.67, 0.75),
+            vec3<f32>(1.0, 0.98, 0.93),
+            0.55 + 0.45 * pow(max(dot(reflected, to_sun), 0.0), 2.0),
+        );
+        let sky_with_clouds = mix(sky, cloud_color, cloud * 0.75);
+        let sun_reflection = pow(max(dot(reflected, to_sun), 0.0), 900.0) * 3.0;
+        base_rgb = mix(
+            base_rgb,
+            sky_with_clouds + vec3<f32>(1.0, 0.82, 0.58) * sun_reflection,
+            fresnel * 0.55,
+        );
         base_alpha = max(base_alpha, fresnel * 0.50);
     }
     // 法线贴图只在有贴图且切线基可用（w != 0）时启用；UV 退 镜像
@@ -694,7 +910,10 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     let n_dot_h = max(dot(n, h), 0.0);
     let v_dot_h = max(dot(v, h), 0.0);
     let metallic_roughness = textureSample(metallic_roughness_map, albedo_sampler, uv);
-    let roughness = clamp(material.surface.y * metallic_roughness.g, MIN_ROUGHNESS, 1.0);
+    let cover_wet = select(0.0, camera.surface.y, material.animation.x > 1.5);
+    let cover_snow = select(0.0, camera.surface.x, material.animation.x > 1.5);
+    let cover_roughness = clamp(1.0 - cover_wet * 0.35 + cover_snow * 0.12, 0.35, 1.5);
+    let roughness = clamp(material.surface.y * metallic_roughness.g * cover_roughness, MIN_ROUGHNESS, 1.0);
     let metallic = clamp(material.surface.x * metallic_roughness.b, 0.0, 1.0);
     let alpha = roughness * roughness;
     let f0 = mix(vec3<f32>(DIELECTRIC_F0), base_rgb, vec3<f32>(metallic));
@@ -711,7 +930,7 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     // 点光源：同一 BRDF，衰减用"range 内平方反 × 平滑截断"
     // 前八盏点光可乘六面阴影可见度；其余点光只做直接光
     var point_direct = vec3<f32>(0.0);
-    let point_count = min(u32(light.params.x), 8u);
+    let point_count = min(u32(light.params.x), 16u);
     for (var i = 0u; i < point_count; i = i + 1u) {
         let point = light.points[i];
         let to_light = point.position_range.xyz - world_position;
@@ -749,7 +968,7 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     let radiance = light.color_intensity.rgb * light.color_intensity.w;
     // 环境遮蔽只作用在间接项（当前是常数环境光）；直接光与阴影沿用 glTF 语义
     var occlusion = 1.0;
-    if (material.flags.x > 0.5) {
+    if (material.flags.x > 0.5 && material.animation.x < 1.5) {
         let ao = textureSample(occlusion_map, albedo_sampler, uv).r;
         occlusion = mix(1.0, ao, clamp(material.flags.y, 0.0, 1.0));
     }
@@ -771,5 +990,12 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     indirect = indirect + sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * environment.params.x * occlusion;
 //#endif
     let emissive = material.emissive.rgb * textureSample(emissive_map, albedo_sampler, uv).rgb;
-    return vec4<f32>(direct * radiance * shadow_visibility + point_direct + indirect + emissive, base_alpha);
+    // 云影统一在最终颜色上执行（P3-R49）：地形、水面、树冠、蚁巢、蚂蚁都吃同一层，
+    // 不再只压地形/水面。强度与云量之前一致（最多 26%）。
+    let cloud = cloud_shadow(world_position.xz, camera.position.w, camera.cloud.x, camera.cloud.y);
+    let cloud_factor = 1.0 - cloud * camera.cloud.w;
+    return vec4<f32>(
+        (direct * (1.0 - terrain_shadow * 0.55) * radiance * shadow_visibility + point_direct + indirect * (1.0 - terrain_shadow * 0.25) + emissive) * cloud_factor,
+        base_alpha,
+    );
 }

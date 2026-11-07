@@ -28,13 +28,14 @@ Lua 的 `burst` 没有 `rate`；持续发射用 `particles.stream3d`，它和场
 ## `particles.burst3d(x: f32, y: f32, z: f32, count: u32, options: Option<mlua::Table>)`
 
 在三维世界坐标打一簇粒子；除 `burst` 的全部选项外，额外接受 `gravity_z`、`speed_z`、
-`spread_z`。z 会参与 CPU/GPU 积分并由世界通道绘制（z 非零时即使宿主没开世界深度开关，
+`spread_z`、`buoyancy`。z 会参与 CPU/GPU 积分并由世界通道绘制（z 非零时即使宿主没开世界深度开关，
 这一帧也会自动走世界 Sprite 路径）。
 
-- 参数：`x, y, z` 世界坐标；`count` 粒子数；`options` 同 `burst`，另加三个 z 选项。
+- 参数：`x, y, z` 世界坐标；`count` 粒子数；`options` 同 `burst`，另加四个 z/浮力选项。
   `area_x/y/z` 是**出生位置**的盒半边长（不是初速抖动）；默认 0 时全在同一点。
+  `buoyancy` 按剩余寿命比例向上推（新粒子更热），默认 0。
 - 返回：无。
-- 失败：任一坐标非有限；`speed_z`/`spread_z` 为负；其余同 `burst`。
+- 失败：任一坐标非有限；`speed_z`/`spread_z`/`buoyancy` 为负；其余同 `burst`。
 - 示例：`particles.burst3d(10, 2, 18, 24, {speed=3, speed_z=8, gravity_z=-20, life=1.4, size=0.15})`。
 
 ## `particles.clear_streams3d()`
@@ -93,15 +94,16 @@ burst 的 compute uniform（`Params.wind_z`），因此 GPU 视觉层的三维�
 - 返回：`(ok, reason)`；越界或非有限值返回 `(false, 原因)`，旧值保留。
 - 示例：`particles.set_wind_profile(0.012, 0.35, 0.35)`。
 
-## `particles.set_wind_source(index: u32, x: f32, y: f32, z: f32, radius: f32, radial: f32, lift: f32)`
+## `particles.set_wind_source(index: u32, x: f32, y: f32, z: f32, radius: f32, radial: f32, lift: f32, swirl: f32?)`
 
 设置一个**局部风源**（4 个槽，`index` 0..=3）。坐标与 `burst3d` 一致：`x/y` 是水平面
 （`y` = 高度），`z` 是深度；在半径内按 `(1−d/radius)²` 衰减，`radial` 沿“源 → 粒子”
-三维方向外推（负值向内），`lift` 沿世界高度方向向上推。CPU 与 GPU 用同一公式。
+三维方向外推（负值向内），`lift` 沿世界高度方向向上推，`swirl` 绕世界高度轴切向旋转
+（正=逆时针）。CPU 与 GPU 用同一公式；省略 `swirl` 等价于 `0`。
 
-- 参数：`radius` `0..=512`（`0` 关闭该槽）；`radial`/`lift` `-64..=64`，世界单位/秒²。
+- 参数：`radius` `0..=512`（`0` 关闭该槽）；`radial`/`lift`/`swirl` `-64..=64`，世界单位/秒²。
 - 返回：`(ok, reason)`；索引越界或非有限值返回 `(false, 原因)`，旧值保留。
-- 示例：`particles.set_wind_source(0, 12, 0.35, -8, 7, 0.6, 6.0)`。
+- 示例：`particles.set_wind_source(0, 12, 0.35, -8, 7, 0.6, 6.0, 1.2)`。
 
 ## `particles.stop_stream3d(key: String)`
 
@@ -116,7 +118,7 @@ burst 的 compute uniform（`Params.wind_z`），因此 GPU 视觉层的三维�
 
 声明/更新一条**持续 3D 发射器**（粒子/秒）。同一 `key` 再次调用只更新原点与参数；宿主每帧
 把它同步给渲染器环形流。`rate` 必须 `0 < rate <= 10000`，选项同 `burst3d`（`life` 必填为
-正数；`speed_z` 不能为负，向下的雨用 `gravity_z`）。
+正数；`speed_z`/`buoyancy` 不能为负，向下的雨用 `gravity_z`）。
 
 - 参数：`key` 1–64 个可见字符；`x,y,z` 世界坐标；`rate` 每秒粒子数；`options` 同 `burst3d`。
   `area_x/y/z` 让一个流覆盖一片体积（雨幕/雪幕），否则全部从同一点发射。

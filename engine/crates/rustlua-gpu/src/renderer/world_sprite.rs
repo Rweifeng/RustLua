@@ -113,7 +113,13 @@ impl Renderer {
                 Self::create_depth_view(&self.device, target.0.max(1), target.1.max(1));
             self.world_sprite_depth_size = (target.0.max(1), target.1.max(1));
         }
-        let uniform = bytemuck::cast_slice(&view.matrix.columns);
+        let mut uniform = [0.0_f32; 20];
+        uniform[..16].copy_from_slice(&view.matrix.columns.concat());
+        uniform[16] = self.clock.elapsed().as_secs_f32();
+        uniform[17] = self.cloud_coverage.clamp(0.0, 1.0);
+        uniform[18] = self.cloud_speed.clamp(0.0, 4.0);
+        uniform[19] = self.cloud_shadow_strength.clamp(0.0, 0.6);
+        let uniform = bytemuck::cast_slice(&uniform);
         self.queue
             .write_buffer(&self.world_sprite_camera_buffer, 0, uniform);
         // 共用视图时把同一份矩阵也记进宿主字段：诊断读到的永远是"这一帧真正用的那一份"。
@@ -345,6 +351,18 @@ impl Renderer {
                 }
             }
         }
+        let mut largest_groups: Vec<(usize, String)> = groups
+            .iter()
+            .map(|((path, primitive, material), group)| {
+                (
+                    group.models.len(),
+                    format!("{}#{}@{}", path, primitive, material.unwrap_or("<default>")),
+                )
+            })
+            .collect();
+        largest_groups.sort_by(|left, right| right.0.cmp(&left.0));
+        largest_groups.truncate(6);
+        let instanced_group_count = groups.len();
         for group in groups.into_values() {
             draws.push(FrameDraw {
                 geometry: group.geometry,
@@ -377,6 +395,8 @@ impl Renderer {
                 target: "render",
                 draws = draws.len(),
                 instances,
+                instanced_groups = instanced_group_count,
+                largest_groups = ?largest_groups,
                 cull = self.cull_enabled,
                 instancing = self.instancing_enabled,
                 "[render] 3D baseline draws/instances"

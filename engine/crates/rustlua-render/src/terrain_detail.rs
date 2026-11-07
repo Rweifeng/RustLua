@@ -73,8 +73,9 @@ pub fn ground_atlas(seed: u32) -> GltfTextureImage {
 /// is differentiated independently and wraps **inside its own tile**, never
 /// across the atlas border, so the four layers stay seamless after blending.
 ///
-/// Encoding is `R = n.x * 0.5 + 0.5`, `G = n.z * 0.5 + 0.5`, `B = n.y * 0.5 + 0.5`
-/// (linear RGBA8; the PBR terrain branch reconstructs the normal from RG only).
+/// Encoding is `R = n.x * 0.5 + 0.5`, `G = n.z * 0.5 + 0.5`, `B = height` (0..1)
+/// (linear RGBA8; the PBR terrain branch reconstructs the normal from RG and uses B
+/// as the luminance height for parallax).
 #[must_use]
 pub fn normal_atlas(color: &GltfTextureImage, strength: f32) -> GltfTextureImage {
     let size = DETAIL_ATLAS_SIZE;
@@ -115,14 +116,15 @@ pub fn normal_atlas(color: &GltfTextureImage, strength: f32) -> GltfTextureImage
                 let dz = (down - up) * strength;
                 let length = (dx * dx + 1.0 + dz * dz).sqrt();
                 let nx = (-dx / length).clamp(-1.0, 1.0);
-                let ny = (1.0 / length).clamp(0.0, 1.0);
                 let nz = (-dz / length).clamp(-1.0, 1.0);
                 let index = (((tile_y * DETAIL_TILE_SIZE + y) * size
                     + (tile_x * DETAIL_TILE_SIZE + x))
                     * 4) as usize;
+                let center = luma(x, y, tile_x, tile_y);
                 rgba[index] = encode_normal_component(nx);
                 rgba[index + 1] = encode_normal_component(nz);
-                rgba[index + 2] = encode_normal_component(ny);
+                // B 不再存 n.y，而是**高度**（亮度），供地形视差偏移采样。
+                rgba[index + 2] = (center * 255.0).round().clamp(0.0, 255.0) as u8;
                 rgba[index + 3] = 255;
             }
         }
@@ -570,7 +572,7 @@ mod tests {
             for x in 0..DETAIL_ATLAS_SIZE {
                 assert!((i32::from(channel(&flat_normal, x, y, 0)) - 128).abs() <= 1);
                 assert!((i32::from(channel(&flat_normal, x, y, 1)) - 128).abs() <= 1);
-                assert_eq!(channel(&flat_normal, x, y, 2), 255);
+                assert!((i32::from(channel(&flat_normal, x, y, 2)) - 128).abs() <= 1);
             }
         }
         assert_eq!(normal_atlas(&color, 2.5), normal);

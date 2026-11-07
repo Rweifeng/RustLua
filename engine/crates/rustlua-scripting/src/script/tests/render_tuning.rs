@@ -1,0 +1,66 @@
+use super::*;
+
+#[test]
+fn render_fog_round_trips_and_rejects_invalid_density() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let path = script(
+        "local ok, reason = render.set_fog(0.003)\n\
+         assert(ok, reason)\n\
+         assert(render.set_fog(0.2) == false, 'upper bound')\n\
+         assert(render.set_fog(0/0) == false, 'NaN')\n\
+         local cok, creason = render.set_fog_color(0.52, 0.60, 0.70)\n\
+         assert(cok, creason)\n\
+         assert(render.set_fog_color(1.2, 0, 0) == false, 'color range')\n\
+         local cok, creason = render.set_cloud_coverage(0.8)\n\
+         assert(cok, creason)\n\
+         assert(render.set_cloud_coverage(1.5) == false, 'coverage range')\n\
+         local sok, sreason = render.set_cloud_speed(1.5)\n\
+         assert(sok, sreason)\n\
+         assert(render.set_cloud_speed(-0.1) == false, 'speed range')\n\
+         local bok, breason = render.set_cloud_base(90)\n\
+         assert(bok, breason)\n\
+         assert(render.set_cloud_base(10) == false, 'base range')\n\
+         local shok, shreason = render.set_cloud_shadow_strength(0.35)\n\
+         assert(shok, shreason)\n\
+         assert(render.set_cloud_shadow_strength(0.9) == false, 'shadow range')\n\
+         local fok, freason = render.set_flash(0.6)\n\
+         assert(fok, freason)\n\
+         assert(render.set_flash(1.2) == false, 'flash range')\n\
+         local wok, wreason = render.set_water_tint(0.8, 0.9, 0.85, 0.3)\n\
+         assert(wok, wreason)\n\
+         assert(render.set_water_tint(0.8, 1.2, 0.5, 0.3) == false, 'water range')\n\
+         local qok, qreason = render.set_quality(2)\n\
+         assert(qok, qreason)\n\
+         assert(render.set_quality(4) == false, 'quality range')\n\
+         local gok, greason = render.set_surface_cover(0.6, 0.4)\n\
+         assert(gok, greason)\n\
+         assert(render.set_surface_cover(0.6, 1.2) == false, 'surface range')\n\
+         local eok, ereason = render.set_exposure(-0.3)\n\
+         assert(eok, ereason)\n\
+         assert(render.set_exposure(5) == false, 'exposure range')\n\
+         local rok, rreason = render.set_ripple(1.5, -2.0)\n\
+         assert(rok, rreason)\n\
+         assert(render.set_ripple(0/0, 0) == false, 'ripple finite')\n\
+         local fok, freason = render.set_post_fx(0.3, 0.2)\n\
+         assert(fok, freason)\n\
+         assert(render.set_post_fx(1.2, 0.2) == false, 'post fx range')\n\
+         local stats = render.stats()\n\
+         assert(stats.draw_calls == 0 and stats.vertices == 0 and stats.triangles == 0, 'stats defaults')\n\
+         function update() end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(runtime.render_fog_density(), Some(0.003));
+    assert_eq!(runtime.render_fog_color(), Some([0.52, 0.60, 0.70]));
+    assert_eq!(runtime.render_cloud_coverage(), Some(0.8));
+    assert_eq!(runtime.render_cloud_speed(), Some(1.5));
+    assert_eq!(runtime.render_cloud_base(), Some(90.0));
+    assert_eq!(runtime.render_cloud_shadow_strength(), Some(0.35));
+    assert_eq!(runtime.render_flash(), Some(0.6));
+    assert_eq!(runtime.render_water_tint(), Some([0.8, 0.9, 0.85, 0.3]));
+    assert_eq!(runtime.render_quality(), Some(2));
+    assert_eq!(runtime.render_surface_cover(), Some([0.6, 0.4]));
+    assert_eq!(runtime.render_exposure(), Some(-0.3));
+    assert_eq!(runtime.take_render_ripple(), Some([1.5, -2.0]));
+    assert_eq!(runtime.render_post_fx(), Some([0.3, 0.2]));
+    let _ = fs::remove_file(path);
+}

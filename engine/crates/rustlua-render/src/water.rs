@@ -55,6 +55,8 @@ pub struct WaterSpec {
     /// in the otherwise-unused `MaterialAsset::alpha_cutoff` slot (water is
     /// alpha-blended, so the cutoff never discards).
     pub foam: f32,
+    /// P3-R125：结冰标记；真时材质把 `alpha_cutoff` 写成 2.0 作为冰面标记。
+    pub ice: bool,
     /// Flow speed along the surface's local +x axis, `-4..=4`; `0` = still.
     ///
     /// This is a **visual advection** of the procedural ripple/foam phase, not a
@@ -88,6 +90,7 @@ impl Default for WaterSpec {
             amplitude: 0.02,
             seed: 3,
             foam: 0.6,
+            ice: false,
             flow: 0.0,
             bed: None,
             bed_origin: [0.0, 0.0],
@@ -117,6 +120,15 @@ impl WaterSpec {
                 "amp" => spec.amplitude = number(raw, key)?,
                 "seed" => spec.seed = integer(raw, key)?,
                 "foam" => spec.foam = number(raw, key)?,
+                "ice" => {
+                    spec.ice = match integer(raw, key)? {
+                        0 => false,
+                        1 => true,
+                        _ => {
+                            return Err(WaterSpecError::MalformedField(format!("ice={raw}")));
+                        }
+                    };
+                }
                 "flow" => spec.flow = number(raw, key)?,
                 "bed" => {
                     // 嵌套地形 spec 用 `~` 代替 `&`，避免和本层的字段分隔符冲突。
@@ -152,6 +164,9 @@ impl WaterSpec {
         );
         if self.foam != 0.6 {
             path.push_str(&format!("&foam={}", self.foam));
+        }
+        if self.ice {
+            path.push_str("&ice=1");
         }
         if self.flow != 0.0 {
             path.push_str(&format!("&flow={}", self.flow));
@@ -350,7 +365,7 @@ impl WaterSpec {
             normal_scale: -1.0,
             // 水面是 blend，alpha 阈值不会丢弃任何像素；这个槽位因此携带
             // 泡沫强度（0..1）给片元着色器，默认 0.6。
-            alpha_cutoff: self.foam,
+            alpha_cutoff: if self.ice { 2.0 } else { self.foam },
             // 水面没有遮蔽贴图；flags.y（occlusion_strength）这个槽位因此携带
             // 沿局部 +x 的流速，片元着色器只在水面分支读它。
             occlusion_strength: self.flow,
@@ -613,6 +628,24 @@ mod tests {
             ..crate::terrain::TerrainSpec::default()
         };
         assert!(water.depth(&high, 0.0, 0.0) < 0.0);
+    }
+
+    #[test]
+    fn ice_flag_round_trips_and_marks_the_material() {
+        let spec = WaterSpec {
+            ice: true,
+            resolution: 4,
+            ..WaterSpec::default()
+        };
+        let path = spec.mesh_path();
+        assert!(path.contains("&ice=1"), "{path}");
+        let parsed = WaterSpec::parse(&path).expect("ice path parses");
+        assert!(parsed.ice);
+        let mesh = spec.build_mesh();
+        let primitive = &mesh.primitives[0];
+        let material = &mesh.materials[primitive.material.expect("water has a material")];
+        assert_eq!(material.alpha_cutoff, 2.0);
+        assert!(WaterSpec::parse("__water__?ice=2").is_err());
     }
 
     #[test]

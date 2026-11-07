@@ -193,6 +193,7 @@ pub fn apply_to_renderer(
         filtered_shadows: false,
         fog: true,
         fog_density: 0.0015,
+        fog_color: [0.62, 0.68, 0.76],
         god_rays: true,
         dof: false,
         dof_focus: 20.0,

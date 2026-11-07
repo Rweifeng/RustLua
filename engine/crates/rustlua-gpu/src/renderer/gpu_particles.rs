@@ -87,11 +87,12 @@ struct Params {
     wind_shear: f32,
     wind_gust: f32,
     wind_gust_hz: f32,
-    _pad: f32,
+    time: f32,
     source_a: array<vec4<f32>, 4>,
     source_b: array<vec4<f32>, 4>,
     color_start: vec4<f32>,
     color_end: vec4<f32>,
+    buoyancy_pad: vec4<f32>,
 };
 
 "#
@@ -132,6 +133,14 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
     var wind = vec2<f32>(params.wind_x, params.wind_y) * wind_factor;
     var wind_z = params.wind_z * wind_factor;
+    // 与 CPU 同一全局三维湍流；strength 复用 gust，time 由宿主逐帧累加。
+    let amp = params.wind_gust * 0.5;
+    if (amp > 0.0) {
+        let phase = state.position.y * params.wind_gust_hz + state.position.x * 0.11;
+        wind.x = wind.x + amp * sin(phase * 1.7 + state.position_z * 0.13 + params.time * 0.7);
+        wind_z = wind_z + amp * cos(phase * 1.3 - state.position_z * 0.09 + params.time * 0.5);
+        wind.y = wind.y + amp * 0.5 * sin(phase * 2.1 + state.position.x * 0.2 + params.time * 0.9);
+    }
     // 局部风源：与 CPU 同一套径向 + 上升公式（4 个固定槽，active 位在 source_b.z）。
     for (var index: u32 = 0u; index < 4u; index = index + 1u) {
         let source = params.source_a[index];
@@ -153,10 +162,16 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
             wind = wind + vec2<f32>(dx, dy) * radial;
             wind_z = wind_z + dz * radial;
         }
+        if (abs(strength.w) > 1e-9 && distance > 1e-4) {
+            let swirl = strength.w * falloff / distance;
+            wind.x = wind.x - dz * swirl;
+            wind_z = wind_z + dx * swirl;
+        }
         wind.y = wind.y + strength.y * falloff;
     }
     state.velocity = state.velocity + (params.gravity + wind) * dt;
-    state.velocity_z = state.velocity_z + (state.gravity_z + wind_z) * dt;
+    let buoyancy = params.buoyancy_pad.x * clamp(state.life / max(state.max_life, 1e-6), 0.0, 1.0);
+    state.velocity_z = state.velocity_z + (state.gravity_z + wind_z + buoyancy) * dt;
     if (params.drag > 0.0) {
         let damp = max(1.0 - params.drag * dt, 0.0);
         state.velocity = state.velocity * damp;
@@ -192,6 +207,8 @@ struct VertexOutput {
 @group(1) @binding(1) var samp: sampler;
 @group(2) @binding(0) var<uniform> params: Params;
 @group(2) @binding(1) var<storage, read> states: array<ParticleState>;
+// P3-R107：场景深度（3D pass 已结束，深度纹理只作为纹理采样，不再挂到本 pass 上）。
+@group(3) @binding(0) var scene_depth: texture_depth_2d;
 
 // triangle strip 的四角：与旧实现的六个（两条三角形）同一组坐标、同一 winding。
 const CORNERS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
@@ -257,7 +274,19 @@ const CORNERS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
 }
 
 @fragment fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, in.uv) * in.color;
+    let dims = vec2<i32>(textureDimensions(scene_depth));
+    let frag = in.position;
+    let coord = clamp(vec2<i32>(frag.xy), vec2<i32>(0), dims - vec2<i32>(1));
+    let scene = textureLoad(scene_depth, coord, 0);
+    let delta = scene - frag.z;
+    // 粒子在场景几何后面：手动深度剔除（本 pass 不再挂深度附件）。
+    if delta < -0.0001 {
+        return vec4<f32>(0.0);
+    }
+    // 靠近遮挡面时软边淡出，烟/火/雨不再出现硬切边。
+    let soft = smoothstep(0.0, 0.02, delta);
+    let texel = textureSample(tex, samp, in.uv) * in.color;
+    return vec4<f32>(texel.rgb, texel.a * soft);
 }
 "#
 );
@@ -375,11 +404,12 @@ struct GpuParticleParams {
     wind_shear: f32,
     wind_gust: f32,
     wind_gust_hz: f32,
-    _pad: f32,
+    time: f32,
     source_a: [[f32; 4]; 4],
     source_b: [[f32; 4]; 4],
     color_start: [f32; 4],
     color_end: [f32; 4],
+    buoyancy_pad: [f32; 4],
 }
 
 /// 渲染器持有的一组 GPU 粒子系统（空 = 没启用，一个 pass 都不产生）。
@@ -697,6 +727,7 @@ impl Renderer {
             self.gpu_particle_wind_z,
             self.gpu_particle_wind_profile(),
             self.gpu_particle_wind_sources,
+            self.gpu_particle_time,
         );
         let params_buffer = self
             .device
@@ -919,6 +950,7 @@ impl Renderer {
             self.gpu_particle_wind_z,
             self.gpu_particle_wind_profile(),
             self.gpu_particle_wind_sources,
+            self.gpu_particle_time,
         );
         let params_buffer = self
             .device
@@ -1047,6 +1079,7 @@ impl Renderer {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return Ok(self.gpu_particle_progress(0));
         }
+        self.gpu_particle_time += delta_seconds;
         let mut failed = None;
         for index in 0..self.gpu_particles.len() {
             if self.gpu_particles[index].stream.is_some() {
@@ -1060,6 +1093,7 @@ impl Renderer {
                 self.gpu_particle_wind_z,
                 self.gpu_particle_wind_profile(),
                 self.gpu_particle_wind_sources,
+                self.gpu_particle_time,
             );
             self.queue
                 .write_buffer(&system.params_buffer, 0, bytemuck::bytes_of(&params));
@@ -1278,13 +1312,14 @@ impl Renderer {
         ]
     }
 
-    /// 设置 4 个局部风源 `[x, y(height), z, radius, radial, lift]`；任一非法则整批拒绝。
-    pub fn set_gpu_particle_wind_sources(&mut self, sources: [[f32; 6]; 4]) -> bool {
+    /// 设置 4 个局部风源 `[x, y(height), z, radius, radial, lift, swirl]`；任一非法则整批拒绝。
+    pub fn set_gpu_particle_wind_sources(&mut self, sources: [[f32; 7]; 4]) -> bool {
         let valid = sources.iter().all(|source| {
             source.iter().all(|value| value.is_finite())
                 && (0.0..=512.0).contains(&source[3])
                 && (-64.0..=64.0).contains(&source[4])
                 && (-64.0..=64.0).contains(&source[5])
+                && (-64.0..=64.0).contains(&source[6])
         });
         if !valid {
             return false;
@@ -1295,7 +1330,7 @@ impl Renderer {
 
     /// 当前局部风源。
     #[must_use]
-    pub const fn gpu_particle_wind_sources(&self) -> [[f32; 6]; 4] {
+    pub const fn gpu_particle_wind_sources(&self) -> [[f32; 7]; 4] {
         self.gpu_particle_wind_sources
     }
 
@@ -1314,7 +1349,8 @@ impl Renderer {
         wind: [f32; 2],
         wind_z: f32,
         profile: [f32; 3],
-        sources: [[f32; 6]; 4],
+        sources: [[f32; 7]; 4],
+        time: f32,
     ) -> GpuParticleParams {
         let mut source_a = [[0.0f32; 4]; 4];
         let mut source_b = [[0.0f32; 4]; 4];
@@ -1324,7 +1360,7 @@ impl Renderer {
                 source[4],
                 source[5],
                 if source[3] > 0.0 { 1.0 } else { 0.0 },
-                0.0,
+                source[6],
             ];
         }
         GpuParticleParams {
@@ -1338,11 +1374,12 @@ impl Renderer {
             wind_shear: profile[0],
             wind_gust: profile[1],
             wind_gust_hz: profile[2],
-            _pad: 0.0,
+            time,
             source_a,
             source_b,
             color_start: emitter.color_start,
             color_end: emitter.color_end,
+            buoyancy_pad: [emitter.buoyancy, 0.0, 0.0, 0.0],
         }
     }
 
@@ -1391,6 +1428,37 @@ impl Renderer {
         } else {
             &self.world_sprite_depth_view
         };
+        // 深度不再挂到粒子 pass 上，需要清时单独开一个无颜色附件的清深度 pass。
+        if clear_depth {
+            let _ = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rustlua-gpu-particles-depth-clear"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        // P3-R107：深度只作为 group3 纹理；本 pass 不再挂深度附件，片元里手动比较/软边。
+        let depth_bind_group = self
+            .gpu_particle_depth_layout
+            .as_ref()
+            .map(|layout| {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("rustlua-gpu-particles-depth-bind-group"),
+                    layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(depth_view),
+                    }],
+                })
+            });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("rustlua-gpu-particles-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1402,18 +1470,7 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: if clear_depth {
-                        wgpu::LoadOp::Clear(1.0)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
         });
@@ -1433,6 +1490,9 @@ impl Renderer {
                 continue;
             }
             pass.set_bind_group(2, &system.draw_bind_group, &[]);
+        if let Some(group) = &depth_bind_group {
+            pass.set_bind_group(3, group, &[]);
+        }
             pass.draw(0..QUAD_VERTEX_COUNT, 0..system.capacity);
             record_instanced_quad_draw(metrics, system.capacity);
         }
@@ -1490,13 +1550,13 @@ mod tests {
     #[test]
     fn gpu_layouts_match_wgsl_sizes() {
         assert_eq!(std::mem::size_of::<GpuParticleState>(), 48);
-        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 208);
+        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 224);
     }
 
     #[test]
     fn gpu_wind_is_packed_into_the_existing_uniform() {
         let emitter = ParticleEmitter::new(4, 10.0, 1.0, [1.0; 4]);
-        let sources = [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [0.0; 6], [0.0; 6], [0.0; 6]];
+        let sources = [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], [0.0; 7], [0.0; 7], [0.0; 7]];
         let params = Renderer::gpu_particle_params(
             &emitter,
             0.5,
@@ -1504,8 +1564,10 @@ mod tests {
             4.5,
             [0.2, 0.3, 0.4],
             sources,
+            1.25,
         );
         assert_eq!(params.dt, 0.5);
+        assert_eq!(params.time, 1.25);
         assert_eq!(params.wind_x, 2.5);
         assert_eq!(params.wind_y, -3.5);
         assert_eq!(params.wind_z, 4.5);
@@ -1513,7 +1575,7 @@ mod tests {
         assert_eq!(params.wind_gust, 0.3);
         assert_eq!(params.wind_gust_hz, 0.4);
         assert_eq!(params.source_a[0], [1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(params.source_b[0], [5.0, 6.0, 1.0, 0.0]);
+        assert_eq!(params.source_b[0], [5.0, 6.0, 1.0, 7.0]);
         assert_eq!(params.source_b[1][2], 0.0, "radius=0 is inactive");
         assert_eq!(params.gravity, [0.0, 0.0]);
     }
@@ -1533,6 +1595,8 @@ mod tests {
             GPU_PARTICLE_DRAW_SHADER.starts_with(common),
             "draw 段的 ParticleState/Params 声明不再来自公共段"
         );
+        assert!(GPU_PARTICLE_DRAW_SHADER.contains("textureLoad(scene_depth"));
+        assert!(GPU_PARTICLE_DRAW_SHADER.contains("smoothstep(0.0, 0.02, delta)"));
         assert_eq!(
             common.matches("struct ").count(),
             2,

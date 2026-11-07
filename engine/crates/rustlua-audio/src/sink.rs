@@ -33,6 +33,8 @@ pub struct SpatialEmission {
     pub gain: f32,
     /// 声像，`-1.0` 全左、`+1.0` 全右。
     pub pan: f32,
+    /// 距离空气吸收的低通截止频率（Hz）；只有能做 DSP 的平台使用。
+    pub cutoff_hz: f32,
 }
 
 /// 一次播放请求。字段都是"引擎知道、平台需要"的东西，没有平台细节。

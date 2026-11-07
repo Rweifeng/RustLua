@@ -424,6 +424,17 @@ fn world_sprite_view_is_resolved_from_the_declared_views() {
 /// 主视图**没有**矩阵（退化相机 / 手工构造的字面量）时，世界 Sprite 退回显式矩阵而不是
 /// 悄悄用一份单位阵——错的是取景，不该表现为"精灵全在屏幕中央"。
 #[test]
+fn world_sprites_share_the_mesh_cloud_shadow() {
+    let source = include_str!("../../../shaders/world_sprite.wgsl");
+    assert!(source.contains("fn cloud_shadow"));
+    assert!(source.contains("out.world = position"));
+    assert!(source.contains("cloud_shadow(world.xz, camera.time.x, camera.time.y, camera.time.z)"));
+    assert!(source.contains("* (1.0 - cloud * camera.time.w)"));
+}
+
+/// 主视图**没有**矩阵（退化相机 / 手工构造的字面量）时，世界 Sprite 退回显式矩阵而不是
+/// 悄悄用一份单位阵——错的是取景，不该表现为"精灵全在屏幕中央"。
+#[test]
 fn world_sprite_view_falls_back_to_the_explicit_matrix_without_a_view_matrix() {
     let viewport = Viewport::new(320.0, 240.0).unwrap();
     let matrixless = RenderView::degenerate(

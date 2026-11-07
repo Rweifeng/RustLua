@@ -17,7 +17,7 @@
 | `mesh` | `set/get/clear` | 设置/读取/清除 `MeshRenderer` 网格路径 |
 | `camera` | `set_active/get_active/get` | **唯一**的活动相机选择链（批 9 起不再分 2D/3D）：`set_active(id)` 只要求实体带 `Camera`，由 `projection` 决定它服务哪个 pass（透视 → 3D world，正交 → 2D overlay）；`get(id)` 读写**透视 payload**，返回 `x,y,z,tx,ty,tz,fov,near,far` |
 | `light` | `set_active/get/set` | 设置/读取方向光；`set(id,dx,dy,dz,r,g,b,intensity)` |
-| `physics3d` | `get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
+| `physics3d` | `add_heightfield/get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`add_heightfield(id,x,y,z,rows,cols,sx,sy,sz,heights)` 加静态地形高度场（行主序 `rows×cols`，固定体，可被射线/动态刚体碰撞）；`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
 
 3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取。3D pass 在**选中的是透视相机**时用它，否则回退到排序序第一台启用的透视相机；2D 视图在**选中的是正交相机**时用它（宿主采用它的载荷作为 2D 取景基准），否则保持现状。`enabled=false` 的相机不参与选择（选中它会告警并回退）。
 
@@ -74,12 +74,12 @@ end
 | `sprite` | `set(id, 组件串)` | 设置/替换实体 Sprite 组件（`texture=...;size=...`，与场景组件串同格式）；`texture` 支持 `图集路径#区域名` 引用，装配期解析为图集纹理 + 区域 UV（`docs/63`） |
 | `transform` | `get/set/move` | 读取和修改位置、旋转、缩放 |
 | `health` | `get/set/damage` | Demo 用生命值与受伤 API |
-| `particles` | `burst/burst3d/set_wind/set_wind3d/set_wind_profile/set_wind_source/clear_wind_sources/wind/wind3d/wind_profile/count` | 在 2D 或 3D 世界坐标爆发 count 个粒子（缺省橙色，扩散速度 120、寿命 0.6s）；`set_wind`/`set_wind3d` 设 CPU/GPU 共用的全局风加速度（宿主每帧同步给 GPU burst），`set_wind_profile` 加高度剪切 + 空间阵风（`max(1+shear·h+gust·sin(h·hz+x·0.11),0)`，h=世界高度），`set_wind_source`/`clear_wind_sources` 管 4 个局部径向 + 上升风源；CPU/GPU 同一公式，非法值返回 `(false,原因)` |
+| `particles` | `burst/burst3d/set_wind/set_wind3d/set_wind_profile/set_wind_source/clear_wind_sources/wind/wind3d/wind_profile/count` | 在 2D 或 3D 世界坐标爆发 count 个粒子（缺省橙色，扩散速度 120、寿命 0.6s）；`set_wind`/`set_wind3d` 设 CPU/GPU 共用的全局风加速度（宿主每帧同步给 GPU burst），`set_wind_profile` 加高度剪切 + 空间阵风（`max(1+shear·h+gust·sin(h·hz+x·0.11),0)`，h=世界高度），`set_wind_source`/`clear_wind_sources` 管 4 个局部径向 + 上升 + 切向旋流风源；CPU/GPU 同一公式，非法值返回 `(false,原因)` |
 | `physics` | `overlap/raycast` | **碰撞体**圆形重叠与射线查询（与 `physics3d` 同义，可选 `{layer=N,mask=N}` 分组过滤）；实体位置宽相另有 `positions_in_radius(x,y,r)` |
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
-| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止。**M74-01** 加了空间化三个函数：`play_at(name,x,y[,z])` 按世界坐标播放（听者由宿主每帧从活动相机灌入；2D 工程省略 `z`）、`set_listener(x,y,z,fx,fy,fz)` 手设听者（只给无相机的纯逻辑用例）、`listener()` 读回位姿；**M74 欠项** 又加了三件无障碍音色：`set_mono(flag)`、`set_tone_cut(bass_db,treble_db)`（只允许 `-24..0`，非法返回 `(false,原因)`）、`tone()` 读回 `{mono,bass_db,treble_db}`。逐个参数的细节与平台降级口径见 [`lua_api/doc/audio.md`](../engine/crates/engine/src/lua_api/doc/audio.md) |
+| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止。**M74-01** 加了空间化三个函数：`play_at(name,x,y[,z][,occlusion])` 按世界坐标播放（距离增益+空气吸收低通，可选遮挡系数压增益/截止）（听者由宿主每帧从活动相机灌入；2D 工程省略 `z`）、`set_listener(x,y,z,fx,fy,fz)` 手设听者（只给无相机的纯逻辑用例）、`listener()` 读回位姿；**M74 欠项** 又加了三件无障碍音色：`set_mono(flag)`、`set_tone_cut(bass_db,treble_db)`（只允许 `-24..0`，非法返回 `(false,原因)`）、`tone()` 读回 `{mono,bass_db,treble_db}`。逐个参数的细节与平台降级口径见 [`lua_api/doc/audio.md`](../engine/crates/engine/src/lua_api/doc/audio.md) |
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` / `project_root` | `quit()` 请求退出应用；`project_root()` 返回**工程根目录的绝对路径**（正斜杠，未配置时为空串）——`io.open` 的相对路径按进程工作目录解析，而 `--check` 不 chdir 到工程根，因此"跨文件契约"校验器（要读 `scenes/*.scene`、`project.toml`）必须靠它拼绝对路径，否则会静默跳过检查 |
 
@@ -531,3 +531,4 @@ cargo test -p engine_core --all-features
 cargo run -p game_runner --example lua_api_demo --release
 lua_api_demo_ok update=lua-api-ok quit=false
 ```
+| `render` | `set_fog/.../set_exposure/set_ripple` | 运行期雾/云/闪电/水体/画质/地面积雪湿润/曝光/涟漪：`set_exposure(-4..=4)`、`set_ripple(x,z)`、`set_post_fx(vignette,grain)`、`stats()`；其余同前，宿主每帧应用，非法值返回 `(false, 原因)`。 |

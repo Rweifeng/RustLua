@@ -424,6 +424,72 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
     bind_debug_draw!(table, request_debug_draw_3d);
     {
         let p = physics.clone();
+        let w = world.clone();
+        table.set(
+            "add_heightfield",
+            lua.create_function(
+                move |_,
+                      (id, x, y, z, rows, cols, sx, sy, sz, heights): (
+                    i64,
+                    f32,
+                    f32,
+                    f32,
+                    u32,
+                    u32,
+                    f32,
+                    f32,
+                    f32,
+                    Table,
+                )| {
+                    let id = entity_from_lua(id)?;
+                    if rows < 2 || cols < 2 || rows > 1025 || cols > 1025 {
+                        return Err(api_error(
+                            "physics3d.add_heightfield rows/cols must be 2..=1025",
+                        ));
+                    }
+                    if !x.is_finite()
+                        || !y.is_finite()
+                        || !z.is_finite()
+                        || !sx.is_finite()
+                        || !sy.is_finite()
+                        || !sz.is_finite()
+                    {
+                        return Err(api_error(
+                            "physics3d.add_heightfield position/scale must be finite",
+                        ));
+                    }
+                    let heights: Vec<f32> = heights
+                        .sequence_values::<f32>()
+                        .collect::<mlua::Result<Vec<f32>>>()?;
+                    if heights.len() != (rows as usize) * (cols as usize) {
+                        return Err(api_error(format!(
+                            "physics3d.add_heightfield needs {} heights, got {}",
+                            rows as usize * cols as usize,
+                            heights.len()
+                        )));
+                    }
+                    {
+                        let world = w.borrow()?;
+                        require_alive(&world, id)?;
+                    }
+                    p.borrow_mut()?
+                        .world3d_mut()
+                        .add_heightfield(
+                            id,
+                            Vec3::new(x, y, z),
+                            Vec3::new(sx, sy, sz),
+                            rows as usize,
+                            cols as usize,
+                            heights,
+                        )
+                        .map_err(|error| api_error(error.to_string()))?;
+                    Ok(())
+                },
+            )?,
+        )?;
+    }
+    {
+        let p = physics.clone();
         table.set(
             "raycast",
             lua.create_function(
@@ -522,7 +588,7 @@ mod tests {
             let table: Table = lua.globals().get(table).unwrap();
             total += table.pairs::<mlua::Value, mlua::Value>().count();
         }
-        assert_eq!(total, 19, "physics + physics3d 合计 19 个函数");
+        assert_eq!(total, 20, "physics + physics3d 合计 20 个函数");
     }
 
     /// `debug_draw` 只登记请求、按维数分开，且取走即清空。
@@ -560,6 +626,9 @@ mod tests {
             format!("return physics.get_velocity({dead})"),
             format!("return physics.set_position({dead}, 1, 2)"),
             format!("return physics3d.set_position({dead}, 1, 2, 3)"),
+            format!(
+                "return physics3d.add_heightfield({dead}, 0, 0, 0, 2, 2, 1, 1, 1, {{0,0,0,0}})"
+            ),
         ] {
             let message = lua
                 .load(call)

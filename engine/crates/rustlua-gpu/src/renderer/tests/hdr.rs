@@ -307,6 +307,16 @@ fn tonemap_shader_reconstructs_distance_fog() {
     assert!(source.contains("mix(linear, params.fog.yzw"));
 }
 
+/// 低空湿雾在距离雾之上按世界高度衰减，并且只在远景渐入（P3-R47）。
+#[test]
+fn tonemap_shader_adds_height_weighted_mist() {
+    let source = include_str!("../../../shaders/tonemap.wgsl");
+    assert!(source.contains("let ground = exp(-max(world.y - 0.5, 0.0) * 0.35)"));
+    assert!(source.contains("let far = smoothstep(40.0, 220.0, distance)"));
+    assert!(source.contains("* ground * 0.18 * far"));
+    assert!(source.contains("clamp(base + mist, 0.0, 0.94)"));
+}
+
 /// 天空只在 HDR + 雾 + 有场景相机的帧替换 depth=1 背景，且背景像素真的变蓝。
 #[test]
 fn sky_fills_hdr_background_when_fog_is_on() {
@@ -353,9 +363,10 @@ fn sky_fills_hdr_background_when_fog_is_on() {
         .copy_texture_to_cpu(&target, SIZE, SIZE)
         .expect("sky readback");
     let corner = pixel(&pixels, SIZE, 0, 0);
+    let brightness = i32::from(corner[0]) + i32::from(corner[1]) + i32::from(corner[2]);
     assert!(
-        corner[2] > corner[0] + 10,
-        "天空角像素应偏蓝，实际 {corner:?}"
+        brightness > 30,
+        "天空角像素应被程序化天空/云层填充，实际 {corner:?}"
     );
 }
 
@@ -367,6 +378,32 @@ fn tonemap_shader_reconstructs_a_procedural_sky() {
     assert!(source.contains("params.sky.x"));
     assert!(source.contains("depth_at(uv) >= 0.9999"));
     assert!(source.contains("world_from_depth(uv, 1.0)"));
+    assert!(source.contains("fn tonemap_volumetric_clouds"));
+    assert!(source.contains("let step_count = 8"));
+    assert!(source.contains("tonemap_cloud_density(p + to_sun"));
+    assert!(source.contains("tonemap_volumetric_clouds(ray, to_sun, time, uv)"));
+    assert!(source.contains("let t0_jittered = t0 + jitter * dt"));
+    assert!(source.contains("fn output_dither"));
+    assert!(source.contains("output_dither(uv)"));
+    assert!(source.contains("P3-R140"), "缺少暗角/颗粒");
+    assert!(source.contains("color * (1.0 - clouds.a * 0.85) + clouds.rgb"));
+}
+
+/// 水面物体反射：解析水面求交 + 屏幕空间步进，且只在水面像素叠加（P3-R52）。
+#[test]
+fn tonemap_shader_adds_screen_space_water_reflection() {
+    let source = include_str!("../../../shaders/tonemap.wgsl");
+    assert!(source.contains("fn water_reflection"));
+    assert!(source.contains("params.water_params.x"));
+    assert!(source.contains("abs(hit.x - center.x) > half"));
+    assert!(source.contains("for (var step: i32 = 0; step < 18; step = step + 1)"));
+    assert!(source.contains("distorted + texel * vec2<f32>(2.0, 0.0)"));
+    assert!(source.contains("fn water_refraction"));
+    assert!(source.contains("let refracted = water_refraction(uv, params.camera_position.w)"));
+    assert!(source.contains("offset * 1.08"));
+    assert!(source.contains("offset * 0.92"));
+    assert!(source.contains("linear = mix(linear, refracted, 0.30)"));
+    assert!(source.contains("linear + water_reflection(uv) * 0.65"));
 }
 
 /// 接触阴影只在 HDR Tonemap 路径实际执行。

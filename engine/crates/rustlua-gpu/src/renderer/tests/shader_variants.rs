@@ -330,15 +330,10 @@ fn terrain_cloud_shadows_use_world_space_and_camera_time() {
     let shader = &MESH3D_PBR;
     assert!(shader.source.contains("fn cloud_shadow"));
     assert!(shader.source.contains("camera.position.w"));
+    assert!(shader.source.contains("let cloud_factor = 1.0 - cloud * camera.cloud.w"));
     assert!(
-        shader
-            .source
-            .contains("base_rgb * vec3<f32>(0.72, 0.78, 0.86)")
-    );
-    assert!(
-        shader
-            .source
-            .contains("base_rgb * vec3<f32>(0.74, 0.80, 0.88)")
+        shader.source.contains("* cloud_factor"),
+        "云影必须在最终颜色上统一执行，而不是只压地形/水面"
     );
 }
 
@@ -346,8 +341,25 @@ fn terrain_cloud_shadows_use_world_space_and_camera_time() {
 fn water_shader_bends_normals_and_skips_tile_edges_for_bed() {
     let shader = MESH3D_PBR;
     assert!(
-        shader.source.contains("let slope = vec2<f32>("),
+        shader.source.contains("var slope = vec2<f32>("),
         "{} 缺少世界空间水面斜率",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("fn water_wave_slope"),
+        "{} 缺少水面波斜率函数",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("let distorted_uv = clamp(uv + slope * 0.004"),
+        "{} 的河床深度必须随波折射",
+        shader.path
+    );
+    assert!(
+        shader.source.contains(".xz * ring"),
+        "{} 缺少雨点环扰动",
         shader.path
     );
     assert!(
@@ -372,13 +384,28 @@ fn water_shader_bends_normals_and_skips_tile_edges_for_bed() {
     assert!(
         shader
             .source
-            .contains("textureSampleLevel(normal_map, albedo_sampler, uv, 0.0).r * 9.0 - 1.0"),
+            .contains("textureSampleLevel(normal_map, albedo_sampler, distorted_uv, 0.0)"),
         "{} 的水面必须能读逐像素河床深度",
         shader.path
     );
     assert!(
         shader.source.contains("material.surface.w < -0.5"),
         "{} 必须用 detail_scale=-1 识别水面深度图",
+        shader.path
+    );
+    // P3-R49：水面天空反射（地平线/天顶渐变 + 太阳盘）。
+    assert!(
+        shader
+            .source
+            .contains("let reflected = safe_normalize(reflect(-view_dir, n))"),
+        "{} 缺少水面反射方向",
+        shader.path
+    );
+    assert!(
+        shader
+            .source
+            .contains("sky_with_clouds + vec3<f32>(1.0, 0.82, 0.58) * sun_reflection"),
+        "{} 缺少水面天空/太阳反射",
         shader.path
     );
 }
@@ -445,12 +472,111 @@ fn terrain_detail_atlas_is_sampled_in_world_space() {
         "{} 的通用法线贴图路径必须跳过地形与水",
         shader.path
     );
+    // P3-R48：逐像素 splat 走 occlusion 槽位，地形不再走通用 AO。
+    assert!(
+        shader
+            .source
+            .contains("textureSampleLevel(occlusion_map, albedo_sampler, world_uv, 0.0)"),
+        "{} 缺少逐像素 splat 采样",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("material.animation.y > 0.5"),
+        "{} 必须用 animation.y 识别地形 splat 尺寸",
+        shader.path
+    );
+    // P3-R60：近处才跑多步视差/crevice AO。
+    assert!(
+        shader.source.contains("let near_detail = lod < 1.0"),
+        "{} 缺少地形细节 LOD 门",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("if (near_detail)"),
+        "{} 必须按 LOD 跳过视差/AO",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("let curvature = hc * 4.0 - hl - hr - hu - hd"),
+        "{} 缺少地形高度曲率",
+        shader.path
+    );
+    // P3-R71：大尺度地形色斑。
+    assert!(
+        shader.source.contains("let macro_a = value_noise(world_position.xz * 0.008)"),
+        "{} 缺少地形 macro 色斑",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("bare * vec3<f32>(macro_tint * 1.02"),
+        "{} 缺少地形 macro 混色",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("camera.surface.x * 0.75"),
+        "{} 缺少地形积雪覆盖",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("camera.surface.x * 0.7"),
+        "{} 缺少积雪法线压平",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("cover_wet * 0.35"),
+        "{} 缺少湿润粗糙度",
+        shader.path
+    );
+    assert!(shader.source.contains("material.flags.w > 1.5"), "{} 缺少冰面标记", shader.path);
+    assert!(shader.source.contains("P3-R125"), "{} 缺少冰裂纹", shader.path);
+    assert!(shader.source.contains("P3-R135"), "{} 缺少水面涟漪", shader.path);
+    assert!(shader.source.contains("P3-R136"), "{} 缺少涟漪法线扰动", shader.path);
+    assert!(shader.source.contains("camera.ripple2"), "{} 缺少多涟漪槽", shader.path);
+    // P3-R70：水面反射云层。
+    assert!(
+        shader.source.contains("let cloud_p = camera.position.xz + reflected.xz * cloud_t"),
+        "{} 缺少水面云反射平面",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("let sky_with_clouds = mix(sky, cloud_color"),
+        "{} 缺少水面云反射混合",
+        shader.path
+    );
+    // P3-R68：太阳方向的地形微阴影。
+    assert!(
+        shader.source.contains("var terrain_shadow = 0.0"),
+        "{} 缺少地形微阴影变量",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("for (var i: i32 = 1; i <= 5; i = i + 1)"),
+        "{} 缺少 5 步地形阴影",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("let ray_slope = clamp(0.55 * sun_height / horizontal"),
+        "{} 缺少太阳高度阴影斜率",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("(1.0 - terrain_shadow * 0.55)"),
+        "{} 缺少微阴影压直接光",
+        shader.path
+    );
+}
+
+#[test]
+fn clip_plane_caps_backfaces_near_the_cut() {
+    let shader = &MESH3D_PBR;
+    assert!(shader.source.contains("let clip_distance = dot(world_position"));
+    assert!(shader.source.contains("!front_facing && clip_distance > -0.08"));
+    assert!(shader.source.contains("return vec4<f32>(section, 1.0)"));
 }
 
 /// 点光软阴影必须与方向光共用 `light.params.y`，并真的做 3×3 比较采样。
 #[test]
-fn point_shadow_pcf_reuses_the_soft_shadow_flag() {
-    for shader in [MESH3D, MESH3D_PBR] {
+fn point_shadow_pcf_reuses_the_soft_shadow_flag() {    for shader in [MESH3D, MESH3D_PBR] {
         assert!(
             shader.source.contains("fn sample_point_shadow"),
             "{} 缺少点光采样函数",

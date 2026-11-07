@@ -99,19 +99,22 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 失败：
 - 示例：
 
-## `audio.play_at(name: String, x: f32, y: f32, z: Option<f32>)`
+## `audio.play_at(name: String, x: f32, y: f32, z: Option<f32>, occlusion: Option<f32>)`
 
 > 绑定：`engine/crates/rustlua-audio/src/lua.rs:226`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
-在世界坐标处播放一次音效（SFX 总线），按听者位姿算距离衰减与左右声像。2D 工程省略 `z`（视作 0）。
+在世界坐标处播放一次音效（SFX 总线），按听者位姿算距离衰减与左右声像；距离还会
+压低高频（空气吸收），`occlusion` 再按遮挡把增益/截止频率往下压（0=无遮挡、1=完全挡住）。
+2D 工程省略 `z`（视作 0）；省略 `occlusion` 等价于 0，旧调用不变。
 
 - 参数：`name` 同 `audio.play`（不带扩展名，按 `mp3 → wav → ogg` 找工作区音频目录）；
-  `x, y, z` 声源的世界坐标。
+  `x, y, z` 声源的世界坐标；`occlusion` 可选 `0..=1`。
 - 返回：`ok, gain, pan` 三个值。`ok` 与 `audio.play` 同口径（"这次播放发生了没有"），
   后两个是引擎算出的增益（0..1）与声像（-1 全左、+1 全右）——要做"越远越轻"的自定义淡出时读它们。
-- 失败：宿主还没接线（听者缺失）、参数非有限值、模型非法时 `ok=false` 并记一条 warn；
+- 失败：宿主还没接线（听者缺失）、参数非有限值、模型/遮挡非法时 `ok=false` 并记一条 warn；
   缺文件同样是 `ok=false`。**不会**静默按原点衰减。
 - 注意：听者由宿主每帧从活动相机灌入，正常游戏不需要自己设；纯逻辑用例才用 `audio.set_listener`。
+  桌面低通在 `rustlua-audio` 的 rodio 出口实现；只有音量的平台会显式忽略 cutoff。
 - 示例：`local ok, gain, pan = audio.play_at("sfx_campfire", 12, 3)`（2D：`x=12, y=3`，
   `y` 参与距离、`x` 决定左右）。
 

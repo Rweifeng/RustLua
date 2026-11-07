@@ -127,7 +127,7 @@ impl ParticleRenderer for Renderer {
         let _ = Renderer::set_gpu_particle_wind_profile(self, profile);
     }
 
-    fn set_particle_wind_sources(&mut self, sources: [[f32; 6]; 4]) {
+    fn set_particle_wind_sources(&mut self, sources: [[f32; 7]; 4]) {
         let _ = Renderer::set_gpu_particle_wind_sources(self, sources);
     }
 

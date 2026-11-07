@@ -122,6 +122,377 @@ mod imp {
         }
     }
 
+    /// 距离空气吸收：逐声道一阶低通（P3-R61）。只在 cutoff < 19 kHz 时套在 ToneSource 外。
+    struct AirAbsorb<I> {
+        inner: I,
+        state: [f32; 8],
+        alpha: f32,
+        channels: u16,
+        frame_pos: usize,
+    }
+
+    impl<I> AirAbsorb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn new(inner: I, cutoff_hz: f32) -> Self {
+            let channels = inner.channels().clamp(1, 8);
+            let sample_rate = inner.sample_rate().max(1) as f32;
+            let cutoff = cutoff_hz.clamp(200.0, 20_000.0);
+            let alpha = (1.0 - (-std::f32::consts::TAU * cutoff / sample_rate).exp())
+                .clamp(0.0, 1.0);
+            Self {
+                inner,
+                state: [0.0; 8],
+                alpha,
+                channels,
+                frame_pos: 0,
+            }
+        }
+    }
+
+    impl<I> Iterator for AirAbsorb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<f32> {
+            let sample = self.inner.next()?;
+            let channel = (self.frame_pos % usize::from(self.channels)).min(7);
+            self.frame_pos += 1;
+            let y = self.state[channel] + self.alpha * (sample - self.state[channel]);
+            self.state[channel] = y;
+            Some(y.clamp(-1.0, 1.0))
+        }
+    }
+
+    impl<I> Source for AirAbsorb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn current_frame_len(&self) -> Option<usize> {
+            self.inner.current_frame_len()
+        }
+
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+
+        fn sample_rate(&self) -> u32 {
+            self.inner.sample_rate()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            self.inner.total_duration()
+        }
+
+        fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+            self.inner.try_seek(pos)
+        }
+    }
+
+    /// 双耳时间差（ITD-lite）：把较远那侧耳道延迟最多 0.65 ms（P3-R73）。
+    /// 只在双声道源上生效；单声道/多声道原样透传。
+    struct InterauralDelay<I> {
+        inner: I,
+        ring: Vec<[f32; 2]>,
+        write: usize,
+        delay_left: usize,
+        delay_right: usize,
+        channels: u16,
+        frame_pos: usize,
+        pending: [f32; 2],
+        shadow: [f32; 2],
+        shadow_alpha: f32,
+        far_ear: usize,
+        near: [f32; 2],
+        near_alpha: f32,
+        near_ear: usize,
+    }
+
+    impl<I> InterauralDelay<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn new(inner: I, pan: f32) -> Self {
+            let channels = inner.channels();
+            let sample_rate = inner.sample_rate().max(1) as f32;
+            let max_delay = ((sample_rate * 0.00065).round() as usize).clamp(1, 64);
+            let amount = pan.clamp(-1.0, 1.0).abs();
+            let delay = (amount * max_delay as f32).round() as usize;
+            // pan > 0 = 声源在右 ⇒ 左耳更远，左耳多延迟。
+            let (delay_left, delay_right) = if pan >= 0.0 {
+                (delay, 0)
+            } else {
+                (0, delay)
+            };
+            // 头部遮蔽：远耳 4 kHz 一阶低通（与 ITD 同一侧）。
+            let shadow_alpha =
+                (1.0 - (-std::f32::consts::TAU * 4000.0 / sample_rate).exp()).clamp(0.0, 1.0);
+            let near_alpha = shadow_alpha;
+            Self {
+                inner,
+                ring: vec![[0.0; 2]; max_delay + 1],
+                write: 0,
+                delay_left,
+                delay_right,
+                channels,
+                frame_pos: 0,
+                pending: [0.0; 2],
+                shadow: [0.0; 2],
+                shadow_alpha,
+                far_ear: if pan >= 0.0 { 0 } else { 1 },
+                near: [0.0; 2],
+                near_alpha,
+                near_ear: if pan >= 0.0 { 1 } else { 0 },
+            }
+        }
+    }
+
+    impl<I> Iterator for InterauralDelay<I>
+    where
+        I: Source<Item = f32>,
+    {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<f32> {
+            if self.channels != 2 {
+                return self.inner.next();
+            }
+            if self.frame_pos % 2 == 1 {
+                self.frame_pos += 1;
+                return Some(self.pending[1]);
+            }
+            let left = self.inner.next()?;
+            let right = self.inner.next()?;
+            let cap = self.ring.len();
+            self.ring[self.write] = [left, right];
+            self.pending = [
+                self.ring[(self.write + cap - self.delay_left) % cap][0],
+                self.ring[(self.write + cap - self.delay_right) % cap][1],
+            ];
+            let far = self.far_ear;
+            self.shadow[far] += self.shadow_alpha * (self.pending[far] - self.shadow[far]);
+            self.pending[far] = self.shadow[far];
+            // P3-R95：近耳耳道共振（约 4 kHz 高频抬升）。
+            let near = self.near_ear;
+            let low = self.near[near] + self.near_alpha * (self.pending[near] - self.near[near]);
+            self.near[near] = low;
+            self.pending[near] += (self.pending[near] - low) * 0.22;
+            self.frame_pos += 1;
+            self.write = (self.write + 1) % cap;
+            Some(self.pending[0])
+        }
+    }
+
+    impl<I> Source for InterauralDelay<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn current_frame_len(&self) -> Option<usize> {
+            self.inner.current_frame_len()
+        }
+
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+
+        fn sample_rate(&self) -> u32 {
+            self.inner.sample_rate()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            self.inner.total_duration()
+        }
+
+        fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+            self.inner.try_seek(pos)
+        }
+    }
+
+    /// 桌面短混响：4 条反馈延迟（29.7/37.1/41.1/43.7 ms），末段继续输出尾巴（P3-R78）。
+    struct Reverb<I> {
+        inner: I,
+        combs: [Vec<[f32; 2]>; 4],
+        idx: [usize; 4],
+        early: [Vec<[f32; 2]>; 4],
+        early_idx: [usize; 4],
+        damp: [[f32; 2]; 4],
+        damp_alpha: f32,
+        low: [[f32; 2]; 4],
+        low_alpha: f32,
+        channels: u16,
+        phase: usize,
+        pending: [f32; 2],
+        tail_frames: usize,
+        input_done: bool,
+    }
+
+    impl<I> Reverb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn new(inner: I) -> Self {
+            let channels = inner.channels();
+            let sample_rate = inner.sample_rate().max(1) as f32;
+            let delays = [0.0297, 0.0371, 0.0411, 0.0437];
+            let combs = delays.map(|seconds| {
+                let len = ((sample_rate * seconds).round() as usize).clamp(8, 8192);
+                vec![[0.0_f32; 2]; len]
+            });
+            // P3-R110：4 条早期反射（7/11/13/17 ms），给混响一点房间方向感。
+            let early = [0.007, 0.011, 0.013, 0.017].map(|seconds| {
+                let len = ((sample_rate * seconds).round() as usize).clamp(4, 4096);
+                vec![[0.0_f32; 2]; len]
+            });
+            // P3-R109：反馈环里的一阶低通，尾音随反射次数变暗（3.5 kHz）。
+            let damp_alpha =
+                (1.0 - (-std::f32::consts::TAU * 3500.0 / sample_rate).exp()).clamp(0.0, 1.0);
+            let low_alpha =
+                (1.0 - (-std::f32::consts::TAU * 2000.0 / sample_rate).exp()).clamp(0.0, 1.0);
+            Self {
+                inner,
+                combs,
+                idx: [0; 4],
+                early,
+                early_idx: [0; 4],
+                damp: [[0.0; 2]; 4],
+                damp_alpha,
+                low: [[0.0; 2]; 4],
+                low_alpha,
+                channels,
+                phase: 0,
+                pending: [0.0; 2],
+                tail_frames: 0,
+                input_done: false,
+            }
+        }
+
+        fn max_delay(&self) -> usize {
+            self.combs.iter().map(Vec::len).max().unwrap_or(8)
+        }
+
+        fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
+            let mut sum = [0.0_f32; 2];
+            let mut early_sum = [0.0_f32; 2];
+            for k in 0..4 {
+                let e_idx = self.early_idx[k];
+                let early = self.early[k][e_idx];
+                self.early[k][e_idx] = input;
+                self.early_idx[k] = (e_idx + 1) % self.early[k].len();
+                early_sum[0] += early[0] * 0.10;
+                early_sum[1] += early[1] * 0.10;
+            }
+            let mut delayed = [[0.0_f32; 2]; 4];
+            let mut write_idx = [0usize; 4];
+            for k in 0..4 {
+                let index = self.idx[k];
+                delayed[k] = self.combs[k][index];
+                write_idx[k] = index;
+                self.idx[k] = (index + 1) % self.combs[k].len();
+                self.damp[k][0] += self.damp_alpha * (delayed[k][0] - self.damp[k][0]);
+                self.damp[k][1] += self.damp_alpha * (delayed[k][1] - self.damp[k][1]);
+                sum[0] += self.damp[k][0];
+                sum[1] += self.damp[k][1];
+            }
+            // P3-R113：4×4 Householder 反馈矩阵，让四条延迟互相混合（FDN）而不是各自独立。
+            let mut feedback = [[0.0_f32; 2]; 4];
+            for k in 0..4 {
+                self.low[k][0] += self.low_alpha * (self.damp[k][0] - self.low[k][0]);
+                self.low[k][1] += self.low_alpha * (self.damp[k][1] - self.low[k][1]);
+                // P3-R118：低频反馈保留更多能量，高频衰减更快（双频带）。
+                feedback[k] = [
+                    self.low[k][0] * 0.82 + (self.damp[k][0] - self.low[k][0]) * 0.55,
+                    self.low[k][1] * 0.82 + (self.damp[k][1] - self.low[k][1]) * 0.55,
+                ];
+            }
+            let mean = [
+                (feedback[0][0] + feedback[1][0] + feedback[2][0] + feedback[3][0]) * 0.25,
+                (feedback[0][1] + feedback[1][1] + feedback[2][1] + feedback[3][1]) * 0.25,
+            ];
+            for k in 0..4 {
+                let fed = [
+                    feedback[k][0] - mean[0] * 0.5,
+                    feedback[k][1] - mean[1] * 0.5,
+                ];
+                self.combs[k][write_idx[k]] = [
+                    input[0] + fed[0] * 0.72,
+                    input[1] + fed[1] * 0.72,
+                ];
+            }
+            [
+                input[0] * 0.88 + sum[0] * 0.12 + early_sum[0],
+                input[1] * 0.88 + sum[1] * 0.12 + early_sum[1],
+            ]
+        }
+    }
+
+    impl<I> Iterator for Reverb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<f32> {
+            if self.channels != 2 {
+                return self.inner.next();
+            }
+            if self.phase == 1 {
+                self.phase = 0;
+                return Some(self.pending[1]);
+            }
+            let input = if self.input_done {
+                if self.tail_frames == 0 {
+                    return None;
+                }
+                self.tail_frames -= 1;
+                [0.0; 2]
+            } else {
+                match (self.inner.next(), self.inner.next()) {
+                    (Some(left), Some(right)) => [left, right],
+                    _ => {
+                        self.input_done = true;
+                        self.tail_frames = self.max_delay() * 3;
+                        if self.tail_frames == 0 {
+                            return None;
+                        }
+                        self.tail_frames -= 1;
+                        [0.0; 2]
+                    }
+                }
+            };
+            self.pending = self.process(input);
+            self.phase = 1;
+            Some(self.pending[0])
+        }
+    }
+
+    impl<I> Source for Reverb<I>
+    where
+        I: Source<Item = f32>,
+    {
+        fn current_frame_len(&self) -> Option<usize> {
+            self.inner.current_frame_len()
+        }
+
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+
+        fn sample_rate(&self) -> u32 {
+            self.inner.sample_rate()
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            self.inner.total_duration()
+        }
+
+        fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+            self.inner.try_seek(pos)
+        }
+    }
+
     /// 桌面实现：rodio 的输出流 + 若干个 sink。
     #[derive(Default)]
     pub(crate) struct Device {
@@ -200,6 +571,8 @@ mod imp {
             folded: [f32; 3],
             left: [f32; 3],
             right: [f32; 3],
+            pan: f32,
+            cutoff_hz: f32,
         ) -> Result<(), AudioError> {
             // 单声道无障碍模式必须真的只有一个声道；`SpatialSink` 会把它重新铺成
             // 立体声，所以这里退回普通 Sink（音量已由上层按距离算好）。
@@ -215,7 +588,20 @@ mod imp {
                 .map_err(|error| AudioError::Decode(error.to_string()))?
                 .convert_samples::<f32>();
             sink.set_volume(volume);
-            sink.append(ToneSource::new(source, self.tone));
+            let tone = ToneSource::new(source, self.tone);
+            let reverb = Reverb::new(tone);
+            if cutoff_hz < 19_000.0 {
+                let air = AirAbsorb::new(reverb, cutoff_hz);
+                if pan.abs() > 0.02 {
+                    sink.append(InterauralDelay::new(air, pan));
+                } else {
+                    sink.append(air);
+                }
+            } else if pan.abs() > 0.02 {
+                sink.append(InterauralDelay::new(reverb, pan));
+            } else {
+                sink.append(reverb);
+            }
             self.spatial_sinks.push(sink);
             self.spatial_sinks.retain(|sink| !sink.empty());
             Ok(())
@@ -292,6 +678,85 @@ mod imp {
         use rodio::buffer::SamplesBuffer;
 
         #[test]
+        fn interaural_delay_delays_the_far_ear_only() {
+            let mut samples = vec![0.0_f32; 400];
+            samples[0] = 1.0;
+            samples[1] = 1.0;
+            let input = SamplesBuffer::new(2, 48_000, samples);
+            let mut source = InterauralDelay::new(input, 1.0);
+            let mut left_first = None;
+            let mut right_first = None;
+            for frame in 0..100 {
+                let left = source.next().expect("left sample");
+                let right = source.next().expect("right sample");
+                if left.abs() > 0.2 && left_first.is_none() {
+                    left_first = Some(frame);
+                }
+                if right.abs() > 0.5 && right_first.is_none() {
+                    right_first = Some(frame);
+                }
+            }
+            let (left, right) = (left_first.expect("left impulse"), right_first.expect("right impulse"));
+            assert!(
+                left > right,
+                "pan=1 must delay the left ear: left={left} right={right}"
+            );
+            assert!(
+                left > right,
+                "pan=1 must delay the left ear: left={left} right={right}"
+            );
+        }
+
+        #[test]
+        fn far_ear_is_low_passed_by_head_shadow() {
+            let mut samples = Vec::new();
+            for i in 0..4000 {
+                let value = if i % 2 == 0 { 1.0 } else { -1.0 };
+                samples.push(value);
+                samples.push(value);
+            }
+            let input = SamplesBuffer::new(2, 48_000, samples);
+            let mut source = InterauralDelay::new(input, 1.0);
+            let mut left_energy = 0.0_f32;
+            let mut right_energy = 0.0_f32;
+            for _ in 0..500 {
+                let left = source.next().expect("left sample");
+                let right = source.next().expect("right sample");
+                left_energy += left * left;
+                right_energy += right * right;
+            }
+            assert!(
+                left_energy < right_energy * 0.5,
+                "far ear must be shadowed: left={left_energy} right={right_energy}"
+            );
+        }
+
+        #[test]
+        fn reverb_keeps_a_tail_after_the_source_ends() {
+            let mut samples = vec![0.0_f32; 64];
+            samples[0] = 1.0;
+            samples[1] = 1.0;
+            let input = SamplesBuffer::new(2, 48_000, samples);
+            let mut source = Reverb::new(input);
+            let mut tail_energy = 0.0_f32;
+            let mut frames = 0;
+            while let Some(left) = source.next() {
+                let right = source.next().unwrap_or(0.0);
+                if frames > 64 {
+                    tail_energy += left * left + right * right;
+                }
+                frames += 1;
+                if frames > 20_000 {
+                    break;
+                }
+            }
+            assert!(
+                tail_energy > 1e-6,
+                "reverb must keep ringing after the source: {tail_energy}"
+            );
+        }
+
+        #[test]
         fn mono_averages_stereo_and_reports_one_channel() {
             let input = SamplesBuffer::new(2, 48_000, vec![0.5_f32, -0.5, 0.25, 0.25]);
             let mut source = ToneSource::new(input, ToneControl::new(true, 0.0, 0.0).unwrap());
@@ -362,6 +827,8 @@ mod imp {
             _folded: [f32; 3],
             _left: [f32; 3],
             _right: [f32; 3],
+            _pan: f32,
+            _cutoff_hz: f32,
         ) -> Result<(), AudioError> {
             Ok(())
         }

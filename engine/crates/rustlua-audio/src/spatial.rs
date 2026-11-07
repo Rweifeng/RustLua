@@ -94,6 +94,8 @@ pub struct SpatialParams {
     pub gain: f32,
     /// 声像：听者右轴上的投影。
     pub pan: f32,
+    /// 距离空气吸收后的低通截止频率（Hz）；平台可显式忽略。
+    pub cutoff_hz: f32,
 }
 
 /// 空间参数的拒绝原因。
@@ -114,6 +116,9 @@ pub enum SpatialError {
     /// 还没接线：宿主没有把相机位姿灌进来，`play_at` 拒绝而不是按原点瞎衰减。
     #[error("spatial: no listener configured (host must call set_listener each frame)")]
     NoListener,
+    /// 遮挡系数越界（不是 0..=1 的有限数）。
+    #[error("spatial: occlusion must be 0..=1")]
+    InvalidOcclusion,
 }
 
 /// 算出一次播放的空间参数。
@@ -125,6 +130,22 @@ pub fn evaluate(
     listener: &Listener,
     model: SpatialModel,
 ) -> Result<SpatialParams, SpatialError> {
+    evaluate_occluded(emitter, listener, model, 0.0)
+}
+
+/// 带遮挡系数的空间参数（P3-R62）：`occlusion` 0=无遮挡、1=完全挡住。
+///
+/// 遮挡按能量压增益，并把 cutoff 往下拉（更闷）；它不替换 HRTF/绕射，
+/// 也不改变 pan。调用方应先用物理/地形查询算一条视线是否被挡。
+pub fn evaluate_occluded(
+    emitter: [f32; 3],
+    listener: &Listener,
+    model: SpatialModel,
+    occlusion: f32,
+) -> Result<SpatialParams, SpatialError> {
+    if !occlusion.is_finite() || !(0.0..=1.0).contains(&occlusion) {
+        return Err(SpatialError::InvalidOcclusion);
+    }
     for (name, value) in [
         ("emitter.x", emitter[0]),
         ("emitter.y", emitter[1]),
@@ -176,7 +197,15 @@ pub fn evaluate(
     } else {
         dot(scale(delta, 1.0 / distance), right).clamp(-1.0, 1.0)
     };
-    Ok(SpatialParams { gain, pan })
+    // 空气吸收：距离越远高频越弱；20 kHz（近）→ 1.2 kHz（30 m 外）。
+    // 遮挡再压 55% 增益、65% 截止频率；平台只有音量时显式忽略 cutoff。
+    let cutoff_hz =
+        (20_000.0 * (-distance * 0.06).exp()).clamp(1_200.0, 20_000.0) * (1.0 - 0.65 * occlusion);
+    Ok(SpatialParams {
+        gain: gain * (1.0 - 0.55 * occlusion),
+        pan,
+        cutoff_hz: cutoff_hz.max(400.0),
+    })
 }
 
 /// 把 `pan` 折回一个**固定距离**上的位置（桌面侧喂给 `rodio::SpatialSink` 用）。
@@ -262,6 +291,40 @@ mod tests {
     fn listener() -> Listener {
         // 原点、朝 -Z、上 +Y ⇒ 右轴 = normalize((-Z) × (+Y)) = (+1, 0, 0)。
         Listener::at_origin()
+    }
+
+    #[test]
+    fn occlusion_quiets_and_muffles_without_moving_pan() {
+        let listener = Listener::at_origin();
+        let base = evaluate([2.0, 0.0, -4.0], &listener, SpatialModel::DEFAULT).unwrap();
+        let blocked = evaluate_occluded([2.0, 0.0, -4.0], &listener, SpatialModel::DEFAULT, 0.8)
+            .expect("occlusion 0.8 is valid");
+        assert!(blocked.gain < base.gain, "{} vs {}", blocked.gain, base.gain);
+        assert!(blocked.cutoff_hz < base.cutoff_hz);
+        assert!((blocked.pan - base.pan).abs() < 1e-6, "occlusion must not move pan");
+        assert!(matches!(
+            evaluate_occluded([0.0; 3], &listener, SpatialModel::DEFAULT, 1.5),
+            Err(SpatialError::InvalidOcclusion)
+        ));
+        assert!(matches!(
+            evaluate_occluded([0.0; 3], &listener, SpatialModel::DEFAULT, f32::NAN),
+            Err(SpatialError::InvalidOcclusion)
+        ));
+    }
+
+    #[test]
+    fn air_absorption_lowers_cutoff_with_distance() {
+        let listener = Listener::at_origin();
+        let near = evaluate([0.0, 0.0, -1.0], &listener, SpatialModel::DEFAULT).unwrap();
+        let far = evaluate([0.0, 0.0, -20.0], &listener, SpatialModel::DEFAULT).unwrap();
+        assert!(
+            near.cutoff_hz > far.cutoff_hz,
+            "near {} far {}",
+            near.cutoff_hz,
+            far.cutoff_hz
+        );
+        assert!((1_200.0..=20_000.0).contains(&far.cutoff_hz));
+        assert!(far.gain < near.gain);
     }
 
     #[test]

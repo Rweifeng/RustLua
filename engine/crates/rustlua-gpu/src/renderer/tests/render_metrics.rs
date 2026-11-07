@@ -10,6 +10,7 @@ fn render_metrics_count_2d_draws_and_geometry() {
 
     assert_eq!(metrics.draw_calls, 2);
     assert_eq!(metrics.instances, 15);
+    assert_eq!(metrics.mesh3d_instances, 0);
     assert_eq!(metrics.vertices, 90);
     assert_eq!(metrics.triangles, 30);
     assert_eq!(metrics.gpu_frame_us, None);
@@ -32,7 +33,9 @@ fn render_metrics_count_3d_passes_once_per_instance() {
     record_indexed_draw(&mut metrics, 36, 12, 4, 2);
 
     assert_eq!(metrics.draw_calls, 2);
+    assert_eq!(metrics.mesh3d_draw_calls, 1, "mesh draw 不乘 shadow pass");
     assert_eq!(metrics.instances, 4);
+    assert_eq!(metrics.mesh3d_instances, 4);
     assert_eq!(metrics.vertices, 48);
     assert_eq!(metrics.triangles, 48);
 }
@@ -44,7 +47,9 @@ fn render_metrics_count_mixed_2d_and_3d_frame() {
     record_vertex_draw(&mut metrics, 18);
 
     assert_eq!(metrics.draw_calls, 3);
+    assert_eq!(metrics.mesh3d_draw_calls, 1);
     assert_eq!(metrics.instances, 6);
+    assert_eq!(metrics.mesh3d_instances, 3);
     assert_eq!(metrics.vertices, 45);
     assert_eq!(metrics.triangles, 18);
 }

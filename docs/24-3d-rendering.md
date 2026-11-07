@@ -275,16 +275,37 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
   与玩法 `water_half` 尚未统一。契约门：
   `water_shader_bends_normals_and_skips_tile_edges_for_bed`、
   `bed_bakes_a_per_pixel_depth_texture`；`ui_probe` 的“三维水面”阶段断言
-  `count()==1` 且雨天 `flooded()` 为真。
+  `count()==1` 且雨天 `flooded()` 为真。**P3-R49** 再补**水面天空反射**：
+  `reflect(-view_dir, n)` 按菲涅耳混入程序化地平线/天顶渐变与太阳盘，仍无场景物体平面反射。
+  **P3-R50** 把波斜率抽成 `water_wave_slope`（三长波 + 局部雨点环），同一斜率也偏移
+  河床深度 UV（`uv + slope*0.004`），岸线/泡沫随波折射漂移。**P3-R51** 再给低于岸线的
+  地形叠 `caustic(world, time)`（两束调制正弦脊 + 噪声），透过半透明水面形成移动河床光斑。
+  **P3-R52** 在 Tonemap 里加**屏幕空间水面物体反射**：解析 `__water__` 世界平面，
+  求相机射线交点、14 步屏幕空间步进，按菲涅耳叠加；只覆盖屏幕内可见场景，无反射纹理/屏幕外补全。
+  **P3-R53** 把平面解析抽成可单测的 `water_plane_from_drawables`，反射采样加法线 UV 扰动
+  与 3 抽头柔化（不再是硬镜子），强度 0.65。
 - **程序化天空（P3-R45）**：HDR Tonemap 对 `depth=1` 背景用逆视图投影重建相机射线，
   地平线→天顶渐变 + 太阳盘/日晕；与距离雾同一开关（HDR + `fog` + 场景相机），
   `Tonemap.Params` 224→240 B，新增 `sky_active` 指标。俯视 god view 主要看到地平线霾，
   抬头/照片模式可见天空。像素门 `sky_fills_hdr_background_when_fog_is_on` 断言角像素偏蓝。
-- **程序化云影（P3-R46）**：`mesh3d_pbr.wgsl` 的地形/水面分支用
+- **程序化云影（P3-R46 / P3-R49）**：`mesh3d_pbr.wgsl` 用
   `cloud_shadow(world.xz, camera.position.w)`（两 octave `value_noise`、世界尺度 0.0035、
-  随时间漂移）压 base color；地形强度 0.65、水面 0.55。不占阴影贴图、不加 uniform，
-  与 CSM/点光/接触阴影叠加；白盒门
-  `terrain_cloud_shadows_use_world_space_and_camera_time`。云影只作用于地形/水面。
+  随时间漂移）压最终光照颜色；**P3-R49** 起统一作用于所有 3D 网格（地形/水面/树冠/蚁巢），
+  强度 26%，不再只压地形/水面。不占阴影贴图、不加 uniform；白盒门
+  `terrain_cloud_shadows_use_world_space_and_camera_time`。
+- **低空湿雾（P3-R47）**：`fog_at` 在距离雾上叠按世界高度衰减的湿雾
+  （`exp(-max(y-0.5,0)*0.35)`、远距 `smoothstep(40,220)`、强度 0.18），近景保持对比度、
+  远景低洼多一层薄雾；天空像素仍跳过。契约门
+  `tonemap_shader_adds_height_weighted_mist`。
+- **逐像素地形 splat（P3-R48）**：`TerrainSpec::build_splat_map` 按与顶点相同的
+  `splat_weights` 烘 512² RGBA8 四通道权重图，内嵌到 occlusion 槽位（线性、无 mip）；
+  `occlusion_strength` 对地形携带世界尺寸，arena 打包到 `material.animation.y`。
+  片元用 `world.xz/size+0.5` 采样并归一化，取代逐顶点插值；地形显式跳过通用 AO。
+  白盒门 `splat_map_is_per_pixel_and_normalized` + shader 断言。
+- **地形单步视差（P3-R58 / P3-R59）**：法线图集 B 通道改存亮度高度；PBR 地形分支按
+  splat 权重混合四层高度，P3-R58 单步偏移、P3-R59 升级为固定点迭代 2 次的多步视差；
+  再用中心/四邻高度曲率做 crevice AO（负曲率压暗叶片/石缝）。俯视偏移小，
+  近景/低角度可见贴图起伏；强度 0.035。P3-R60 把多步视差/AO 限定在 `lod < 1`，远景不再多采 ~24 次高度。
 - **降级留痕**：能力不足时 `hdr_active=false`、告警一次并给出 `hdr_unavailable_reason()`；`RenderFrameMetrics` 暴露 `hdr_active/scene_format/tonemap`，本轮起再暴露 `bloom_active/fxaa_active/soft_shadows_active/filtered_shadows_active/ssao_active/ssr_active/contact_shadows_active/fog_active/sky_active/god_rays_active/dof_active`，性能面板与「复制报告」可查。
 - **验收**：`cargo test -p engine hdr`；HDR golden 报告 `pre_tonemap_max>1`、`post_tonemap_max≤1`、`ui_delta≤1`（见 `baselines/p3/hdr`）。
 

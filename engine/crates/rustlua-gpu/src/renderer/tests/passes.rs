@@ -2,6 +2,38 @@
 
 use super::*;
 
+#[test]
+fn water_plane_is_extracted_from_scene_drawables() {
+    use rustlua_ecs::spatial_transform::SceneEntityId;
+    use rustlua_math::math3d::{Aabb3, Mat4, Vec3};
+    use rustlua_render::frame::{BoundsSource, Scene3dBounds, Scene3dDrawable};
+
+    let drawable = Scene3dDrawable {
+        entity: SceneEntityId(7),
+        name: "Water".to_owned(),
+        mesh_path: "__water__?size=100&res=8&y=-0.5".to_owned(),
+        material: None,
+        mesh_handle: None,
+        model: Mat4::translation(Vec3::new(10.0, 5.0, -20.0))
+            * Mat4::scale(Vec3::new(2.0, 1.0, 2.0)),
+        palette: Vec::new(),
+        bounds: Scene3dBounds {
+            local_aabb: Aabb3 {
+                min: Vec3::new(-50.0, -1.0, -50.0),
+                max: Vec3::new(50.0, 1.0, 50.0),
+            },
+            source: BoundsSource::Fallback,
+        },
+    };
+    let plane = crate::renderer::passes::water_plane_from_drawables(&[drawable])
+        .expect("water drawable must yield a plane");
+    assert!((plane[0] - 4.5).abs() < 1e-5, "level {}", plane[0]);
+    assert!((plane[1] - 100.0).abs() < 1e-5, "half {}", plane[1]);
+    assert!((plane[2] - 10.0).abs() < 1e-5);
+    assert!((plane[3] + 20.0).abs() < 1e-5);
+    assert!(crate::renderer::passes::water_plane_from_drawables(&[]).is_none());
+}
+
 /// `docs/60` 复核（2026-10-06）：**画不出来的 draw 必须留痕**。
 ///
 /// 通道级早有对账（`RenderPlan::mismatch` → 告警 + `last_frame_passes` 可断言），**draw 级此前是

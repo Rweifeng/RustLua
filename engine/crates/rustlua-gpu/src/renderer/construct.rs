@@ -35,7 +35,7 @@ use super::pipeline_cache::{
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    IDENTITY_MAT4, INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer,
+    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer,
     RendererCapabilities, camera_uniform, compute::ComputeState, depth_stencil_state,
     identity_palette_data,
 };
@@ -300,7 +300,7 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(96),
+                            min_binding_size: wgpu::BufferSize::new(160),
                         },
                         count: None,
                     },
@@ -310,7 +310,7 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            // 方向光 48B + 8 盏点光 × 32B = 304B（见 `light_uniform_bytes`）。
+                            // 方向光 48B + 16 盏点光 × 32B = 560B（见 `light_uniform_bytes`）。
                             min_binding_size: wgpu::BufferSize::new(super::LIGHT_UNIFORM_BYTES),
                         },
                         count: None,
@@ -430,8 +430,20 @@ impl Renderer {
                     )),
                     mag_filter: Renderer::wgpu_filter_mode(filter),
                     min_filter: Renderer::wgpu_filter_mode(filter),
-                    // 本批不生成 mipmap（`mip_level_count` 恒为 1），三线性采样无从谈起。
-                    mipmap_filter: wgpu::FilterMode::Nearest,
+                    // P3-R96：线性材质采样开 8× 各向异性，地形/水面在掠射角更清晰；
+                    // wgpu 要求 anisotropy>1 时三档过滤都必须是 Linear。
+                    mipmap_filter: if filter == rustlua_assets::import_settings::TextureFilter::Linear {
+                        wgpu::FilterMode::Linear
+                    } else {
+                        wgpu::FilterMode::Nearest
+                    },
+                    anisotropy_clamp: if filter
+                        == rustlua_assets::import_settings::TextureFilter::Linear
+                    {
+                        8
+                    } else {
+                        1
+                    },
                     address_mode_u: Renderer::wgpu_address_mode(wrap),
                     address_mode_v: Renderer::wgpu_address_mode(wrap),
                     address_mode_w: Renderer::wgpu_address_mode(wrap),
@@ -696,6 +708,14 @@ impl Renderer {
                 camera.position,
                 0.0,
                 camera.clip_plane,
+                0.5,
+                1.0,
+                100.0,
+                0.26,
+                [1.0, 1.0, 1.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.5],
+                [0.0, 1.5, 0.0, 1.5],
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1203,7 +1223,7 @@ impl Renderer {
                 label: Some("rustlua-world-sprite-camera-layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1215,7 +1235,7 @@ impl Renderer {
         let world_sprite_camera_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("rustlua-world-sprite-camera"),
-                contents: bytemuck::bytes_of(&IDENTITY_MAT4),
+                contents: bytemuck::bytes_of(&[0.0_f32; 20]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
         let world_sprite_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1289,7 +1309,11 @@ impl Renderer {
         // 无存储缓冲的设备（WebGL2 即如此）不建这两条布局：binding 1 是只读存储，
         // `create_bind_group_layout` 会直接报校验错误，而 wasm 上的未捕获校验错误是 abort。
         // GPU 粒子在这些设备上本来就走 CPU，`configure_gpu_particles` 会返回 Unsupported。
-        let (gpu_particle_draw_layout, gpu_particle_pipeline_layout) = if storage_capable {
+        let (
+            gpu_particle_draw_layout,
+            gpu_particle_pipeline_layout,
+            gpu_particle_depth_layout,
+        ) = if storage_capable {
             let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-gpu-particles-draw-layout"),
                 entries: &[
@@ -1315,6 +1339,20 @@ impl Renderer {
                     },
                 ],
             });
+            // P3-R107：group3 = 场景深度，粒子片元自己做深度测试 + 软边。
+            let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("rustlua-gpu-particles-depth-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
             // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
             // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1323,12 +1361,13 @@ impl Renderer {
                     &world_sprite_camera_layout,
                     &texture_bind_group_layout,
                     &draw_layout,
+                    &depth_layout,
                 ],
                 push_constant_ranges: &[],
             });
-            (Some(draw_layout), Some(pipeline_layout))
+            (Some(draw_layout), Some(pipeline_layout), Some(depth_layout))
         } else {
-            (None, None)
+            (None, None, None)
         };
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
         // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
@@ -1426,7 +1465,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(240),
+                        min_binding_size: wgpu::BufferSize::new(288),
                     },
                     count: None,
                 },
@@ -1499,8 +1538,8 @@ impl Renderer {
         };
         let tonemap_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-tonemap-params"),
-            // 240 字节：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 光照方向 + 雾 + 景深 + 天空。
-            size: 240,
+            // 288 字节：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 光照方向 + 雾 + 景深 + 天空 + 水面反射 + 云层。
+            size: 288,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2016,9 +2055,24 @@ impl Renderer {
             gpu_particle_wind_shear: 0.0,
             gpu_particle_wind_gust: 0.0,
             gpu_particle_wind_gust_hz: 0.0,
-            gpu_particle_wind_sources: [[0.0; 6]; 4],
+            gpu_particle_wind_sources: [[0.0; 7]; 4],
+            gpu_particle_time: 0.0,
+            cloud_coverage: 0.5,
+            cloud_speed: 1.0,
+            cloud_base: 100.0,
+            cloud_shadow_strength: 0.26,
+            flash_intensity: 0.0,
+            water_tint: [1.0, 1.0, 1.0, 0.0],
+            surface_cover: [0.0, 0.0],
+            exposure_offset: 0.0,
+            ripple_packed: [0.0; 3],
+            ripple_age: [1.5; 3],
+            ripple_next: 0,
+            vignette: 0.0,
+            grain: 0.0,
             gpu_particle_generation: 0,
             gpu_particle_draw_layout,
+            gpu_particle_depth_layout,
             gpu_particle_pipeline_layout,
             gpu_particle_pipeline: None,
             font_atlas_uploaded_version: u64::MAX,
@@ -2623,7 +2677,7 @@ pub(super) fn build_gpu_particle_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
-    pass: DepthPass,
+    _pass: DepthPass,
     format: wgpu::TextureFormat,
     label: &str,
 ) -> wgpu::RenderPipeline {
@@ -2634,7 +2688,7 @@ pub(super) fn build_gpu_particle_pipeline(
         &[],
         wgpu::PrimitiveTopology::TriangleStrip,
         format,
-        Some(depth_stencil_state(pass, wgpu::DepthBiasState::default())),
+        None,
         label,
     )
 }

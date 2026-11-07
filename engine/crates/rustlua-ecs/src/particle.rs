@@ -31,6 +31,8 @@ pub struct ParticleEmitter {
     pub gravity: Vec2,
     /// Z 轴重力（单位/秒²）。默认 `0`，2D 发射器逐位不变。
     pub gravity_z: f32,
+    /// 浮力（单位/秒²）：按剩余寿命比例向上推（新粒子更热/更轻），默认 `0`。
+    pub buoyancy: f32,
     /// Z 轴初速绝对值上限（单位/秒）。默认 `0`：不抽 Z 随机数，旧序列不变。
     pub speed_z: f32,
     /// 出生点 Z 抖动半径（单位）。默认 `0`：不抽随机数。
@@ -191,6 +193,7 @@ impl Default for ParticleEmitter {
             color_end: [1.0, 0.6, 0.2, 1.0],
             gravity: Vec2::zero(),
             gravity_z: 0.0,
+            buoyancy: 0.0,
             speed_z: 0.0,
             spread_z: 0.0,
             spawn_area: [0.0; 3],
@@ -236,6 +239,7 @@ impl ParticleEmitter {
             &self.gravity.x,
             &self.gravity.y,
             &self.gravity_z,
+            &self.buoyancy,
             &self.speed_z,
             &self.spread_z,
             &self.spawn_area[0],
@@ -249,6 +253,9 @@ impl ParticleEmitter {
         }
         if self.speed_z < 0.0 || self.spread_z < 0.0 {
             return Err("particle speed_z/spread_z must be >= 0".to_owned());
+        }
+        if self.buoyancy < 0.0 {
+            return Err("particle buoyancy must be >= 0".to_owned());
         }
         if self.spawn_area.iter().any(|value| *value < 0.0) {
             return Err("particle spawn_area must be >= 0".to_owned());
@@ -266,7 +273,7 @@ impl ParticleEmitter {
     ///
     /// 文法（`;` 分隔、`key=value`，未知键一律报错而不是静默忽略）：
     /// `count`、`rate`、`speed`、`life`、`size`、`size_end`、`color`、`color_end`、
-    /// `gravity`、`gravity_z`、`speed_z`、`spread_z`、`drag`、`rotation`、`rotation_speed`、`mode`、`seed`。
+    /// `gravity`、`gravity_z`、`buoyancy`、`speed_z`、`spread_z`、`drag`、`rotation`、`rotation_speed`、`mode`、`seed`。
     /// `size`/`color` 同时设置曲线的**起止**
     /// 值，`size_end`/`color_end` 覆盖终点（与书写顺序无关，见下方 `seen_*_end`）。
     pub fn from_component_str(value: &str) -> Result<Self, ParticleComponentError> {
@@ -320,6 +327,7 @@ impl ParticleEmitter {
                     emitter.gravity = Vec2::new(x, y);
                 }
                 "gravity_z" => emitter.gravity_z = parse_number(raw, field)?,
+                "buoyancy" => emitter.buoyancy = parse_number(raw, field)?,
                 "speed_z" => emitter.speed_z = parse_number(raw, field)?,
                 "spread_z" => emitter.spread_z = parse_number(raw, field)?,
                 "area_x" => emitter.spawn_area[0] = parse_number(raw, field)?,
@@ -565,6 +573,8 @@ pub struct Particle {
     pub color_end: [f32; 4],
     pub gravity: Vec2,
     pub gravity_z: f32,
+    /// 浮力（单位/秒²），随剩余寿命比例衰减。
+    pub buoyancy: f32,
     pub drag: f32,
     pub rotation: f32,
     pub rotation_speed: f32,
@@ -627,6 +637,8 @@ pub struct ParticleSystem {
     wind_gust_hz: f32,
     /// 最多 4 个局部风源（火柱上升、酸雾外扩等）。
     wind_sources: [WindSource; MAX_WIND_SOURCES],
+    /// 风场时钟（秒）；只用于全局湍流相位，CPU/GPU 对齐。
+    time: f32,
 }
 
 /// 一个局部风源，坐标与 `particles.burst3d` 一致：`x`/`y` 是水平面（`y`=高度），
@@ -642,6 +654,8 @@ pub struct WindSource {
     pub radial: f32,
     /// 沿世界高度方向（`y`）的上升力，世界单位/秒²。
     pub lift: f32,
+    /// 绕世界高度轴的切向旋流强度（正=逆时针），世界单位/秒²。
+    pub swirl: f32,
 }
 
 /// 局部风源槽位数；Lua/CPU/GPU 共用这一上限。
@@ -660,6 +674,7 @@ impl ParticleSystem {
             wind_gust: 0.0,
             wind_gust_hz: 0.0,
             wind_sources: [WindSource::default(); MAX_WIND_SOURCES],
+            time: 0.0,
         }
     }
 
@@ -742,6 +757,9 @@ impl ParticleSystem {
         }
         if !(-64.0..=64.0).contains(&source.radial) || !(-64.0..=64.0).contains(&source.lift) {
             return Err("wind source radial/lift must be -64..=64".to_owned());
+        }
+        if !(-64.0..=64.0).contains(&source.swirl) {
+            return Err("wind source swirl must be -64..=64".to_owned());
         }
         self.wind_sources[index] = source;
         Ok(())
@@ -852,6 +870,7 @@ impl ParticleSystem {
                 color_end: emitter.color_end,
                 gravity: emitter.gravity,
                 gravity_z: emitter.gravity_z,
+                buoyancy: emitter.buoyancy,
                 drag: emitter.drag,
                 rotation: emitter.rotation,
                 rotation_speed: emitter.rotation_speed,
@@ -876,6 +895,8 @@ impl ParticleSystem {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return;
         }
+        self.time += delta_seconds;
+        let time = self.time;
         let wind = self.wind;
         let wind_z = self.wind_z;
         let (shear, gust, gust_hz) = (self.wind_shear, self.wind_gust, self.wind_gust_hz);
@@ -892,6 +913,7 @@ impl ParticleSystem {
                     gust,
                     gust_hz,
                     &sources,
+                    time,
                     delta_seconds,
                 );
             }
@@ -911,6 +933,7 @@ impl ParticleSystem {
                             gust,
                             gust_hz,
                             &sources,
+                            time,
                             delta_seconds,
                         );
                     }
@@ -931,6 +954,7 @@ fn step_particle(
     gust: f32,
     gust_hz: f32,
     sources: &[WindSource; MAX_WIND_SOURCES],
+    time: f32,
     delta_seconds: f32,
 ) {
     // 与 GPU compute 同一公式：高度剪切 + 空间正弦阵风。粒子坐标系是
@@ -940,6 +964,13 @@ fn step_particle(
     let factor = (1.0 + shear * height + gust * phase.sin()).max(0.0);
     let mut wind = wind * factor;
     let mut wind_z = wind_z * factor;
+    // 全局三维湍流：用同一个 gust 强度，在三个轴上错相位；time 让流场随时间翻滚。
+    let amp = gust * 0.5;
+    if amp > 0.0 {
+        wind.x += amp * (phase * 1.7 + particle.position_z * 0.13 + time * 0.7).sin();
+        wind_z += amp * (phase * 1.3 - particle.position_z * 0.09 + time * 0.5).cos();
+        wind.y += amp * 0.5 * (phase * 2.1 + particle.position.x * 0.2 + time * 0.9).sin();
+    }
     // 局部风源：径向 + 上升。四个槽逐个看，未启用的 radius=0 直接跳过。
     for source in sources {
         if source.radius <= 0.0 {
@@ -959,10 +990,18 @@ fn step_particle(
             wind = wind + Vec2::new(dx, dy) * radial;
             wind_z += dz * radial;
         }
+        // 旋流：水平面 (x, z) 上绕源的切线，正值为逆时针。
+        if source.swirl != 0.0 && distance > 1e-4 {
+            let swirl = source.swirl * falloff / distance;
+            wind.x += -dz * swirl;
+            wind_z += dx * swirl;
+        }
         wind.y += source.lift * falloff;
     }
+    // 浮力按剩余寿命比例向上推：新粒子最热，随 life 衰减到 0。
+    let buoyancy = particle.buoyancy * (particle.life / particle.max_life).max(0.0);
     particle.velocity = particle.velocity + (particle.gravity + wind) * delta_seconds;
-    particle.velocity_z += (particle.gravity_z + wind_z) * delta_seconds;
+    particle.velocity_z += (particle.gravity_z + wind_z + buoyancy) * delta_seconds;
     if particle.drag > 0.0 {
         // 每秒衰减 `drag` 比例；单步时长超过 1/drag 时钳到 0（不反转速度）。
         let damp = (1.0 - particle.drag * delta_seconds).max(0.0);
@@ -1116,6 +1155,7 @@ mod tests {
                     radius: 10.0,
                     radial: 0.0,
                     lift: 5.0,
+                    swirl: 0.0,
                 },
             )
             .unwrap();
@@ -1135,12 +1175,36 @@ mod tests {
                     radius: 10.0,
                     radial: 2.0,
                     lift: 0.0,
+                    swirl: 0.0,
                 },
             )
             .unwrap();
         radial_system.burst_with_3d([5.0, 0.0, 0.0], &emitter);
         radial_system.step(1.0);
         assert!((radial_system.particles()[0].velocity.x - 0.5).abs() < 1e-4);
+
+        let mut swirl_system = ParticleSystem::new();
+        swirl_system
+            .set_wind_source(
+                2,
+                WindSource {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    radius: 10.0,
+                    radial: 0.0,
+                    lift: 0.0,
+                    swirl: 2.0,
+                },
+            )
+            .unwrap();
+        swirl_system.burst_with_3d([5.0, 0.0, 0.0], &emitter);
+        swirl_system.step(1.0);
+        assert!(
+            (swirl_system.particles()[0].velocity_z - 0.5).abs() < 1e-4,
+            "swirl must push tangentially on world z: {:?}",
+            swirl_system.particles()[0].velocity_z
+        );
 
         radial_system.clear_wind_sources();
         assert_eq!(radial_system.wind_sources()[1].radius, 0.0);
@@ -1178,6 +1242,31 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn buoyancy_lifts_particles_and_is_validated() {
+        let emitter = ParticleEmitter {
+            count: 1,
+            speed: 0.0,
+            life: 1.0,
+            buoyancy: 4.0,
+            seed: Some(1),
+            ..ParticleEmitter::default()
+        };
+        let mut system = ParticleSystem::new();
+        system.burst_with_3d([0.0, 0.0, 0.0], &emitter);
+        system.step(0.25);
+        assert!(
+            system.particles()[0].velocity_z > 0.0,
+            "buoyancy must push upward: {}",
+            system.particles()[0].velocity_z
+        );
+        let bad = ParticleEmitter {
+            buoyancy: -1.0,
+            ..ParticleEmitter::default()
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

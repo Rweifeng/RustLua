@@ -14,6 +14,7 @@ use super::ScriptState;
 mod globals;
 mod interact_prompt;
 mod particles;
+mod render_tuning;
 mod ui_measure;
 mod world_data;
 
@@ -106,6 +107,7 @@ pub(super) fn register_all(
     }
     // `particles` 留在脚本层：粒子是 `rustlua-ecs` 的发射器实例列表，没有领域规则要搬。
     particles::register(lua, Rc::clone(&state))?;
+    render_tuning::register(lua, Rc::clone(&state))?;
     world_data::register(lua, Rc::clone(&state))?;
     // prefab 的 Lua 表面在 UI 域（P1 ⑤-15），实现由本层的组合根注入：
     // 运行期实例化要按 &mut ScriptState 装配 18 类组件，领域 crate 不能反向依赖本层。

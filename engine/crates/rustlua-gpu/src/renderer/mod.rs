@@ -301,7 +301,12 @@ pub struct RenderFrameMetrics {
     pub cpu_frame_us: u64,
     pub gpu_frame_us: Option<u64>,
     pub draw_calls: u64,
+    /// 所有通道的 instance 总数（含 2D/粒子/3D）。
     pub instances: u64,
+    /// 仅 3D indexed mesh 的 draw 数（按 shadow pass 数计），不含 2D/粒子。
+    pub mesh3d_draw_calls: u64,
+    /// 仅 3D indexed mesh 的实例数，不含 2D/粒子。
+    pub mesh3d_instances: u64,
     pub triangles: u64,
     /// 本帧实际提交的顶点数。2D overlay / 世界 Sprite / 矢量文字按顶点计；
     /// 3D 按「每个实例的顶点数 × 实例数」统计一次（与 `triangles` 同口径，不因阴影 pass 重复）。
@@ -475,7 +480,11 @@ fn record_indexed_draw(
     pass_count: u64,
 ) {
     metrics.draw_calls += pass_count;
+    // Один логический mesh draw может повторяться в depth/shadow passes.
+    // Отдельный счётчик считает его один раз, чтобы F3 мог показать геометрию без pass multiplier.
+    metrics.mesh3d_draw_calls += 1;
     metrics.instances += instance_count as u64;
+    metrics.mesh3d_instances += instance_count as u64;
     metrics.vertices += u64::from(vertex_count) * instance_count as u64;
     metrics.triangles += u64::from(index_count) / 3 * instance_count as u64;
 }
@@ -599,8 +608,16 @@ pub(super) fn camera_uniform(
     position: Vec3,
     time: f32,
     clip_plane: [f32; 4],
-) -> [f32; 24] {
-    let mut data = [0.0; 24];
+    cloud_coverage: f32,
+    cloud_speed: f32,
+    cloud_base: f32,
+    cloud_shadow_strength: f32,
+    water_tint: [f32; 4],
+    surface: [f32; 2],
+    ripple: [f32; 2],
+    ripple_extra: [f32; 4],
+) -> [f32; 40] {
+    let mut data = [0.0; 40];
     for (index, column) in view_projection.columns.iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(column);
     }
@@ -610,6 +627,17 @@ pub(super) fn camera_uniform(
     data[19] = time.max(0.0);
     // 世界空间裁剪平面：`n·x + d >= 0` 保留。零向量 = 不裁剪（着色器跳过分支）。
     data[20..24].copy_from_slice(&clip_plane);
+    data[24] = cloud_coverage.clamp(0.0, 1.0);
+    data[25] = cloud_speed.clamp(0.0, 4.0);
+    data[26] = cloud_base.clamp(40.0, 200.0);
+    data[27] = cloud_shadow_strength.clamp(0.0, 0.6);
+    data[28..32].copy_from_slice(&water_tint);
+    data[32] = surface[0].clamp(0.0, 1.0);
+    data[33] = surface[1].clamp(0.0, 1.0);
+    // P3-R135：水面涟漪点（世界 xz 打包成 u32 位）与年龄（秒）。
+    data[34] = ripple[0];
+    data[35] = ripple[1];
+    data[36..40].copy_from_slice(&ripple_extra);
     data
 }
 
@@ -636,7 +664,32 @@ pub struct Renderer {
     gpu_particle_wind_gust: f32,
     gpu_particle_wind_gust_hz: f32,
     /// 最多 4 个局部风源，`[x, y(height), z, radius, radial, lift]`。
-    gpu_particle_wind_sources: [[f32; 6]; 4],
+    gpu_particle_wind_sources: [[f32; 7]; 4],
+    /// 粒子湍流时钟（秒）；与 CPU ParticleSystem.time 同相位来源。
+    gpu_particle_time: f32,
+    /// P3-R80：脚本/天气覆盖的云量（0..1）；0.5 是默认覆盖度。
+    cloud_coverage: f32,
+    /// P3-R82：云层漂移速度倍率（0..4，默认 1）。
+    cloud_speed: f32,
+    /// P3-R83：云底高度（世界 y，40..200，默认 100）。
+    cloud_base: f32,
+    /// P3-R84：云影强度（0..0.6，默认 0.26）。
+    cloud_shadow_strength: f32,
+    /// P3-R86：暴雨闪电的屏幕闪光（0..1）。
+    flash_intensity: f32,
+    /// P3-R89：水体染色 rgb + 浑浊度 w。
+    water_tint: [f32; 4],
+    /// P3-R93：地面覆盖 [积雪, 湿润]（0..1）。
+    surface_cover: [f32; 2],
+    /// P3-R105：脚本曝光偏移（EV，-4..4）。
+    exposure_offset: f32,
+    /// P3-R135：涟漪点打包位 + 年龄（秒），最多 3 个。
+    ripple_packed: [f32; 3],
+    ripple_age: [f32; 3],
+    ripple_next: usize,
+    /// P3-R140：暗角/颗粒（0..1）。
+    vignette: f32,
+    grain: f32,
     /// 分配给下一个 GPU 粒子系统的绑定组身份（单调递增，回收时按它剔除缓存）。
     gpu_particle_generation: u64,
     /// P3-R07-3：instanced 粒子 draw 段自己的 group2 布局（参数 uniform + 状态只读存储）。
@@ -646,6 +699,8 @@ pub struct Renderer {
     ///
     /// `None` = 设备没有存储缓冲（WebGL2），布局无法创建；GPU 粒子在这种设备上走 CPU。
     gpu_particle_draw_layout: Option<wgpu::BindGroupLayout>,
+    /// P3-R107：group3 深度布局（粒子软边）。
+    gpu_particle_depth_layout: Option<wgpu::BindGroupLayout>,
     /// instanced 粒度的管线布局：group0=世界 Sprite 相机、group1=贴图/采样器（两者与
     /// [`Self::world_sprite_camera_bind_group`]、`white` 复用同一份绑定组）、group2=粒子资源。
     /// 与 [`Self::gpu_particle_draw_layout`] 同生共死。
@@ -977,7 +1032,7 @@ pub(super) const POINT_SHADOW_UNIFORM_BYTES: usize =
 pub(super) const ESM_SIZE: u32 = 2048;
 pub(super) const ESM_LAYERS: usize = 4;
 
-const LIGHT_UNIFORM_WORDS: usize = 12 + 8 * 8;
+const LIGHT_UNIFORM_WORDS: usize = 12 + MAX_POINT_LIGHTS * 8;
 /// 对应字节数。`construct.rs` 的绑定尺寸与着色器结构必须同时等于它。
 pub(super) const LIGHT_UNIFORM_BYTES: u64 = (LIGHT_UNIFORM_WORDS * 4) as u64;
 
@@ -1033,11 +1088,20 @@ impl Renderer {
         };
         // P3-R02：相机 uniform 扩成「视图投影 + 世界位置」。位置只在 PBR 片元的视线向量里
         // 用到；旧路径的着色器结构仍是 64 字节，读同一个缓冲区的前 64 字节，像素不变。
+        let (ripple, ripple_extra) = self.next_ripples();
         let camera_uniform = camera_uniform(
             &matrix,
             scene.camera.position,
             self.clock.elapsed().as_secs_f32(),
             scene.camera.clip_plane,
+            self.cloud_coverage,
+            self.cloud_speed,
+            self.cloud_base,
+            self.cloud_shadow_strength,
+            self.water_tint,
+            self.surface_cover,
+            ripple,
+            ripple_extra,
         );
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -1172,6 +1236,176 @@ impl Renderer {
             // 3D draw 时在通道里编译。重复调用是空操作，统计里的变体数不会涨。
             self.ensure_pbr_pipelines();
         }
+    }
+
+    /// 设置运行期云量（0..=1）；返回是否接受。P3-R80。
+    pub fn set_cloud_coverage(&mut self, coverage: f32) -> bool {
+        if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
+            return false;
+        }
+        self.cloud_coverage = coverage;
+        true
+    }
+
+    /// 当前运行期云量。
+    #[must_use]
+    pub const fn cloud_coverage(&self) -> f32 {
+        self.cloud_coverage
+    }
+
+    /// 设置云层漂移速度倍率（0..=4）；返回是否接受。
+    pub fn set_cloud_speed(&mut self, speed: f32) -> bool {
+        if !speed.is_finite() || !(0.0..=4.0).contains(&speed) {
+            return false;
+        }
+        self.cloud_speed = speed;
+        true
+    }
+
+    /// 当前云层速度倍率。
+    #[must_use]
+    pub const fn cloud_speed(&self) -> f32 {
+        self.cloud_speed
+    }
+
+    /// 设置云底高度（世界 y，40..=200）；返回是否接受。
+    pub fn set_cloud_base(&mut self, base: f32) -> bool {
+        if !base.is_finite() || !(40.0..=200.0).contains(&base) {
+            return false;
+        }
+        self.cloud_base = base;
+        true
+    }
+
+    /// 当前云底高度。
+    #[must_use]
+    pub const fn cloud_base(&self) -> f32 {
+        self.cloud_base
+    }
+
+    /// 设置云影强度（0..=0.6）；返回是否接受。
+    pub fn set_cloud_shadow_strength(&mut self, strength: f32) -> bool {
+        if !strength.is_finite() || !(0.0..=0.6).contains(&strength) {
+            return false;
+        }
+        self.cloud_shadow_strength = strength;
+        true
+    }
+
+    /// 当前云影强度。
+    #[must_use]
+    pub const fn cloud_shadow_strength(&self) -> f32 {
+        self.cloud_shadow_strength
+    }
+
+    /// 设置闪电屏幕闪光（0..=1）；返回是否接受。
+    pub fn set_flash(&mut self, intensity: f32) -> bool {
+        if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
+            return false;
+        }
+        self.flash_intensity = intensity;
+        true
+    }
+
+    /// 当前闪电闪光强度。
+    #[must_use]
+    pub const fn flash_intensity(&self) -> f32 {
+        self.flash_intensity
+    }
+
+    /// 设置水体染色 rgb + 浑浊度 w（各 0..=1）；返回是否接受。
+    pub fn set_water_tint(&mut self, tint: [f32; 4]) -> bool {
+        if tint.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+            return false;
+        }
+        self.water_tint = tint;
+        true
+    }
+
+    /// 当前水体染色。
+    #[must_use]
+    pub const fn water_tint(&self) -> [f32; 4] {
+        self.water_tint
+    }
+
+    /// 设置地面覆盖 [积雪, 湿润]（各 0..=1）；返回是否接受。
+    pub fn set_surface_cover(&mut self, cover: [f32; 2]) -> bool {
+        if cover
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return false;
+        }
+        self.surface_cover = cover;
+        true
+    }
+
+    /// 当前地面覆盖。
+    #[must_use]
+    pub const fn surface_cover(&self) -> [f32; 2] {
+        self.surface_cover
+    }
+
+    /// 设置曝光偏移（EV，-4..=4）；返回是否接受。
+    pub fn set_exposure_offset(&mut self, ev: f32) -> bool {
+        if !ev.is_finite() || !(-4.0..=4.0).contains(&ev) {
+            return false;
+        }
+        self.exposure_offset = ev;
+        true
+    }
+
+    /// 当前曝光偏移（EV）。
+    #[must_use]
+    pub const fn exposure_offset(&self) -> f32 {
+        self.exposure_offset
+    }
+
+    /// P3-R135：在世界 (x,z) 触发一圈水面涟漪。
+    pub fn set_ripple(&mut self, x: f32, z: f32) -> bool {
+        if !x.is_finite() || !z.is_finite() {
+            return false;
+        }
+        let px = (((x.clamp(-256.0, 256.0) + 256.0) / 512.0) * 65535.0) as u32 & 0xffff;
+        let pz = (((z.clamp(-256.0, 256.0) + 256.0) / 512.0) * 65535.0) as u32 & 0xffff;
+        let slot = self.ripple_next % 3;
+        self.ripple_packed[slot] = f32::from_bits((px << 16) | pz);
+        self.ripple_age[slot] = 0.0;
+        self.ripple_next = (slot + 1) % 3;
+        true
+    }
+
+    fn next_ripples(&mut self) -> ([f32; 2], [f32; 4]) {
+        for age in &mut self.ripple_age {
+            if *age < 1.5 {
+                *age += 1.0 / 60.0;
+            }
+        }
+        (
+            [self.ripple_packed[0], self.ripple_age[0]],
+            [
+                self.ripple_packed[1],
+                self.ripple_age[1],
+                self.ripple_packed[2],
+                self.ripple_age[2],
+            ],
+        )
+    }
+
+    /// P3-R140：设置暗角/颗粒强度（各 0..=1）。
+    pub fn set_post_fx(&mut self, vignette: f32, grain: f32) -> bool {
+        if !vignette.is_finite() || !grain.is_finite() {
+            return false;
+        }
+        self.vignette = vignette.clamp(0.0, 1.0);
+        self.grain = grain.clamp(0.0, 1.0);
+        true
+    }
+
+    /// 当前暗角/颗粒。
+    #[must_use]
+    pub const fn post_fx(&self) -> [f32; 2] {
+        [self.vignette, self.grain]
     }
 
     /// PBR 变体是否已经编译（诊断/验收用）。

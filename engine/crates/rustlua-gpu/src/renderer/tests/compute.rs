@@ -262,6 +262,7 @@ fn gpu_particles_match_cpu_in_3d() {
         spread_z: 2.0,
         gravity_z: -9.0,
         gravity: Vec2::new(0.0, -2.0),
+        buoyancy: 2.0,
         ..ParticleEmitter::default()
     };
     let origin = [10.0, -5.0, 20.0];
@@ -294,13 +295,14 @@ fn gpu_particles_match_cpu_in_3d() {
         radius: 30.0,
         radial: 0.6,
         lift: 1.2,
+        swirl: 0.3,
     };
     cpu.set_wind_source(0, source).expect("cpu wind source");
     let sources = [
-        [10.0, -5.0, 20.0, 30.0, 0.6, 1.2],
-        [0.0; 6],
-        [0.0; 6],
-        [0.0; 6],
+        [10.0, -5.0, 20.0, 30.0, 0.6, 1.2, 0.3],
+        [0.0; 7],
+        [0.0; 7],
+        [0.0; 7],
     ];
     assert!(renderer.set_gpu_particle_wind_sources(sources));
     assert_eq!(renderer.gpu_particle_wind_sources(), sources);

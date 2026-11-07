@@ -61,25 +61,26 @@ fn particles_wind_profile_round_trips_and_rejects_bad_ranges() {
 fn particles_wind_sources_validate_and_reach_the_host_bridge() {
     let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
-        "local ok, reason = particles.set_wind_source(0, 10, 2, -5, 12, 0.6, 2.5)\n\
+        "local ok, reason = particles.set_wind_source(0, 10, 2, -5, 12, 0.6, 2.5, 1.5)\n\
          assert(ok, reason)\n\
          assert(particles.set_wind_source(4, 0, 0, 0, 1, 0, 0) == false, 'index range')\n\
          assert(particles.set_wind_source(1, 0, 0, 0, 600, 0, 0) == false, 'radius range')\n\
          assert(particles.set_wind_source(1, 0, 0, 0, 1, 0/0, 0) == false, 'NaN')\n\
+         assert(particles.set_wind_source(2, 0, 0, 0, 1, 0, 0, 0/0) == false, 'swirl NaN')\n\
          function update() return 'ok' end",
     );
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let sources = runtime.particle_wind_sources();
-    assert_eq!(sources[0], [10.0, 2.0, -5.0, 12.0, 0.6, 2.5]);
-    assert_eq!(sources[1], [0.0; 6]);
+    assert_eq!(sources[0], [10.0, 2.0, -5.0, 12.0, 0.6, 2.5, 1.5]);
+    assert_eq!(sources[1], [0.0; 7]);
     // 清空走 Lua 入口；宿主桥读回全零。
     runtime
         .execute_project_script(&script(
             "particles.clear_wind_sources()\nfunction update() end",
         ))
         .unwrap();
-    assert_eq!(runtime.particle_wind_sources()[0], [0.0; 6]);
+    assert_eq!(runtime.particle_wind_sources()[0], [0.0; 7]);
     let _ = fs::remove_file(path);
 }
 

@@ -237,6 +237,34 @@ pub(crate) struct ScriptState {
     animation: Handle<crate::script::domain::animation::animation_lua::AnimationState>,
     /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
     renderable: Handle<crate::script::domain::render::renderable_lua::RenderableState>,
+    /// P3-R76：脚本覆盖的雾密度（`render.set_fog`）；宿主每帧读一次应用到渲染器。
+    render_fog: Option<f32>,
+    /// P3-R77：脚本覆盖的雾颜色（线性 RGB）。
+    render_fog_color: Option<[f32; 3]>,
+    /// P3-R80：脚本覆盖的云量（0..1）。
+    render_cloud_coverage: Option<f32>,
+    /// P3-R82：脚本覆盖的云层速度倍率（0..4）。
+    render_cloud_speed: Option<f32>,
+    /// P3-R83：脚本覆盖的云底高度（世界 y，40..200）。
+    render_cloud_base: Option<f32>,
+    /// P3-R84：脚本覆盖的云影强度（0..0.6）。
+    render_cloud_shadow_strength: Option<f32>,
+    /// P3-R86：脚本设置的闪电闪光（0..1）。
+    render_flash: Option<f32>,
+    /// P3-R89：脚本设置的水体染色 rgb + 浑浊度 w。
+    render_water_tint: Option<[f32; 4]>,
+    /// P3-R92：脚本画质档（1=低，2=中，3=高）。
+    render_quality: Option<u8>,
+    /// P3-R93：脚本地面覆盖 [积雪, 湿润]。
+    render_surface_cover: Option<[f32; 2]>,
+    /// P3-R105：脚本曝光偏移（EV）。
+    render_exposure: Option<f32>,
+    /// P3-R135：脚本触发的水面涟漪点（消费一次）。
+    render_ripple: Option<[f32; 2]>,
+    /// P3-R140：暗角/颗粒（0..1）。
+    render_post_fx: Option<[f32; 2]>,
+    /// P3-R151：上一帧渲染统计（draws/vertices/triangles/set-passes）。
+    render_stats: Option<[u64; 4]>,
     /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
     /// 绑定见 `rustlua_gameplay::clock_lua`，宿主推进见 [`LuaRuntime::step_clock`]）。
     game_clock: Handle<GameClock>,
@@ -806,8 +834,68 @@ impl LuaRuntime {
     pub fn particle_wind_profile(&self) -> (f32, f32, f32) {
         self.state.borrow().particles.wind_profile()
     }
-    /// 局部风源 `[[x, y(height), z, radius, radial, lift]; 4]`（宿主同步给 GPU）。
-    pub fn particle_wind_sources(&self) -> [[f32; 6]; 4] {
+    /// 脚本覆盖的雾密度；`None` = 用场景/渲染器默认值。
+    pub fn render_fog_density(&self) -> Option<f32> {
+        self.state.borrow().render_fog
+    }
+    /// 脚本覆盖的雾颜色（线性 RGB）；`None` = 用渲染器默认。
+    pub fn render_fog_color(&self) -> Option<[f32; 3]> {
+        self.state.borrow().render_fog_color
+    }
+    /// 脚本覆盖的云量（0..1）；`None` = 渲染器默认。
+    pub fn render_cloud_coverage(&self) -> Option<f32> {
+        self.state.borrow().render_cloud_coverage
+    }
+    /// 脚本覆盖的云层速度倍率（0..4）；`None` = 渲染器默认。
+    pub fn render_cloud_speed(&self) -> Option<f32> {
+        self.state.borrow().render_cloud_speed
+    }
+    /// 脚本覆盖的云底高度（世界 y）；`None` = 渲染器默认。
+    pub fn render_cloud_base(&self) -> Option<f32> {
+        self.state.borrow().render_cloud_base
+    }
+    /// 脚本覆盖的云影强度（0..0.6）；`None` = 渲染器默认。
+    pub fn render_cloud_shadow_strength(&self) -> Option<f32> {
+        self.state.borrow().render_cloud_shadow_strength
+    }
+    /// 脚本设置的闪电闪光（0..1）。
+    pub fn render_flash(&self) -> Option<f32> {
+        self.state.borrow().render_flash
+    }
+    /// 脚本设置的水体染色 rgb + 浑浊度 w。
+    pub fn render_water_tint(&self) -> Option<[f32; 4]> {
+        self.state.borrow().render_water_tint
+    }
+    /// 脚本画质档（1=低，2=中，3=高）。
+    pub fn render_quality(&self) -> Option<u8> {
+        self.state.borrow().render_quality
+    }
+    /// 脚本地面覆盖 [积雪, 湿润]。
+    pub fn render_surface_cover(&self) -> Option<[f32; 2]> {
+        self.state.borrow().render_surface_cover
+    }
+    /// 脚本曝光偏移（EV）。
+    pub fn render_exposure(&self) -> Option<f32> {
+        self.state.borrow().render_exposure
+    }
+    /// 取走脚本 `render.set_ripple` 的涟漪点（消费一次）。
+    pub fn take_render_ripple(&self) -> Option<[f32; 2]> {
+        self.state.borrow_mut().render_ripple.take()
+    }
+    /// 脚本设置的暗角/颗粒（0..1）。
+    pub fn render_post_fx(&self) -> Option<[f32; 2]> {
+        self.state.borrow().render_post_fx
+    }
+    /// 写入上一帧渲染统计。
+    pub fn set_render_stats(&self, stats: [u64; 4]) {
+        self.state.borrow_mut().render_stats = Some(stats);
+    }
+    /// 上一帧渲染统计（draws/vertices/triangles/set-passes）。
+    pub fn render_stats(&self) -> Option<[u64; 4]> {
+        self.state.borrow().render_stats
+    }
+    /// 局部风源 `[[x, y(height), z, radius, radial, lift, swirl]; 4]`（宿主同步给 GPU）。
+    pub fn particle_wind_sources(&self) -> [[f32; 7]; 4] {
         self.state.borrow().particles.wind_sources().map(|source| {
             [
                 source.x,
@@ -816,6 +904,7 @@ impl LuaRuntime {
                 source.radius,
                 source.radial,
                 source.lift,
+                source.swirl,
             ]
         })
     }

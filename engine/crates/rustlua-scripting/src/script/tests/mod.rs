@@ -37,6 +37,7 @@ mod particles;
 mod physics;
 mod physics_handle;
 mod reentrancy;
+mod render_tuning;
 mod sample_project;
 mod save_data;
 mod scene_spawn;

@@ -181,7 +181,16 @@ impl Renderer {
                 },
                 material.alpha_cutoff,
             ],
-            [animated, 0.0, 0.0, 0.0],
+            [
+                animated,
+                if animated > 1.5 {
+                    material.occlusion_strength
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+            ],
         ];
         let (material_buffer, material_offset, material_size) =
             self.push_frame_uniform(bytemuck::cast_slice(&material_data));

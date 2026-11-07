@@ -20,6 +20,14 @@ pub enum ColliderShape3d {
     Ball(f32),
     Cuboid(Vec3),
     Capsule { half_height: f32, radius: f32 },
+    /// 静态地形高度场（P3-R55）：`heights` 行主序，`rows × cols`；
+    /// 局部 XZ 由 `scale.x/z` 铺开，Y 由 `scale.y` 乘高度。
+    Heightfield {
+        heights: Vec<f32>,
+        rows: usize,
+        cols: usize,
+        scale: Vec3,
+    },
 }
 
 /// One 3D collider as it currently sits in the physics world, for debug drawing.
@@ -103,6 +111,7 @@ impl ColliderShape3d {
                     edges.push((top + offset, bottom + offset));
                 }
             }
+            ColliderShape3d::Heightfield { .. } => {}
         }
         edges
     }
@@ -347,6 +356,11 @@ impl ColliderDesc3d {
                     ));
                 }
             }
+            ColliderShape3d::Heightfield { .. } => {
+                return Err(PhysicsError::Malformed(
+                    "heightfield must be added via add_heightfield".to_owned(),
+                ));
+            }
         }
         Ok(Self {
             shape,
@@ -509,6 +523,18 @@ impl PhysicsWorld3d {
                     half_height,
                     radius,
                 } => ColliderBuilder::capsule_y(half_height, radius),
+                ColliderShape3d::Heightfield {
+                    heights,
+                    rows,
+                    cols,
+                    scale,
+                } => {
+                    let matrix = nalgebra::DMatrix::from_row_slice(rows, cols, &heights);
+                    ColliderBuilder::heightfield(
+                        matrix,
+                        Vector::new(scale.x, scale.y, scale.z),
+                    )
+                }
             };
             builder = builder
                 .translation(Vector::new(desc.offset.x, desc.offset.y, desc.offset.z))
@@ -529,6 +555,63 @@ impl PhysicsWorld3d {
         // 以及 `step`（Rapier 在内部重建）。
         self.query_dirty = true;
         Ok(())
+    }
+
+    /// 添加一个静态地形高度场（P3-R55）。
+    ///
+    /// `heights` 行主序、`rows × cols`；局部 XZ 由 `scale.x/z` 铺开，高度乘 `scale.y`。
+    /// 高度场只作为**固定体**，用于射线/动态体碰撞；不参与 `debug_shapes`（不是简单形状）。
+    pub fn add_heightfield(
+        &mut self,
+        entity: EntityId,
+        position: Vec3,
+        scale: Vec3,
+        rows: usize,
+        cols: usize,
+        heights: Vec<f32>,
+    ) -> Result<(), PhysicsError> {
+        if rows < 2 || cols < 2 || rows > 1025 || cols > 1025 {
+            return Err(PhysicsError::Malformed(
+                "heightfield rows/cols must be 2..=1025".to_owned(),
+            ));
+        }
+        if heights.len() != rows * cols {
+            return Err(PhysicsError::Malformed(format!(
+                "heightfield needs {} heights, got {}",
+                rows * cols,
+                heights.len()
+            )));
+        }
+        if !position.x.is_finite()
+            || !position.y.is_finite()
+            || !position.z.is_finite()
+            || !scale.x.is_finite()
+            || !scale.y.is_finite()
+            || !scale.z.is_finite()
+            || scale.x <= 0.0
+            || scale.y <= 0.0
+            || scale.z <= 0.0
+            || heights.iter().any(|height| !height.is_finite())
+        {
+            return Err(PhysicsError::Malformed(
+                "heightfield values must be finite and scale positive".to_owned(),
+            ));
+        }
+        let desc = ColliderDesc3d {
+            shape: ColliderShape3d::Heightfield {
+                heights,
+                rows,
+                cols,
+                scale,
+            },
+            offset: Vec3::ZERO,
+            sensor: false,
+            dynamic: false,
+            layer: 0xFF,
+            mask: 0xFF,
+            ccd: false,
+        };
+        self.add_body(entity, position, false, vec![desc])
     }
 
     /// Removes a body and its colliders (e.g. when its entity is destroyed).
@@ -1300,6 +1383,52 @@ mod tests {
                 .iter()
                 .any(|c| (c.a == player && c.b == trigger) || (c.a == trigger && c.b == player)),
             "sensor contact not reported"
+        );
+    }
+
+    #[test]
+    fn heightfield_is_fixed_and_raycastable() {
+        let mut world = PhysicsWorld3d::new();
+        let ground = entity(9);
+        world
+            .add_heightfield(
+                ground,
+                Vec3::ZERO,
+                Vec3::new(20.0, 1.0, 20.0),
+                3,
+                3,
+                vec![0.0; 9],
+            )
+            .unwrap();
+        let hit = world
+            .raycast(Vec3::new(0.0, 5.0, 0.0), Vec3::new(0.0, -1.0, 0.0), 20.0)
+            .unwrap();
+        assert_eq!(hit, Some(ground), "ray must hit the heightfield");
+        assert!(
+            world
+                .add_heightfield(
+                    entity(10),
+                    Vec3::ZERO,
+                    Vec3::new(20.0, 1.0, 20.0),
+                    3,
+                    3,
+                    vec![0.0; 8],
+                )
+                .is_err(),
+            "height count must equal rows*cols"
+        );
+        assert!(
+            world
+                .add_heightfield(
+                    entity(11),
+                    Vec3::ZERO,
+                    Vec3::new(20.0, 0.0, 20.0),
+                    3,
+                    3,
+                    vec![0.0; 9],
+                )
+                .is_err(),
+            "scale must be positive"
         );
     }
 

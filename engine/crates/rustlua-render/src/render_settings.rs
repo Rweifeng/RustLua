@@ -68,6 +68,8 @@ pub struct RenderSettings {
     pub fog: bool,
     /// 雾密度（世界单位）；只在 `fog` 打开时使用。
     pub fog_density: f32,
+    /// 雾颜色（线性 RGB，0..=1）；只在 `fog` 打开时使用。
+    pub fog_color: [f32; 3],
     /// 屏幕空间体积光/神光（从太阳位置向屏幕内累积亮部）。
     pub god_rays: bool,
     /// 屏幕空间景深（Tonemap 深度重建 + 8 抽头）。
@@ -98,6 +100,7 @@ impl Default for RenderSettings {
             filtered_shadows: false,
             fog: false,
             fog_density: 0.0015,
+            fog_color: [0.62, 0.68, 0.76],
             god_rays: false,
             dof: false,
             dof_focus: 20.0,
@@ -124,6 +127,7 @@ impl RenderSettings {
         filtered_shadows: false,
         fog: false,
         fog_density: 0.0015,
+        fog_color: [0.62, 0.68, 0.76],
         god_rays: false,
         dof: false,
         dof_focus: 20.0,
@@ -207,6 +211,13 @@ impl RenderSettings {
     #[must_use]
     pub const fn with_fog_density(mut self, fog_density: f32) -> Self {
         self.fog_density = fog_density;
+        self
+    }
+
+    /// 设置雾颜色（线性 RGB）；调用方负责 0..=1，渲染器逐帧钳制。
+    #[must_use]
+    pub const fn with_fog_color(mut self, fog_color: [f32; 3]) -> Self {
+        self.fog_color = fog_color;
         self
     }
 

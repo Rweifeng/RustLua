@@ -85,7 +85,7 @@ pub trait ParticleRenderer {
         let _ = profile;
     }
     /// 4 个局部风源 `[x, y(height), z, radius, radial, lift]`；默认 no-op。
-    fn set_particle_wind_sources(&mut self, sources: [[f32; 6]; 4]) {
+    fn set_particle_wind_sources(&mut self, sources: [[f32; 7]; 4]) {
         let _ = sources;
     }
     fn step_particles(&mut self, delta_seconds: f32) -> Result<ParticleStepReport, String>;

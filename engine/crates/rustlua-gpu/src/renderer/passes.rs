@@ -7,12 +7,13 @@
 
 use rustlua_camera::camera::{ClearPolicy, DEFAULT_3D_CLEAR, RenderView};
 use rustlua_infra::logging::{EngineError, LogModule};
-use rustlua_render::frame::{Scene3d, SceneMesh};
+use rustlua_render::frame::{Scene3d, Scene3dDrawable, SceneMesh};
 use rustlua_render::layer::{RenderLayer, layer_indices};
 use rustlua_render::mesh3d::MaterialAlphaMode;
 use rustlua_render::post_process::PostProcess;
 use rustlua_render::render_plan::{FrameFacts, RenderPass, RenderPlan};
 use rustlua_render::render_settings::{IblMode, SceneColorFormat, hdr_activation};
+use rustlua_render::water::WaterSpec;
 // M73-00 WP5：时钟必须走 `web-time` 而不是 `std::time`。`wasm32-unknown-unknown` 的 std
 // 落在 `sys/pal/unsupported` 上，`Instant::now()` 会**直接 panic**（"time not implemented on
 // this platform"，见 std 源码 `sys/time/unsupported.rs`）——渲染器是第一个真在 wasm 上被调用的
@@ -23,13 +24,35 @@ use wgpu::SurfaceError;
 
 use super::world_sprite::SpritePassFilter;
 
-use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};
-use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
+use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
 use super::{
     DepthPass, POINT_SHADOW_LIGHTS, RenderFrameMetrics, RenderOutcome, Renderer,
     apply_declared_viewport, count_layer_draws, hash_bytes, record_dropped_draw,
     record_indexed_draw, record_set_pass, record_triangle_draw, record_vertex_draw,
 };
+
+pub(crate) fn water_plane_from_drawables(drawables: &[Scene3dDrawable]) -> Option<[f32; 4]> {
+    for drawable in drawables {
+        if !WaterSpec::is_water_path(&drawable.mesh_path) {
+            continue;
+        }
+        let spec = WaterSpec::parse(&drawable.mesh_path).ok()?;
+        let columns = &drawable.model.columns;
+        let scale = |column: &[f32; 4]| {
+            (column[0] * column[0] + column[1] * column[1] + column[2] * column[2]).sqrt()
+        };
+        let sx = scale(&columns[0]);
+        let sy = scale(&columns[1]);
+        let sz = scale(&columns[2]);
+        return Some([
+            columns[3][1] + spec.level * sy,
+            spec.size * 0.5 * sx.max(sz),
+            columns[3][0],
+            columns[3][2],
+        ]);
+    }
+    None
+}
 
 impl Renderer {
     /// 执行后处理通道：把离屏场景颜色按曝光/色调/暗角写进目标附件。
@@ -107,6 +130,7 @@ impl Renderer {
         contact_shadows: bool,
         fog: bool,
         fog_density: f32,
+        fog_color: [f32; 3],
         god_rays: bool,
         dof: bool,
         dof_focus: f32,
@@ -118,8 +142,8 @@ impl Renderer {
         // 240B：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 指向光的方向 + 雾 + 景深 + 天空。
         // SSR/contact shadows/fog/天空用后几者把深度重建到世界空间；没有相机时保持全零，
         // shader 直接跳过。
-        let mut params = [0.0_f32; 60];
-        params[0] = settings.exposure_ev;
+        let mut params = [0.0_f32; 72];
+        params[0] = settings.exposure_ev + self.exposure_offset;
         params[1] = settings.tonemap.code();
         params[2] = settings.bloom;
         params[3] = if fxaa { 1.0 } else { 0.0 };
@@ -127,6 +151,14 @@ impl Renderer {
         params[5] = if ssr { 1.0 } else { 0.0 };
         params[6] = if contact_shadows { 1.0 } else { 0.0 };
         params[7] = if god_rays { 1.0 } else { 0.0 };
+        // P3-R80：sky.w 携带云量（0..1），体积云密度阈值按它偏移。
+        params[59] = self.cloud_coverage.clamp(0.0, 1.0);
+        // P3-R82：water_params.w（保留槽）携带云速倍率。
+        params[67] = self.cloud_speed.clamp(0.0, 4.0);
+        params[68] = self.cloud_base.clamp(40.0, 200.0);
+        params[69] = self.flash_intensity.clamp(0.0, 1.0);
+        params[70] = self.vignette.clamp(0.0, 1.0);
+        params[71] = self.grain.clamp(0.0, 1.0);
         if let Some(scene) = scene
             && let Ok(view_projection) = scene.camera.view_projection_matrix(scene.view.viewport)
         {
@@ -145,9 +177,9 @@ impl Renderer {
         }
         if fog && fog_density.is_finite() && fog_density > 0.0 {
             params[48] = fog_density;
-            params[49] = 0.62;
-            params[50] = 0.68;
-            params[51] = 0.76;
+            params[49] = fog_color[0].clamp(0.0, 1.0);
+            params[50] = fog_color[1].clamp(0.0, 1.0);
+            params[51] = fog_color[2].clamp(0.0, 1.0);
         }
         if dof {
             params[52] = 1.0;
@@ -172,6 +204,19 @@ impl Renderer {
             params[56] = 1.0;
             params[57] = 2.4;
             params[58] = 0.55;
+        }
+        // P3-R52：取第一块 `__water__` 的世界平面（level/半宽/中心）+ 时钟，
+        // 让 Tonemap 能对水面像素做屏幕空间物体反射。没有水面时 enable=0。
+        if let Some(plane) = scene
+            .and_then(|scene| water_plane_from_drawables(&scene.drawables))
+        {
+            params[60] = plane[0];
+            params[61] = plane[1];
+            params[62] = plane[2];
+            params[63] = plane[3];
+            params[64] = 1.0;
+            params[65] = self.clock.elapsed().as_secs_f32();
+            params[66] = 0.55;
         }
         self.queue
             .write_buffer(&self.tonemap_params, 0, bytemuck::cast_slice(&params));
@@ -1324,6 +1369,7 @@ impl Renderer {
                 self.render_settings.contact_shadows,
                 self.render_settings.fog,
                 self.render_settings.fog_density,
+                self.render_settings.fog_color,
                 self.render_settings.god_rays,
                 self.render_settings.dof,
                 self.render_settings.dof_focus,

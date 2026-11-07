@@ -15,7 +15,9 @@ use std::{collections::HashMap, fmt, path::PathBuf};
 
 use crate::device::Device;
 use crate::sink::SpatialEmission;
-use crate::spatial::{Listener, SpatialError, SpatialModel, SpatialParams, evaluate, fold_to_ears};
+use crate::spatial::{
+    Listener, SpatialError, SpatialModel, SpatialParams, evaluate, evaluate_occluded, fold_to_ears,
+};
 use crate::tone::ToneControl;
 
 /// 音量总线（M20-02）。`Master` 是总音量，其余为分组音量。
@@ -393,7 +395,17 @@ impl AudioSystem {
 
     /// 在 SFX 总线上按世界坐标播放（M74-01），返回本次的增益与声像。
     pub fn play_at(&mut self, name: &str, emitter: [f32; 3]) -> Result<SpatialParams, AudioError> {
-        self.play_at_on(AudioBus::Sfx, name, emitter)
+        self.play_at_occluded(name, emitter, 0.0)
+    }
+
+    /// 带遮挡系数的空间播放（P3-R62）；`occlusion` 0..=1，1=完全挡住。
+    pub fn play_at_occluded(
+        &mut self,
+        name: &str,
+        emitter: [f32; 3],
+        occlusion: f32,
+    ) -> Result<SpatialParams, AudioError> {
+        self.play_at_on_occluded(AudioBus::Sfx, name, emitter, occlusion)
     }
 
     /// 在指定总线上按世界坐标播放（M74-01），返回本次的增益与声像。
@@ -409,11 +421,23 @@ impl AudioSystem {
         name: &str,
         emitter: [f32; 3],
     ) -> Result<SpatialParams, AudioError> {
+        self.play_at_on_occluded(bus, name, emitter, 0.0)
+    }
+
+    /// 带遮挡系数的总线空间播放。
+    pub fn play_at_on_occluded(
+        &mut self,
+        bus: AudioBus,
+        name: &str,
+        emitter: [f32; 3],
+        occlusion: f32,
+    ) -> Result<SpatialParams, AudioError> {
         let listener = self.listener.ok_or(SpatialError::NoListener)?;
-        let params = evaluate(emitter, &listener, self.spatial_model)?;
+        let params = evaluate_occluded(emitter, &listener, self.spatial_model, occlusion)?;
         let spatial = SpatialEmission {
             gain: params.gain,
             pan: params.pan,
+            cutoff_hz: params.cutoff_hz,
         };
         if crate::sink::is_installed() {
             self.play_via_sink(bus, name, false, Some(spatial))?;
@@ -432,6 +456,8 @@ impl AudioSystem {
             folded,
             left_ear,
             right_ear,
+            params.pan,
+            params.cutoff_hz,
         )?;
         tracing::info!(
             target: "audio",

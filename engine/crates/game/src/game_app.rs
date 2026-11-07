@@ -26,8 +26,8 @@ use winit::{
 };
 
 use engine::host::{
-    FrameProfile, OverlayVertex, RuntimeScene, SceneDraw, SceneMesh, ScriptErrorPolicy,
-    apply_scene_environment,
+    FrameProfile, OverlayVertex, RenderSettings, RuntimeScene, SceneDraw, SceneMesh,
+    ScriptErrorPolicy, apply_scene_environment,
 };
 use rustlua_gpu::{RenderOutcome, Renderer};
 
@@ -54,6 +54,8 @@ pub struct GameApp {
     modifiers: ModifiersState,
     last_frame: Instant,
     performance: PerformanceStats,
+    /// P3-R155：上一帧渲染统计（draw/vertices/triangles），供 F3 overlay 显示。
+    last_render_stats: [u64; 6],
     /// 调试 overlay（帧率/耗时文本）是否绘制。**默认关闭**：发布包不应带开发者
     /// 读数，游戏内按 `F3` 可随时开启/关闭（诊断用）。数值本身仍每帧统计并写
     /// `[perf]` 日志，因此关掉绘制不影响性能基线。
@@ -138,6 +140,7 @@ impl GameApp {
             modifiers: ModifiersState::empty(),
             last_frame: Instant::now(),
             performance: PerformanceStats::new(),
+            last_render_stats: [0; 6],
             // 发布默认不带帧率 overlay（F3 可手动开启，见字段注释）。
             overlay_enabled: false,
             runtime_scene: None,
@@ -622,6 +625,26 @@ impl GameApp {
             let splash = self.splash.as_mut().expect("splash exists");
             let mesh = splash.mesh(renderer.config.width, renderer.config.height);
             let outcome = renderer.render(&mesh, None);
+            {
+                let metrics = renderer.last_frame_metrics();
+                let stats = [
+                    metrics.draw_calls,
+                    metrics.vertices,
+                    metrics.triangles,
+                    metrics.instances,
+                    metrics.mesh3d_instances,
+                    metrics.mesh3d_draw_calls,
+                ];
+                if let Some(scene) = self.runtime_scene.as_ref() {
+                    scene.set_render_stats([
+                        metrics.draw_calls,
+                        metrics.vertices,
+                        metrics.triangles,
+                        metrics.set_pass_calls,
+                    ]);
+                }
+                self.last_render_stats = stats;
+            }
             if matches!(outcome, RenderOutcome::Fatal) {
                 self.fail(
                     event_loop,
@@ -743,7 +766,14 @@ impl GameApp {
             }
         };
         if self.overlay_enabled {
-            let overlay = build_overlay(snapshot, memory::sample(), design_w, design_h);
+            let render_stats = Some(self.last_render_stats);
+            let overlay = build_overlay(
+                snapshot,
+                render_stats,
+                memory::sample(),
+                design_w,
+                design_h,
+            );
             if !overlay.ranges.is_empty() {
                 let base = mesh.vertices.len() as u32;
                 let atlas_texture = mesh.paths.len() as u32 + 1;
@@ -797,7 +827,159 @@ impl GameApp {
                 renderer.set_world_sprite_camera(view_projection);
             }
         }
+        // P3-R76/77：脚本覆盖雾密度/颜色；只在值变化时重建 RenderSettings。
+        if let Some(scene) = self.runtime_scene.as_ref()
+            && (scene.render_fog_density().is_some() || scene.render_fog_color().is_some())
+        {
+            let settings = renderer.render_settings();
+            let density = scene
+                .render_fog_density()
+                .unwrap_or(settings.fog_density);
+            let color = scene.render_fog_color().unwrap_or(settings.fog_color);
+            if (settings.fog_density - density).abs() > 1e-6
+                || (0..3).any(|i| (settings.fog_color[i] - color[i]).abs() > 1e-6)
+            {
+                renderer.set_render_settings(RenderSettings {
+                    fog_density: density,
+                    fog_color: color,
+                    ..settings
+                });
+            }
+        }
+        // P3-R80：脚本云量；只在变化时写入渲染器。
+        if let Some(coverage) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_cloud_coverage())
+            && (renderer.cloud_coverage() - coverage).abs() > 1e-6
+        {
+            renderer.set_cloud_coverage(coverage);
+        }
+        if let Some(speed) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_cloud_speed())
+            && (renderer.cloud_speed() - speed).abs() > 1e-6
+        {
+            renderer.set_cloud_speed(speed);
+        }
+        if let Some(base) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_cloud_base())
+            && (renderer.cloud_base() - base).abs() > 1e-6
+        {
+            renderer.set_cloud_base(base);
+        }
+        if let Some(strength) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_cloud_shadow_strength())
+            && (renderer.cloud_shadow_strength() - strength).abs() > 1e-6
+        {
+            renderer.set_cloud_shadow_strength(strength);
+        }
+        if let Some(flash) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_flash())
+            && (renderer.flash_intensity() - flash).abs() > 1e-6
+        {
+            renderer.set_flash(flash);
+        }
+        if let Some(tint) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_water_tint())
+            && renderer
+                .water_tint()
+                .iter()
+                .zip(tint.iter())
+                .any(|(a, b)| (*a - *b).abs() > 1e-6)
+        {
+            renderer.set_water_tint(tint);
+        }
+        if let Some(level) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_quality())
+        {
+            let settings = renderer.render_settings();
+            let high = level >= 3;
+            let medium = level >= 2;
+            let desired = RenderSettings {
+                ssao: medium,
+                ssr: medium,
+                contact_shadows: medium,
+                god_rays: high,
+                point_shadows: medium,
+                bloom: medium,
+                ..settings
+            };
+            if desired != settings {
+                renderer.set_render_settings(desired);
+            }
+        }
+        if let Some(cover) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_surface_cover())
+            && renderer
+                .surface_cover()
+                .iter()
+                .zip(cover.iter())
+                .any(|(a, b)| (*a - *b).abs() > 1e-6)
+        {
+            renderer.set_surface_cover(cover);
+        }
+        if let Some(ev) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_exposure())
+            && (renderer.exposure_offset() - ev).abs() > 1e-6
+        {
+            renderer.set_exposure_offset(ev);
+        }
+        if let Some(ripple) = self
+            .runtime_scene
+            .as_mut()
+            .and_then(|scene| scene.take_render_ripple())
+        {
+            renderer.set_ripple(ripple[0], ripple[1]);
+        }
+        if let Some(fx) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_post_fx())
+            && renderer
+                .post_fx()
+                .iter()
+                .zip(fx.iter())
+                .any(|(a, b)| (*a - *b).abs() > 1e-6)
+        {
+            renderer.set_post_fx(fx[0], fx[1]);
+        }
         let outcome = renderer.render(&mesh, scene3d.as_ref());
+        {
+            let metrics = renderer.last_frame_metrics();
+            let stats = [
+                metrics.draw_calls,
+                metrics.vertices,
+                metrics.triangles,
+                metrics.instances,
+                metrics.mesh3d_instances,
+                metrics.mesh3d_draw_calls,
+            ];
+            if let Some(scene) = self.runtime_scene.as_ref() {
+                scene.set_render_stats([
+                    metrics.draw_calls,
+                    metrics.vertices,
+                    metrics.triangles,
+                    metrics.set_pass_calls,
+                ]);
+            }
+            self.last_render_stats = stats;
+        }
         if let Some(path) = capture_path {
             let capture_name = path
                 .file_name()
@@ -1271,6 +1453,7 @@ struct OverlayRange {
 /// `TextLayout::build_bitmap`），不依赖项目字体。
 fn build_overlay(
     snapshot: PerformanceSnapshot,
+    render_stats: Option<[u64; 6]>,
     memory: Option<MemoryStats>,
     width: u32,
     height: u32,
@@ -1321,6 +1504,7 @@ fn build_overlay(
     let mem_color = memory_mb_color(memory.map_or(0.0, |m| m.working_set_mb));
     let peak_color = memory_mb_color(memory.map_or(0.0, |m| m.peak_working_set_mb));
     let priv_color = memory_mb_color(memory.map_or(0.0, |m| m.private_mb));
+    let stats = render_stats.unwrap_or([0, 0, 0, 0, 0, 0]);
     let rows = [
         (
             "FPS",
@@ -1355,14 +1539,50 @@ fn build_overlay(
             ((snapshot.frames % 600) as f32) / 600.0,
             [0.78, 0.84, 0.80, 1.0],
         ),
+        (
+            "DRAW",
+            format!("{}", stats[0]),
+            (stats[0] as f32 / 2048.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "MESH DRAW",
+            format!("{}", stats[5]),
+            (stats[5] as f32 / 1024.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "VERT",
+            format!("{}", stats[1]),
+            (stats[1] as f32 / 120_000.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "TRI",
+            format!("{}", stats[2]),
+            (stats[2] as f32 / 80_000.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "INST all",
+            format!("{}", stats[3]),
+            (stats[3] as f32 / 4096.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "MESH INST",
+            format!("{}", stats[4]),
+            (stats[4] as f32 / 2048.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
     ];
 
-    // 像素布局：标题 1 行 + 8 个指标行（标签/数值在上，量条在下），行高 34。
+    // 像素布局：标题 + 指标行（标签/数值在上，量条在下），行高 34.
     const PAD_X: f32 = 10.0;
     const PAD_Y: f32 = 8.0;
-    const ROW_H: f32 = 34.0;
+    const ROW_H: f32 = 27.0;
     const SCALE: f32 = 2.0;
-    const PANEL_W: f32 = 300.0;
+    const PANEL_W: f32 = 340.0;
     let panel_h = PAD_Y * 2.0 + 20.0 + rows.len() as f32 * ROW_H;
     let panel_x1 = -1.0 + PANEL_W / width * 2.0;
     let panel_y1 = 1.0 - panel_h / height * 2.0;
@@ -1763,7 +1983,7 @@ mod tests {
     /// （`ranges` 里恰好一段 `atlas = true`），面板/量条走白色纹理。
     #[test]
     fn debug_overlay_draws_labeled_text_and_bars() {
-        let overlay = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, 1280, 720);
+        let overlay = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, None, 1280, 720);
         assert_eq!(overlay.ranges.len(), 3, "面板 / 量条 / 文字三段");
         assert!(!overlay.ranges[0].atlas, "面板底走白色纹理");
         assert!(!overlay.ranges[1].atlas, "量条走白色纹理");
@@ -1831,8 +2051,8 @@ mod tests {
     /// 量条填充随数值单调变化：frame_ms 越大，填充越宽（同一面板布局下比较总宽度）。
     #[test]
     fn debug_overlay_bars_follow_metrics() {
-        let light = build_overlay(snapshot(120.0, 0.5, 0.1, 0.05), None, 640, 360);
-        let heavy = build_overlay(snapshot(30.0, 30.0, 15.0, 7.0), None, 640, 360);
+        let light = build_overlay(snapshot(120.0, 0.5, 0.1, 0.05), None, None, 640, 360);
+        let heavy = build_overlay(snapshot(30.0, 30.0, 15.0, 7.0), None, None, 640, 360);
         let width = |overlay: &OverlayGeometry| -> f32 {
             overlay.vertices[..overlay.ranges[1].count as usize]
                 .iter()
@@ -1851,8 +2071,8 @@ mod tests {
             peak_working_set_mb: 384.0,
             private_mb: 200.0,
         };
-        let with = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), Some(memory), 640, 360);
-        let without = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, 640, 360);
+        let with = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, Some(memory), 640, 480);
+        let without = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, None, 640, 480);
         assert!(
             with.vertices.len() > without.vertices.len(),
             "内存读数应比 -- 占位符多出数字顶点"

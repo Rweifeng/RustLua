@@ -22,6 +22,7 @@
 use crate::mesh3d::{
     MaterialAsset, MaterialTexture, MeshAsset, MeshPrimitive, MeshVertex, TangentBasis,
 };
+use rustlua_assets::gltf_asset::GltfTextureImage;
 use std::fmt;
 
 /// Prefix used by `MeshRenderer.mesh` to request the built-in terrain.
@@ -32,6 +33,8 @@ pub const TERRAIN_MIN_SIZE: f32 = 8.0;
 pub const TERRAIN_MAX_SIZE: f32 = 4000.0;
 pub const TERRAIN_MIN_RES: u32 = 4;
 pub const TERRAIN_MAX_RES: u32 = 192;
+/// P3-R48：逐像素四通道 splat 权重图分辨率。
+pub const SPLAT_MAP_RES: u32 = 512;
 pub const TERRAIN_MAX_AMPLITUDE: f32 = 200.0;
 /// Maximum local edits carried by one terrain spec string.
 pub const TERRAIN_MAX_EDITS: usize = 32;
@@ -115,6 +118,12 @@ pub struct TerrainSpec {
     pub edits: [TerrainEdit; TERRAIN_MAX_EDITS],
     /// Number of active entries in [`Self::edits`].
     pub edit_count: u8,
+    /// P3-R145：可选分块中心（世界坐标）；`chunk_size == 0` 表示整张地形。
+    pub chunk_origin: [f32; 2],
+    /// 分块边长；0 = 整张 `size`。
+    pub chunk_size: f32,
+    /// P3-R147：分块裙边向下延伸的深度；0 = 无裙边。
+    pub chunk_skirt: f32,
 }
 
 impl Default for TerrainSpec {
@@ -132,6 +141,9 @@ impl Default for TerrainSpec {
             detail: 0.0,
             edits: [TerrainEdit::ZERO; TERRAIN_MAX_EDITS],
             edit_count: 0,
+            chunk_origin: [0.0, 0.0],
+            chunk_size: 0.0,
+            chunk_skirt: 0.0,
         }
     }
 }
@@ -166,6 +178,10 @@ impl TerrainSpec {
                 "tribw" => spec.tributary_width = parse_number(raw, key)?,
                 "shore" => spec.shore_level = parse_number(raw, key)?,
                 "detail" => spec.detail = parse_number(raw, key)?,
+                "cx" => spec.chunk_origin[0] = parse_number(raw, key)?,
+                "cz" => spec.chunk_origin[1] = parse_number(raw, key)?,
+                "cs" => spec.chunk_size = parse_number(raw, key)?,
+                "sk" => spec.chunk_skirt = parse_number(raw, key)?,
                 "seed" => {
                     let value: f32 = parse_number(raw, key)?;
                     if !value.is_finite() || value.fract() != 0.0 || value < 0.0 {
@@ -245,6 +261,15 @@ impl TerrainSpec {
         if self.detail > 0.0 {
             path.push_str(&format!("&detail={}", self.detail));
         }
+        if self.chunk_size > 0.0 {
+            path.push_str(&format!(
+                "&cx={}&cz={}&cs={}",
+                self.chunk_origin[0], self.chunk_origin[1], self.chunk_size
+            ));
+        }
+        if self.chunk_skirt > 0.0 {
+            path.push_str(&format!("&sk={}", self.chunk_skirt));
+        }
         for edit in self.edits.iter().take(usize::from(self.edit_count)) {
             path.push_str(&format!(
                 "&edit={}:{}:{}:{}",
@@ -261,6 +286,20 @@ impl TerrainSpec {
         }
         if !(TERRAIN_MIN_RES..=TERRAIN_MAX_RES).contains(&self.resolution) {
             return Err(TerrainSpecError::ResolutionOutOfRange(self.resolution));
+        }
+        if !self.chunk_size.is_finite()
+            || self.chunk_size < 0.0
+            || self.chunk_size > self.size
+            || !self.chunk_origin[0].is_finite()
+            || !self.chunk_origin[1].is_finite()
+            || !self.chunk_skirt.is_finite()
+            || self.chunk_skirt < 0.0
+            || self.chunk_skirt > 50.0
+        {
+            return Err(TerrainSpecError::MalformedField(format!(
+                "chunk cx={} cz={} cs={} sk={}",
+                self.chunk_origin[0], self.chunk_origin[1], self.chunk_size, self.chunk_skirt
+            )));
         }
         if !self.amplitude.is_finite()
             || self.amplitude < 0.0
@@ -519,11 +558,43 @@ impl TerrainSpec {
         }
     }
 
+    /// 逐像素 splat 权重图（512² RGBA8，R/G/B/A = 草/苔/落叶/裸土）。
+    ///
+    /// 与顶点权重同一个 [`Self::splat_weights`] 采样函数，世界坐标映射到
+    /// `(u−0.5)·size`；着色器用 `world.xz / size + 0.5` 直接采样，因此 biome 边界
+    /// 不再受 192×192 顶点插值限制。
+    #[must_use]
+    pub fn build_splat_map(&self) -> GltfTextureImage {
+        let res = SPLAT_MAP_RES;
+        let mut rgba = vec![0u8; (res * res * 4) as usize];
+        for row in 0..res {
+            for col in 0..res {
+                let u = (col as f32 + 0.5) / res as f32;
+                let v = (row as f32 + 0.5) / res as f32;
+                let x = (u - 0.5) * self.size;
+                let z = (v - 0.5) * self.size;
+                let weights = self.splat_weights(x, z);
+                let index = ((row * res + col) * 4) as usize;
+                for channel in 0..4 {
+                    rgba[index + channel] =
+                        (weights[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+        GltfTextureImage {
+            width: res,
+            height: res,
+            rgba,
+        }
+    }
+
     #[must_use]
     pub fn build_mesh(&self) -> MeshAsset {
         let res = self.resolution.max(TERRAIN_MIN_RES);
-        let step = self.size / res as f32;
-        let half = self.size * 0.5;
+        let span_size = if self.chunk_size > 0.0 { self.chunk_size } else { self.size };
+        let origin = if self.chunk_size > 0.0 { self.chunk_origin } else { [0.0, 0.0] };
+        let step = span_size / res as f32;
+        let half = span_size * 0.5;
         let stride = res as usize + 1;
         let mut vertices = Vec::with_capacity(stride * stride);
         let mut min_y = -(self.amplitude + self.river_depth + self.tributary_depth);
@@ -540,9 +611,11 @@ impl TerrainSpec {
             let z = -half + row as f32 * step;
             for col in 0..=res {
                 let x = -half + col as f32 * step;
-                let height = self.height(x, z);
-                let dx = (self.height(x + step, z) - self.height(x - step, z)) / (2.0 * step);
-                let dz = (self.height(x, z + step) - self.height(x, z - step)) / (2.0 * step);
+                let wx = origin[0] + x;
+                let wz = origin[1] + z;
+                let height = self.height(wx, wz);
+                let dx = (self.height(wx + step, wz) - self.height(wx - step, wz)) / (2.0 * step);
+                let dz = (self.height(wx, wz + step) - self.height(wx, wz - step)) / (2.0 * step);
                 let normal = normalize([-dx, 1.0, -dz]);
                 // UV is not a texture coordinate for terrain: x = normalized
                 // height, y = slope. The PBR shader blends low river sand,
@@ -551,7 +624,7 @@ impl TerrainSpec {
                 let slope_t = (1.0 - normal[1]).clamp(0.0, 1.0);
                 // Terrain is never skinned, so the skin-weight lane is free to
                 // carry the four procedural splat weights to the fragment shader.
-                let splat = self.splat_weights(x, z);
+                let splat = self.splat_weights(wx, wz);
                 vertices.push(MeshVertex {
                     position: [x, height, z],
                     normal,
@@ -573,11 +646,62 @@ impl TerrainSpec {
                 indices.extend_from_slice(&[a, c, b, b, c, d]);
             }
         }
+        // P3-R147：分块裙边，向下延伸一圈，遮住不同 LOD 相邻块之间的细缝。
+        if self.chunk_size > 0.0 && self.chunk_skirt > 0.0 {
+            let skirt = self.chunk_skirt;
+            let mut edge_starts = Vec::new();
+            for row in [0usize, res as usize] {
+                edge_starts.push(vertices.len() as u32);
+                for col in 0..=res as usize {
+                    let base = vertices[row * stride as usize + col];
+                    vertices.push(MeshVertex {
+                        position: [base.position[0], base.position[1] - skirt, base.position[2]],
+                        normal: base.normal,
+                        texcoord: base.texcoord,
+                        tangent: base.tangent,
+                        joints: base.joints,
+                        weights: base.weights,
+                    });
+                }
+            }
+            for col in [0usize, res as usize] {
+                edge_starts.push(vertices.len() as u32);
+                for row in 0..=res as usize {
+                    let base = vertices[row * stride as usize + col];
+                    vertices.push(MeshVertex {
+                        position: [base.position[0], base.position[1] - skirt, base.position[2]],
+                        normal: base.normal,
+                        texcoord: base.texcoord,
+                        tangent: base.tangent,
+                        joints: base.joints,
+                        weights: base.weights,
+                    });
+                }
+            }
+            for (edge, start) in edge_starts.into_iter().enumerate() {
+                let horizontal = edge < 2;
+                for i in 0..res {
+                    let (a, b) = if horizontal {
+                        let row = if edge == 0 { 0 } else { res as usize };
+                        let base = (row * stride + i as usize) as u32;
+                        (base, base + 1)
+                    } else {
+                        let col = if edge == 2 { 0 } else { res as usize };
+                        let base = (i as usize * stride + col) as u32;
+                        (base, base + stride as u32)
+                    };
+                    let sa = start + i as u32;
+                    let sb = sa + 1;
+                    indices.extend_from_slice(&[a, sa, b, b, sa, sb]);
+                }
+            }
+        }
         let detail_atlas =
             (self.detail > 0.0).then(|| crate::terrain_detail::ground_atlas(self.seed));
         let detail_normal = detail_atlas
             .as_ref()
             .map(|color| crate::terrain_detail::normal_atlas(color, 6.0));
+        let splat_map = (self.detail > 0.0).then(|| self.build_splat_map());
         let material = MaterialAsset {
             base_color: [0.30, 0.27, 0.19, 1.0],
             metallic: 0.0,
@@ -587,6 +711,7 @@ impl TerrainSpec {
             // through the generic tangent-space slot. -2 keeps the height/slope
             // colour-blend marker intact.
             normal_scale: -2.0,
+            double_sided: self.chunk_skirt > 0.0,
             // Terrain is opaque, so alpha_cutoff is free to carry the normalized
             // shore level to the fragment shader (terrain wet-sand band). 1.0
             // means "no shore band" for a generic terrain without a water body.
@@ -609,6 +734,14 @@ impl TerrainSpec {
                 path: None,
                 image: Some(image),
             }),
+            // P3-R48：逐像素四通道 splat 权重图，走 occlusion 槽位（线性、无 mip）。
+            // 地形分支用它替换逐顶点插值；`occlusion_strength` 这个槽位对地形携带
+            // 世界尺寸（着色器用 animation.y 读），所以地形不能再走通用 AO。
+            occlusion_texture: splat_map.map(|image| MaterialTexture {
+                path: None,
+                image: Some(image),
+            }),
+            occlusion_strength: if self.detail > 0.0 { self.size } else { 0.0 },
             detail_scale: self.detail,
             ..MaterialAsset::default()
         };
@@ -733,6 +866,44 @@ mod tests {
     }
 
     #[test]
+    fn splat_map_is_per_pixel_and_normalized() {
+        let spec = TerrainSpec {
+            size: 480.0,
+            resolution: 64,
+            detail: 80.0,
+            ..TerrainSpec::default()
+        };
+        let map = spec.build_splat_map();
+        assert_eq!(map.width, SPLAT_MAP_RES);
+        assert_eq!(map.height, SPLAT_MAP_RES);
+        for (col, row) in [(0, 0), (SPLAT_MAP_RES / 2, SPLAT_MAP_RES / 2), (511, 511)] {
+            let index = ((row * SPLAT_MAP_RES + col) * 4) as usize;
+            let sum: u32 = map.rgba[index..index + 4]
+                .iter()
+                .map(|value| u32::from(*value))
+                .sum();
+            assert!((sum as i32 - 255).abs() <= 3, "splat sum {sum} at {col},{row}");
+            // Decoded texel must match the same CPU splat function used by vertices.
+            let u = (col as f32 + 0.5) / SPLAT_MAP_RES as f32;
+            let v = (row as f32 + 0.5) / SPLAT_MAP_RES as f32;
+            let expected = spec.splat_weights((u - 0.5) * spec.size, (v - 0.5) * spec.size);
+            for channel in 0..4 {
+                let actual = f32::from(map.rgba[index + channel]) / 255.0;
+                assert!(
+                    (actual - expected[channel]).abs() < 0.02,
+                    "channel {channel} at {col},{row}: {actual} vs {}",
+                    expected[channel]
+                );
+            }
+        }
+        assert_eq!(
+            spec.build_splat_map(),
+            spec.build_splat_map(),
+            "splat map must be deterministic"
+        );
+    }
+
+    #[test]
     fn detail_atlas_is_opt_in_embedded_and_round_trips() {
         let spec =
             TerrainSpec::parse("__terrain__?size=240&res=96&amp=2.4&seed=7&detail=2.4").unwrap();
@@ -786,6 +957,19 @@ mod tests {
         assert_ne!(normal_image.rgba, image.rgba);
         assert_eq!(material.normal_scale, -2.0, "terrain marker must stay");
         assert!(plain.materials[0].normal_texture.is_none());
+        // P3-R48: per-pixel splat weights ride the occlusion slot; terrain no
+        // longer uses that slot for AO, so it carries the world size instead.
+        let splat = material
+            .occlusion_texture
+            .as_ref()
+            .expect("detail terrain must embed a splat map");
+        assert!(splat.path.is_none());
+        let splat_image = splat.image.as_ref().expect("splat RGBA8 pixels");
+        assert_eq!(splat_image.width, SPLAT_MAP_RES);
+        assert_eq!(splat_image.height, SPLAT_MAP_RES);
+        assert_eq!(material.occlusion_strength, spec.size);
+        assert!(plain.materials[0].occlusion_texture.is_none());
+        assert_eq!(plain.materials[0].occlusion_strength, 0.0);
 
         // Rebuilding the same spec is deterministic (mesh cache key contract).
         let rebuilt = spec.build_mesh();
@@ -1076,5 +1260,45 @@ mod tests {
         );
         assert_eq!(mesh.materials.len(), 1);
         assert_eq!(mesh.materials[0].normal_scale, -2.0);
+    }
+
+    #[test]
+    fn chunk_builds_local_bounds_and_samples_global_height() {
+        let base = TerrainSpec::default();
+        let chunk = TerrainSpec {
+            chunk_origin: [60.0, -20.0],
+            chunk_size: 60.0,
+            resolution: 4,
+            ..TerrainSpec::default()
+        };
+        let mesh = chunk.build_mesh();
+        let primitive = &mesh.primitives[0];
+        assert!(primitive.vertices.iter().all(|v| v.position[0].abs() <= 30.0 + 1e-4));
+        assert!(primitive.vertices.iter().all(|v| v.position[2].abs() <= 30.0 + 1e-4));
+        let center = &primitive.vertices[2 * 5 + 2];
+        assert!((center.position[1] - base.height(60.0, -20.0)).abs() < 1e-4);
+        let path = chunk.mesh_path();
+        assert!(path.contains("&cx=60&cz=-20&cs=60"), "{path}");
+        let parsed = TerrainSpec::parse(&path).expect("chunk path parses");
+        assert_eq!(parsed.chunk_origin, [60.0, -20.0]);
+        assert_eq!(parsed.chunk_size, 60.0);
+    }
+
+    #[test]
+    fn chunk_skirt_adds_downward_ring_and_double_sided_material() {
+        let spec = TerrainSpec {
+            chunk_origin: [0.0, 0.0],
+            chunk_size: 60.0,
+            chunk_skirt: 2.0,
+            resolution: 4,
+            ..TerrainSpec::default()
+        };
+        let mesh = spec.build_mesh();
+        let primitive = &mesh.primitives[0];
+        assert_eq!(primitive.vertices.len(), 25 + 4 * 5);
+        assert_eq!(primitive.indices.len(), 4 * 4 * 6 + 4 * 4 * 6);
+        assert!(mesh.materials[0].double_sided);
+        let skirt = &primitive.vertices[25];
+        assert!((skirt.position[1] + 2.0 - primitive.vertices[0].position[1]).abs() < 1e-4);
     }
 }

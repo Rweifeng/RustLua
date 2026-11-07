@@ -65,6 +65,9 @@ fn parse_emitter(count: u32, options: Option<mlua::Table>) -> LuaResult<Particle
     if let Some(value) = number("gravity_z")? {
         emitter.gravity_z = value;
     }
+    if let Some(value) = number("buoyancy")? {
+        emitter.buoyancy = value;
+    }
     if let Some(value) = number("speed_z")? {
         emitter.speed_z = value;
     }
@@ -263,7 +266,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "set_wind_source",
         lua.create_function(
             move |_,
-                  (index, x, y, z, radius, radial, lift): (
+                  (index, x, y, z, radius, radial, lift, swirl): (
                 u32,
                 f32,
                 f32,
@@ -271,6 +274,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 f32,
                 f32,
                 f32,
+                Option<f32>,
             )| {
                 let source = WindSource {
                     x,
@@ -279,6 +283,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                     radius,
                     radial,
                     lift,
+                    swirl: swirl.unwrap_or(0.0),
                 };
                 match s
                     .lua_borrow_mut()?

@@ -167,8 +167,9 @@ function audio.play(name) end
 ---@param x number
 ---@param y number
 ---@param z number?
+---@param occlusion number?
 ---@return any
-function audio.play_at(name, x, y, z) end
+function audio.play_at(name, x, y, z, occlusion) end
 
 ---@param bus string
 ---@param name string
@@ -1111,8 +1112,9 @@ function particles.set_wind_profile(shear, gust, gust_hz) end
 ---@param radius number
 ---@param radial number
 ---@param lift number
+---@param swirl number?
 ---@return any
-function particles.set_wind_source(index, x, y, z, radius, radial, lift) end
+function particles.set_wind_source(index, x, y, z, radius, radial, lift, swirl) end
 
 --- 停止并按 key 删除一条 Lua 连续流。
 ---@param key string
@@ -1202,6 +1204,21 @@ function physics.set_velocity(...) end
 
 --- physics3d：运行期 API 面基线里的 9 个函数
 physics3d = {}
+
+--- 为实体添加一块静态地形高度场：heights 行主序、rows×cols；局部 XZ 由 sx/sz 铺开，
+--- 高度乘 sy。固定体，可被射线/动态刚体碰撞。
+---@param id integer
+---@param x number
+---@param y number
+---@param z number
+---@param rows integer
+---@param cols integer
+---@param sx number
+---@param sy number
+---@param sz number
+---@param heights table
+---@return any
+function physics3d.add_heightfield(id, x, y, z, rows, cols, sx, sy, sz, heights) end
 
 ---@param enabled boolean
 ---@return any
@@ -2093,3 +2110,68 @@ function world_text.attach(id, component) end
 ---@param id integer
 ---@return any
 function world_text.detach(id) end
+
+--- render锛氳繍琛屾湡 API 闈㈠熀绾块噷鐨?1 涓嚱鏁?render = {}
+
+---@param density number
+---@return any
+function render.set_fog(density) end
+
+---@param r number
+---@param g number
+---@param b number
+---@return any
+function render.set_fog_color(r, g, b) end
+
+---@param coverage number
+---@return any
+function render.set_cloud_coverage(coverage) end
+
+---@param speed number
+---@return any
+function render.set_cloud_speed(speed) end
+
+---@param base number
+---@return any
+function render.set_cloud_base(base) end
+
+---@param strength number
+---@return any
+function render.set_cloud_shadow_strength(strength) end
+
+---@param intensity number
+---@return any
+function render.set_flash(intensity) end
+
+---@param r number
+---@param g number
+---@param b number
+---@param turbidity number
+---@return any
+function render.set_water_tint(r, g, b, turbidity) end
+
+---@param level integer
+---@return any
+function render.set_quality(level) end
+
+---@param snow number
+---@param wet number
+---@return any
+function render.set_surface_cover(snow, wet) end
+
+---@param ev number
+---@return any
+function render.set_exposure(ev) end
+
+---@param x number
+---@param z number
+---@return any
+function render.set_ripple(x, z) end
+
+---@param vignette number
+---@param grain number
+---@return any
+function render.set_post_fx(vignette, grain) end
+
+---@return any
+function render.stats() end

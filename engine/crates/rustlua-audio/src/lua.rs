@@ -261,9 +261,19 @@ pub fn install(
     table.set(
         "play_at",
         lua.create_function(
-            move |_, (name, x, y, z): (String, f32, f32, Option<f32>)| {
+            move |_,
+                  (name, x, y, z, occlusion): (
+                String,
+                f32,
+                f32,
+                Option<f32>,
+                Option<f32>,
+            )| {
                 let emitter = [x, y, z.unwrap_or(0.0)];
-                match handle.borrow_mut()?.play_at(&name, emitter) {
+                match handle
+                    .borrow_mut()?
+                    .play_at_occluded(&name, emitter, occlusion.unwrap_or(0.0))
+                {
                     Ok(params) => Ok((true, params.gain, params.pan)),
                     Err(error) => {
                         tracing::warn!(target: "audio", name = %name, error = %error, "[audio] play_at failed");

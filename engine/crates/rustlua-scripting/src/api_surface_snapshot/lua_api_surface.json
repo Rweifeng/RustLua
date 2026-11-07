@@ -376,6 +376,7 @@
     },
     {
       "funcs": [
+        "add_heightfield",
         "debug_draw",
         "events",
         "get_ccd",
@@ -406,6 +407,25 @@
         "set"
       ],
       "name": "quad"
+    },
+    {
+      "funcs": [
+        "set_cloud_base",
+        "set_cloud_coverage",
+        "set_cloud_shadow_strength",
+        "set_cloud_speed",
+        "set_exposure",
+        "set_flash",
+        "set_fog",
+        "set_fog_color",
+        "set_post_fx",
+        "set_quality",
+        "set_ripple",
+        "set_surface_cover",
+        "set_water_tint",
+        "stats"
+      ],
+      "name": "render"
     },
     {
       "funcs": [

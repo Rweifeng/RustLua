@@ -10,6 +10,7 @@ publish = false
 thiserror.workspace = true
 rapier2d = "0.22"
 rapier3d = "0.22"
+nalgebra = "0.33"
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 # `physics_lua`：两张物理表的绑定下沉到物理域（P1 ⑤-9）。`lua-api` 是叶子契约层

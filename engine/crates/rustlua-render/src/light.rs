@@ -5,7 +5,7 @@ use rustlua_math::math3d::Vec3;
 
 /// 单帧参与着色的点光源上限。着色器里的数组长度与这个数必须一致
 /// （`mesh3d_pbr.wgsl` 的 `array<PointLight, 8>`）。
-pub const MAX_POINT_LIGHTS: usize = 8;
+pub const MAX_POINT_LIGHTS: usize = 16;
 
 /// 光源类型。`Light` 组件字符串里写作 `type=point`，缺省是平行光。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

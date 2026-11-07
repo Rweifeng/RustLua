@@ -618,7 +618,78 @@ impl RuntimeScene {
     /// 宿主据此开/关系统输入法：Windows 上输入法一旦接管，玩法按键会先进组合窗
     /// （中文输入法下按 W 不再前进），所以默认必须关着；只有字段真的在等字才开。
     #[must_use]
+    /// P3-R76：脚本 `render.set_fog` 的当前值；`None` = 用场景/渲染器默认雾。
+    pub fn render_fog_density(&self) -> Option<f32> {
+        self.script.render_fog_density()
+    }
+
+    /// 脚本 `render.set_fog_color` 的当前值（线性 RGB）。
+    pub fn render_fog_color(&self) -> Option<[f32; 3]> {
+        self.script.render_fog_color()
+    }
+
+    /// 脚本 `render.set_cloud_coverage` 的当前值（0..1）。
+    pub fn render_cloud_coverage(&self) -> Option<f32> {
+        self.script.render_cloud_coverage()
+    }
+
+    /// 脚本 `render.set_cloud_speed` 的当前值（0..4）。
+    pub fn render_cloud_speed(&self) -> Option<f32> {
+        self.script.render_cloud_speed()
+    }
+
+    /// 脚本 `render.set_cloud_base` 的当前值（世界 y，40..200）。
+    pub fn render_cloud_base(&self) -> Option<f32> {
+        self.script.render_cloud_base()
+    }
+
+    /// 脚本 `render.set_cloud_shadow_strength` 的当前值（0..0.6）。
+    pub fn render_cloud_shadow_strength(&self) -> Option<f32> {
+        self.script.render_cloud_shadow_strength()
+    }
+
+    /// 脚本 `render.set_flash` 的当前值（0..1）。
+    pub fn render_flash(&self) -> Option<f32> {
+        self.script.render_flash()
+    }
+
+    /// 脚本 `render.set_water_tint` 的当前值 rgb + 浑浊度。
+    pub fn render_water_tint(&self) -> Option<[f32; 4]> {
+        self.script.render_water_tint()
+    }
+
+    /// 脚本画质档（1=低，2=中，3=高）。
+    pub fn render_quality(&self) -> Option<u8> {
+        self.script.render_quality()
+    }
+
+    /// 脚本 `render.set_surface_cover` 的当前值 [积雪, 湿润]。
+    pub fn render_surface_cover(&self) -> Option<[f32; 2]> {
+        self.script.render_surface_cover()
+    }
+
+    /// 脚本 `render.set_exposure` 的当前曝光偏移（EV）。
+    pub fn render_exposure(&self) -> Option<f32> {
+        self.script.render_exposure()
+    }
+
+    /// P3-R135：取走脚本触发的水面涟漪点。
+    pub fn take_render_ripple(&mut self) -> Option<[f32; 2]> {
+        self.script.take_render_ripple()
+    }
+
+    /// P3-R140：脚本设置的暗角/颗粒。
+    pub fn render_post_fx(&self) -> Option<[f32; 2]> {
+        self.script.render_post_fx()
+    }
+
+    /// P3-R151：写入上一帧渲染统计，供 `render.stats()` 读取。
+    pub fn set_render_stats(&self, stats: [u64; 4]) {
+        self.script.set_render_stats(stats);
+    }
+
     pub fn text_capture_requested(&self) -> bool {
+
         self.input.text_capture()
     }
 
