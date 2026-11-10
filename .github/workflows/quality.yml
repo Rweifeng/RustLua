@@ -103,6 +103,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: node scripts/docgen/gen-lua-api-docs.js --check
 
+      # M81 批 3：2D 可插拔 API 面门（独立脚本，不进 verify.ps1 默认串行段——
+      # 2D/全量是两套 feature 缓存，交替切换会让串行段每个门都重编）。
+      - name: 2D API surface gate
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/verify/check-api-2d.ps1
+
       # 文档声明数字门：README/docs 摘要里人写的模块表/函数/组件数必须等于机器事实。
       # `gen-lua-api-docs.js --check` 只守文档桩清单，守不住摘要数字（历史上 README 的
       # 283 与快照的 309 并存过）。`--self-test` 用内存 fixture 反证它会红。

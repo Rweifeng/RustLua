@@ -170,6 +170,14 @@ fn test_emitter() -> ParticleEmitter {
         drag: 0.5,
         rotation: 0.25,
         rotation_speed: 1.0,
+        // 逐粒子颤动也走 CPU/GPU 对拍（两侧同一公式与同一相位来源）。
+        flutter: 1.5,
+        flutter_hz: 1.0,
+        curve: 0.8,
+        // 程序化 curl 噪声也走 CPU/GPU 对拍（三维无散场，两侧同一公式）。
+        curl: 1.25,
+        curl_scale: 0.35,
+        curl_hz: 0.5,
         ..ParticleEmitter::default()
     }
 }
@@ -337,6 +345,121 @@ fn gpu_particles_match_cpu_in_3d() {
             reference.position.x
         );
     }
+}
+
+/// P3-R234 硬门：网格体积风/温度浮力场在 GPU compute 与 CPU 粒子池**同式**。
+///
+/// 两条判据：
+/// ① 同场同步数后位置/速度逐分量差 < 1e-4（两边读同一份场、同一套三线性插值）；
+/// ② 场**确实进了 compute**：注入速度后 GPU 粒子的 x 速度必须被推起来——发射器零初速
+///    零重力，没有场时 x 速度恒为 0，②红了就说明网格没接上或被清零；温度浮力同理看 y。
+///
+/// 两份独立的 `WindGrid` 副本锁步推进（CPU 池推进自己那份，宿主推进另一份并上传），
+/// 初始完全相同 ⇒ 推进后逐位相同 ⇒ 两边读到的确实是同一份场。
+#[test]
+fn gpu_particles_match_cpu_in_3d_with_wind_grid() {
+    use rustlua_ecs::particle_wind_grid::WindGrid;
+    use rustlua_math::math3d::Vec3;
+
+    let Some((device, queue)) = headless() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut renderer =
+        Renderer::new_offscreen(device, queue, None, false, false).expect("offscreen renderer");
+    if !renderer.compute_enabled() {
+        return gpu_skipped("device reports no compute");
+    }
+    // 零初速、零重力、零阻力、零自带浮力：位移只可能来自网格场。
+    let emitter = ParticleEmitter {
+        count: 32,
+        speed: 0.0,
+        life: 10.0,
+        speed_z: 0.0,
+        spread_z: 0.0,
+        gravity: Vec2::new(0.0, 0.0),
+        gravity_z: 0.0,
+        buoyancy: 0.0,
+        drag: 0.0,
+        seed: Some(7),
+        ..ParticleEmitter::default()
+    };
+    let origin = [10.0, -5.0, 20.0];
+    renderer
+        .push_gpu_particle_burst_3d(GpuParticleConfig3D {
+            origin,
+            emitter,
+            capacity: emitter.count as u32,
+        })
+        .expect("push 3d gpu particles");
+    let mut cpu = ParticleSystem::new();
+    cpu.burst_with_3d(origin, &emitter);
+
+    // 场：温度整场均匀（浮力在采样点恒为 `buoyancy*2`），速度只注入中心一格
+    // （x 分量必须经三线性插值 ⇒ 插值权重错了这条门就红）。
+    let make_grid = || {
+        let mut grid = WindGrid::new([4, 4, 4], Vec3::new(9.0, -6.0, 19.0), 1.0).expect("grid");
+        grid.set_params(0.0, 0.0, 0.0, 2.0, 1).expect("grid params");
+        grid.add_velocity(1, 1, 1, Vec3::new(6.0, 0.0, 0.0))
+            .expect("inject");
+        for z in 0..4 {
+            for y in 0..4 {
+                for x in 0..4 {
+                    grid.set_temperature(x, y, z, 2.0).expect("temperature");
+                }
+            }
+        }
+        grid
+    };
+    let mut host_grid = make_grid();
+    cpu.set_wind_grid(make_grid());
+    renderer.set_gpu_particle_wind_grid(Some(&host_grid));
+
+    let dt = 1.0 / 60.0;
+    for _ in 0..30 {
+        // CPU 池：先推进自己那份场，再采样粒子。
+        cpu.step(dt);
+        // 宿主侧：推进同一份场并上传（post-step），GPU 采样的是同一份内容。
+        host_grid.step(dt);
+        renderer.set_gpu_particle_wind_grid(Some(&host_grid));
+        renderer.step_gpu_particles(dt).expect("gpu 3d step");
+    }
+
+    let after = renderer.read_gpu_particles().expect("read after 3d step");
+    for (index, (gpu, reference)) in after.iter().zip(cpu.particles()).enumerate() {
+        assert!(
+            (gpu.position_z - reference.position_z).abs() < 1e-4,
+            "particle {index} z {} vs {}",
+            gpu.position_z,
+            reference.position_z
+        );
+        assert!((gpu.velocity_z - reference.velocity_z).abs() < 1e-4);
+        assert!(
+            (gpu.position[0] - reference.position.x).abs() < 1e-4,
+            "particle {index} x {} vs {}",
+            gpu.position[0],
+            reference.position.x
+        );
+        assert!(
+            (gpu.position[1] - reference.position.y).abs() < 1e-4,
+            "particle {index} y {} vs {}",
+            gpu.position[1],
+            reference.position.y
+        );
+        assert!((gpu.velocity[0] - reference.velocity.x).abs() < 1e-4);
+        assert!((gpu.velocity[1] - reference.velocity.y).abs() < 1e-4);
+    }
+    // 场确实进了 compute：零初速零重力下，x 速度必须被速度场推起来。
+    assert!(
+        after[0].velocity[0] > 0.5,
+        "网格速度场没进 compute：x 速度 {} 仍是 0",
+        after[0].velocity[0]
+    );
+    // 温度浮力同样要进 compute：零浮力发射器下 y 速度恒为 0。
+    assert!(
+        after[0].velocity[1] > 0.5,
+        "温度浮力没进 compute：y 速度 {} 仍是 0",
+        after[0].velocity[1]
+    );
 }
 
 /// 参数口径：连续发射（`rate > 0`）显式拒绝，不静默忽略。

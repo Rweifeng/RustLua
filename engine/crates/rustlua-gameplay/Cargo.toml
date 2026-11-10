@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# M81：2D 基底 + 3D 可插包。`3d` 默认开；2D 发布 = --no-default-features。
+# 本 crate 只门控组合根里 nav 的登记（nav 是 3D 战场 XZ 平面的导航）。
+default = ["3d"]
+3d = []
+
 [dependencies]
 thiserror.workspace = true
 rustlua-ecs = { path = "../rustlua-ecs" }

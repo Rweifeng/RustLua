@@ -38,7 +38,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod user_config;
 
-pub use user_config::UserConfigStore;
+pub use user_config::{AndroidToolchainConfig, UserConfigStore};
 
 pub use shortcuts::{ShortcutBindings, ShortcutSpec};
 

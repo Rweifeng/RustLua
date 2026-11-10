@@ -77,6 +77,27 @@ pub struct MaterialAsset {
     /// normal-map slot (sampled linearly by the water branch). It is not
     /// authored by `.material` files or glTF.
     pub detail_scale: f32,
+    /// P3-R162：清漆层强度（KHR_materials_clearcoat 模型），0 = 无清漆。
+    pub clearcoat: f32,
+    /// 清漆层粗糙度（独立于基层 roughness），0..=1。
+    pub clearcoat_roughness: f32,
+    /// P3-R163：次表面散射近似强度（wrap 漫反射 + 背向透光），0 = 关闭。
+    /// glTF 侧走厂商扩展 `RUSTLUA_materials_sss`（见 `gltf_asset.rs`）。
+    pub sss_strength: f32,
+    /// SSS 包裹深度（0 = 硬终止线，1 = 半球包裹）兼背向透光厚度感。
+    pub sss_thickness: f32,
+    /// P3-R164：薄膜干涉虹彩强度（复眼/甲壳），0 = 关闭。
+    pub iridescence: f32,
+    /// 薄膜折射率（KHR_materials_iridescence 默认 1.3）。
+    pub iridescence_ior: f32,
+    /// 薄膜厚度区间（纳米）；无厚度贴图时取 max。
+    pub iridescence_thickness_min: f32,
+    pub iridescence_thickness_max: f32,
+    /// P3-R165：绒毛/布面光泽瓣颜色（KHR_materials_sheen 模型），全 0 = 关闭。
+    /// 近景的刚毛（setae）逆光绒边靠它，不是靠加几何。
+    pub sheen_color: [f32; 3],
+    /// 绒毛瓣粗糙度（控制 ASA 分布的宽窄），0..=1。
+    pub sheen_roughness: f32,
 }
 
 impl Default for MaterialAsset {
@@ -100,6 +121,16 @@ impl Default for MaterialAsset {
             double_sided: false,
             ibl_intensity: 1.0,
             detail_scale: 0.0,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            sss_strength: 0.0,
+            sss_thickness: 0.0,
+            iridescence: 0.0,
+            iridescence_ior: 1.3,
+            iridescence_thickness_min: 100.0,
+            iridescence_thickness_max: 400.0,
+            sheen_color: [0.0; 3],
+            sheen_roughness: 0.0,
         }
     }
 }
@@ -176,6 +207,22 @@ impl MaterialAsset {
                 }
                 "alpha_cutoff" => material.alpha_cutoff = number("alpha_cutoff")?,
                 "ibl_intensity" => material.ibl_intensity = number("ibl_intensity")?,
+                "clearcoat" => material.clearcoat = number("clearcoat")?,
+                "clearcoat_roughness" => {
+                    material.clearcoat_roughness = number("clearcoat_roughness")?;
+                }
+                "sss_strength" => material.sss_strength = number("sss_strength")?,
+                "sss_thickness" => material.sss_thickness = number("sss_thickness")?,
+                "iridescence" => material.iridescence = number("iridescence")?,
+                "iridescence_ior" => material.iridescence_ior = number("iridescence_ior")?,
+                "iridescence_thickness_min" => {
+                    material.iridescence_thickness_min = number("iridescence_thickness_min")?;
+                }
+                "iridescence_thickness_max" => {
+                    material.iridescence_thickness_max = number("iridescence_thickness_max")?;
+                }
+                "sheen_color" => material.sheen_color = parse_vec3(value, line_number, &path)?,
+                "sheen_roughness" => material.sheen_roughness = number("sheen_roughness")?,
                 "alpha_mode" => {
                     material.alpha_mode = MaterialAlphaMode::parse(value).ok_or_else(|| {
                         error(
@@ -247,6 +294,39 @@ impl MaterialAsset {
                 "`occlusion_strength`/`ibl_intensity` must be non-negative".to_owned(),
             ));
         }
+        for (field, value) in [
+            ("clearcoat", material.clearcoat),
+            ("clearcoat_roughness", material.clearcoat_roughness),
+            ("sss_strength", material.sss_strength),
+            ("sss_thickness", material.sss_thickness),
+            ("iridescence", material.iridescence),
+            ("sheen_roughness", material.sheen_roughness),
+        ] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(error(1, format!("`{field}` must be in 0..=1")));
+            }
+        }
+        if material
+            .sheen_color
+            .iter()
+            .any(|channel| !(0.0..=1.0).contains(channel))
+        {
+            return Err(error(
+                1,
+                "`sheen_color` channels must be in 0..=1".to_owned(),
+            ));
+        }
+        if material.iridescence_ior < 1.0 {
+            return Err(error(1, "`iridescence_ior` must be >= 1".to_owned()));
+        }
+        if material.iridescence_thickness_min < 0.0
+            || material.iridescence_thickness_max < material.iridescence_thickness_min
+        {
+            return Err(error(
+                1,
+                "`iridescence_thickness_min`/`max` must satisfy 0 <= min <= max".to_owned(),
+            ));
+        }
         Ok(material)
     }
 
@@ -288,6 +368,28 @@ impl MaterialAsset {
         out.push_str(&format!("alpha_cutoff={}\n", self.alpha_cutoff));
         out.push_str(&format!("double_sided={}\n", self.double_sided));
         out.push_str(&format!("ibl_intensity={}\n", self.ibl_intensity));
+        out.push_str(&format!("clearcoat={}\n", self.clearcoat));
+        out.push_str(&format!(
+            "clearcoat_roughness={}\n",
+            self.clearcoat_roughness
+        ));
+        out.push_str(&format!("sss_strength={}\n", self.sss_strength));
+        out.push_str(&format!("sss_thickness={}\n", self.sss_thickness));
+        out.push_str(&format!("iridescence={}\n", self.iridescence));
+        out.push_str(&format!("iridescence_ior={}\n", self.iridescence_ior));
+        out.push_str(&format!(
+            "iridescence_thickness_min={}\n",
+            self.iridescence_thickness_min
+        ));
+        out.push_str(&format!(
+            "iridescence_thickness_max={}\n",
+            self.iridescence_thickness_max
+        ));
+        out.push_str(&format!(
+            "sheen_color={},{},{}\n",
+            self.sheen_color[0], self.sheen_color[1], self.sheen_color[2]
+        ));
+        out.push_str(&format!("sheen_roughness={}\n", self.sheen_roughness));
         out
     }
 
@@ -406,6 +508,16 @@ impl From<&crate::gltf_asset::GltfMaterial> for MaterialAsset {
             double_sided: material.double_sided,
             ibl_intensity: 1.0,
             detail_scale: 0.0,
+            clearcoat: material.clearcoat_factor,
+            clearcoat_roughness: material.clearcoat_roughness_factor,
+            sss_strength: material.sss_strength,
+            sss_thickness: material.sss_thickness,
+            iridescence: material.iridescence_factor,
+            iridescence_ior: material.iridescence_ior,
+            iridescence_thickness_min: material.iridescence_thickness_min,
+            iridescence_thickness_max: material.iridescence_thickness_max,
+            sheen_color: material.sheen_color,
+            sheen_roughness: material.sheen_roughness_factor,
         }
     }
 }
@@ -433,6 +545,16 @@ alpha_mode=mask
 alpha_cutoff=0.4
 double_sided=true
 ibl_intensity=0.75
+clearcoat=0.35
+clearcoat_roughness=0.08
+sss_strength=0.05
+sss_thickness=0.6
+iridescence=0.4
+iridescence_ior=1.5
+iridescence_thickness_min=120
+iridescence_thickness_max=520
+sheen_color=0.55,0.5,0.45
+sheen_roughness=0.7
 ";
 
     #[test]
@@ -451,6 +573,16 @@ ibl_intensity=0.75
         assert_eq!(material.alpha_cutoff, 0.4);
         assert!(material.double_sided);
         assert_eq!(material.ibl_intensity, 0.75);
+        assert_eq!(material.clearcoat, 0.35);
+        assert_eq!(material.clearcoat_roughness, 0.08);
+        assert_eq!(material.sss_strength, 0.05);
+        assert_eq!(material.sss_thickness, 0.6);
+        assert_eq!(material.iridescence, 0.4);
+        assert_eq!(material.iridescence_ior, 1.5);
+        assert_eq!(material.iridescence_thickness_min, 120.0);
+        assert_eq!(material.iridescence_thickness_max, 520.0);
+        assert_eq!(material.sheen_color, [0.55, 0.5, 0.45]);
+        assert_eq!(material.sheen_roughness, 0.7);
         assert_eq!(
             material.texture_paths(),
             vec![
@@ -479,6 +611,15 @@ ibl_intensity=0.75
         assert_eq!(material.alpha_mode, MaterialAlphaMode::Opaque);
         assert_eq!(material.alpha_cutoff, 0.5);
         assert!(material.texture_paths().is_empty());
+        // 三个新瓣的"未写出 = 关闭"默认值（iridescence_ior/thickness 取 KHR 默认）
+        assert_eq!(material.clearcoat, 0.0);
+        assert_eq!(material.clearcoat_roughness, 0.0);
+        assert_eq!(material.sss_strength, 0.0);
+        assert_eq!(material.sss_thickness, 0.0);
+        assert_eq!(material.iridescence, 0.0);
+        assert_eq!(material.iridescence_ior, 1.3);
+        assert_eq!(material.iridescence_thickness_min, 100.0);
+        assert_eq!(material.iridescence_thickness_max, 400.0);
     }
 
     #[test]
@@ -513,6 +654,47 @@ ibl_intensity=0.75
                 "invalid texture path",
             ),
             ("version=1\nversion=1\n", "duplicate `version`"),
+            ("version=1\nclearcoat=1.2\n", "`clearcoat` must be in 0..=1"),
+            (
+                "version=1\nclearcoat_roughness=-0.1\n",
+                "`clearcoat_roughness` must be in 0..=1",
+            ),
+            (
+                "version=1\nsss_strength=2\n",
+                "`sss_strength` must be in 0..=1",
+            ),
+            (
+                "version=1\nsss_thickness=1.5\n",
+                "`sss_thickness` must be in 0..=1",
+            ),
+            (
+                "version=1\niridescence=3\n",
+                "`iridescence` must be in 0..=1",
+            ),
+            (
+                "version=1\niridescence_ior=0.9\n",
+                "`iridescence_ior` must be >= 1",
+            ),
+            (
+                "version=1\niridescence_thickness_min=-1\n",
+                "`iridescence_thickness_min`/`max` must satisfy 0 <= min <= max",
+            ),
+            (
+                "version=1\niridescence_thickness_min=500\niridescence_thickness_max=400\n",
+                "`iridescence_thickness_min`/`max` must satisfy 0 <= min <= max",
+            ),
+            (
+                "version=1\nsheen_roughness=1.5\n",
+                "`sheen_roughness` must be in 0..=1",
+            ),
+            (
+                "version=1\nsheen_color=1.5,0,0\n",
+                "`sheen_color` channels must be in 0..=1",
+            ),
+            (
+                "version=1\nsheen_color=0.5,-0.1,0\n",
+                "`sheen_color` channels must be in 0..=1",
+            ),
         ];
         for (text, expected) in cases {
             let error = MaterialAsset::from_text("assets/bad.material", text)
@@ -555,6 +737,16 @@ ibl_intensity=0.75
             alpha_mode: GltfAlphaMode::Blend,
             alpha_cutoff: 0.3,
             double_sided: true,
+            clearcoat_factor: 0.5,
+            clearcoat_roughness_factor: 0.12,
+            iridescence_factor: 0.7,
+            iridescence_ior: 1.6,
+            iridescence_thickness_min: 80.0,
+            iridescence_thickness_max: 640.0,
+            sss_strength: 0.25,
+            sss_thickness: 0.8,
+            sheen_color: [0.6, 0.55, 0.5],
+            sheen_roughness_factor: 0.45,
         };
         let material = MaterialAsset::from(&source);
         assert_eq!(material.base_color, source.base_color_factor);
@@ -568,6 +760,17 @@ ibl_intensity=0.75
         assert_eq!(material.alpha_cutoff, 0.3);
         assert!(material.double_sided);
         assert_eq!(material.ibl_intensity, 1.0);
+        assert_eq!(material.clearcoat, 0.5);
+        assert_eq!(material.clearcoat_roughness, 0.12);
+        assert_eq!(material.iridescence, 0.7);
+        assert_eq!(material.iridescence_ior, 1.6);
+        assert_eq!(material.iridescence_thickness_min, 80.0);
+        assert_eq!(material.iridescence_thickness_max, 640.0);
+        // SSS 走厂商扩展 RUSTLUA_materials_sss（不借 diffuse_transmission 冒充）
+        assert_eq!(material.sss_strength, 0.25);
+        assert_eq!(material.sss_thickness, 0.8);
+        assert_eq!(material.sheen_color, [0.6, 0.55, 0.5]);
+        assert_eq!(material.sheen_roughness, 0.45);
         for texture in [
             &material.base_color_texture,
             &material.metallic_roughness_texture,

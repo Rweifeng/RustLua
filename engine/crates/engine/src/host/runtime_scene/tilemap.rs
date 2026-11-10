@@ -12,6 +12,8 @@ use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::GlobalTransform;
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_math::geom3d::Frustum;
+use rustlua_math::math3d::Vec3;
 use rustlua_render::frame::{OverlayVertex, WorldSpriteVertex};
 use rustlua_render::sprite_batch::{
     OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen,
@@ -251,8 +253,8 @@ pub(super) fn append_tilemap_layer<V: OverlayVertexSink>(
 
 /// 世界坐标版瓦片层（WP6 世界 Sprite 深度通道用）：与 [`append_tilemap_layer`] 共用同一份
 /// 几何（中心偏移 + 旋转缩放后的四角 + 瓦片 UV），区别只有两点：
-/// ① 顶点写**世界坐标** `(x, y, 0)`，投影交给顶点着色器的 `Camera2D::view_projection`；
-/// ② 剔除用相机可见域的**世界 AABB**（CPU 侧不需要再算屏幕坐标）。
+/// ① 顶点写**世界坐标** `(x, y, 0)`，投影交给当前世界视图；
+/// ② 纯 2D 用世界 AABB，混合 3D 用主视图视锥按瓦片剔除。
 ///
 /// `z` 固定 0：瓦片层就是世界平面。将来若要"压在瓦片下面/上面"的层，把 `z` 参数化即可。
 pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
@@ -261,6 +263,7 @@ pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
     texture_id: u32,
     layer: &CachedTilemapLayer,
     cull_bounds: Option<CameraBounds>,
+    frustum: Option<Frustum>,
 ) {
     if layer.total == 0 {
         return;
@@ -285,6 +288,7 @@ pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
     });
     // 保守剔除半径：外接圆半径（与旋转无关），因此旋转/负缩放都不会误剔。
     let radius = (half.x * half.x + half.y * half.y).sqrt() + 1.0;
+    let frustum_planes = frustum.map(|frustum| frustum.planes());
     // WP4 ④：块行主序 + 块内行主序 == 原整层行主序 → 顶点顺序逐字节不变。
     for chunk in &layer.chunks {
         for tile in &chunk.sprites {
@@ -298,6 +302,24 @@ pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
                     || center.y + radius < bounds.min.y
                     || center.y - radius > bounds.max.y)
             {
+                continue;
+            }
+            let transform_is_finite = layer.transform.position.x.is_finite()
+                && layer.transform.position.y.is_finite()
+                && layer.transform.rotation.is_finite()
+                && layer.transform.scale.x.is_finite()
+                && layer.transform.scale.y.is_finite()
+                && center.x.is_finite()
+                && center.y.is_finite()
+                && radius.is_finite();
+            if frustum_planes.as_ref().is_some_and(|planes| {
+                transform_is_finite
+                    && !Frustum::contains_sphere_with_planes(
+                        planes,
+                        Vec3::new(center.x, center.y, 0.0),
+                        radius,
+                    )
+            }) {
                 continue;
             }
             let positions = offsets.map(|offset| [center.x + offset.x, center.y + offset.y]);
@@ -474,10 +496,18 @@ impl RuntimeScene {
         // WP6：世界 Sprite 深度通道打开时，瓦片层也产出**世界坐标**顶点（与精灵一致），
         // 因此它同样参与深度测试——此前只有精灵有世界顶点，瓦片会被挡在通道外面。
         let world_pass = self.world_sprite_depth;
-        // 与世界 Sprite 同一条规矩：世界通道的可见域由宿主声明的世界视图决定，有 3D 内容时
-        // 一律不按 2D 相机裁剪（宁可多画，绝不误丢）。
-        let cull_bounds = if cull && world_pass && !self.world_view_has_3d_content() {
+        // 纯 2D 世界按正交视口裁剪；混合 3D 世界改用当前 3D 主视图的视锥。
+        let world_view_is_3d = world_pass && self.world_view_has_3d_content();
+        let cull_bounds = if cull && world_pass && !world_view_is_3d {
             self.camera.visible_world_bounds(viewport).ok()
+        } else {
+            None
+        };
+        let frustum = if cull && world_view_is_3d {
+            self.frame_view_3d
+                .as_ref()
+                .and_then(|frame| frame.view.baked())
+                .map(|view| view.frustum())
         } else {
             None
         };
@@ -560,6 +590,7 @@ impl RuntimeScene {
                             texture,
                             &layer,
                             cull_bounds,
+                            frustum,
                         );
                     } else {
                         vertices.reserve(layer.total * 6);

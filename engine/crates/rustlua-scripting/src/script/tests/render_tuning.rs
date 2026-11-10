@@ -44,6 +44,25 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
          local fok, freason = render.set_post_fx(0.3, 0.2)\n\
          assert(fok, freason)\n\
          assert(render.set_post_fx(1.2, 0.2) == false, 'post fx range')\n\
+         assert(render.set_clip_cap(129) == false, 'clip cap range')\n\
+         assert(render.set_clip_cap(0/0) == false, 'clip cap finite')\n\
+         assert(render.set_clip_cap(-1) == false, 'clip cap negative')\n\
+         local zok, zreason = render.set_clip_cap(0)\n\
+         assert(zok, zreason)\n\
+         local kop, kreason = render.set_clip_cap(2.5)\n\
+         assert(kop, kreason)\n\
+         assert(render.set_clip_cap_both_sides(1) == false, 'both sides must be boolean')\n\
+         assert(render.set_clip_cap_both_sides(nil) == false, 'both sides nil rejected')\n\
+         assert(render.set_clip_cap_both_sides('on') == false, 'both sides string rejected')\n\
+         local ook, oreason = render.set_clip_cap_both_sides(false)\n\
+         assert(ook, oreason)\n\
+         assert(render.set_water_refract_steps(33) == false, 'refract steps range')\n\
+         assert(render.set_water_refract_steps(-1) == false, 'refract steps negative')\n\
+         assert(render.set_water_refract_steps(16.5) == false, 'refract steps integer')\n\
+         assert(render.set_water_refract_steps(0/0) == false, 'refract steps finite')\n\
+         assert(render.set_water_refract_steps('16') == false, 'refract steps string rejected')\n\
+         local rsok, rsreason = render.set_water_refract_steps(16)\n\
+         assert(rsok, rsreason)\n\
          local stats = render.stats()\n\
          assert(stats.draw_calls == 0 and stats.vertices == 0 and stats.triangles == 0, 'stats defaults')\n\
          function update() end",
@@ -62,5 +81,10 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
     assert_eq!(runtime.render_exposure(), Some(-0.3));
     assert_eq!(runtime.take_render_ripple(), Some([1.5, -2.0]));
     assert_eq!(runtime.render_post_fx(), Some([0.3, 0.2]));
+    assert_eq!(runtime.render_clip_cap(), Some(2.5));
+    // 显式关也必须留痕（Some(false)）：宿主靠它把启动期的 `--clip-cap-both-sides` 覆盖掉，
+    // None 才是「脚本没碰过、保持宿主档」。
+    assert_eq!(runtime.render_clip_cap_both_sides(), Some(false));
+    assert_eq!(runtime.render_water_refract_steps(), Some(16));
     let _ = fs::remove_file(path);
 }

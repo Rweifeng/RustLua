@@ -15,8 +15,8 @@ use rustlua_render::render_plan::RenderPass;
 
 use super::PassGpuTiming;
 
-/// 最多能包住的通道对数。`RenderPass::ALL` 有 11 条，其中 ScreenUI 与 overlay 共用一对，
-/// 因此实际最多 10 对；留一条余量给被放弃的通道（例如粒子 pass 最终没画）。
+/// 最多能包住的通道对数。`RenderPass::ALL` 有 12 条，其中 ScreenUI 与 overlay 共用一对，
+/// 因此实际最多 11 对；留一条余量给被放弃的通道（例如粒子 pass 最终没画）。
 pub(super) const MAX_PASS_PAIRS: usize = RenderPass::ALL.len();
 /// 查询总数：帧开始 + 每个通道的起止 + 一条被放弃通道的空洞 + 帧结束。
 ///

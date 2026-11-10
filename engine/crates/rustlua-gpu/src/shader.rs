@@ -322,4 +322,62 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{features:?} WGSL 解析失败：{error}"));
         }
     }
+
+    /// P3-R166：Tonemap 的剖面封口分支（裁剪平面求交 + 高度图解码）也必须先在
+    /// CPU 侧通过 naga 的完整校验，不能等到打开 HDR 那一帧才在 `create_shader_module` 崩。
+    #[test]
+    fn tonemap_validates_with_naga() {
+        crate::shader_reload::validate_module(TONEMAP.path, TONEMAP.source)
+            .unwrap_or_else(|error| panic!("tonemap WGSL 校验失败：{error}"));
+    }
+
+    /// P3-R166：按 WGSL `struct Params` 的字段顺序重算 uniform 偏移，和 Rust 侧的
+    /// `TONEMAP_UNIFORM_FLOATS` / 绑定布局字节数钉死。少写/错位一个槽不会编译失败，
+    /// 剖面封口只会静默读到零，所以这里把源码当唯一事实源逐项累加。
+    #[test]
+    fn tonemap_uniform_layout_matches_the_wgsl_struct() {
+        const MARKER: &str = "struct Params {";
+        let source = TONEMAP.source;
+        let start = source
+            .find(MARKER)
+            .unwrap_or_else(|| panic!("{} 缺少 `{MARKER}`", TONEMAP.path));
+        let body = &source[start + MARKER.len()..];
+        let end = body.find('}').expect("struct Params 没有闭合");
+        let mut offset = 0usize;
+        let mut fields = 0usize;
+        for line in body[..end].lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let (_, ty) = line.split_once(':').unwrap_or_else(|| {
+                panic!("`struct Params` 里有无法解析的字段行：{line}");
+            });
+            let ty = ty.trim().trim_end_matches(',');
+            let (align, size) = match ty {
+                "f32" => (4, 4),
+                "vec4<f32>" => (16, 16),
+                "mat4x4<f32>" => (16, 64),
+                other => panic!("`struct Params` 出现未登记的类型：{other}"),
+            };
+            offset = offset.div_ceil(align) * align;
+            offset += size;
+            fields += 1;
+        }
+        let struct_bytes = offset.div_ceil(16) * 16;
+        assert!(
+            fields > 0,
+            "没解析出任何字段：WGSL 结构体写法变了，门必须跟着改"
+        );
+        assert_eq!(
+            struct_bytes,
+            crate::renderer::TONEMAP_UNIFORM_BYTES as usize,
+            "WGSL `struct Params` 的 uniform 字节数与 Rust 常量不一致"
+        );
+        assert_eq!(
+            crate::renderer::TONEMAP_UNIFORM_FLOATS * 4,
+            struct_bytes,
+            "`TONEMAP_UNIFORM_FLOATS` 必须等于 WGSL 结构的字节数"
+        );
+    }
 }

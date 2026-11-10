@@ -4,12 +4,129 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub const API_PACK_VERSION: u32 = 1;
+
 /// 一个 Lua 全局模块的装配函数（领域 crate 提供，组合根登记）。
 ///
 /// 为什么是闭包而不是 trait：安装器要**捕获句柄**（`Handle<T>` 的克隆），闭包天然能做，
 /// 而 trait 对象还得额外定义一个带泛型参数的实现类型。这里不需要多态——注册表只负责
 /// 按名字收集、按顺序调用。
 pub type Installer = Box<dyn Fn(&Lua) -> LuaResult<()>>;
+
+/// API 包声明所属维度。它用于组合、诊断和依赖审查，不会代替 Cargo feature 做代码裁剪。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApiDimension {
+    Shared,
+    TwoD,
+    ThreeD,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ApiSurface {
+    /// 安全基线：共享 + 2D API，不允许装入 3D 扩展包。
+    #[default]
+    TwoD,
+    /// 3D API 面也包含共享和 2D 基础 API。
+    ThreeD,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApiPackInfo {
+    pub id: String,
+    pub version: String,
+    pub api_version: u32,
+    pub dimension: ApiDimension,
+    pub dependencies: Vec<String>,
+    pub modules: Vec<&'static str>,
+}
+
+/// 一个可静态链接的 Lua API 扩展包。
+///
+/// 包只提供模块安装器，不持有 VM 或全局 ECS 状态；安装器通过闭包显式捕获宿主授权的句柄。
+pub struct ApiPack {
+    id: String,
+    version: String,
+    api_version: u32,
+    dimension: ApiDimension,
+    dependencies: Vec<String>,
+    modules: Vec<(&'static str, Installer)>,
+}
+
+impl ApiPack {
+    #[must_use]
+    pub fn new(id: impl Into<String>, version: impl Into<String>, dimension: ApiDimension) -> Self {
+        Self {
+            id: id.into(),
+            version: version.into(),
+            api_version: API_PACK_VERSION,
+            dimension,
+            dependencies: Vec::new(),
+            modules: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_api_version(mut self, api_version: u32) -> Self {
+        self.api_version = api_version;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dependency(mut self, id: impl Into<String>) -> Self {
+        self.dependencies.push(id.into());
+        self
+    }
+
+    pub fn module(
+        &mut self,
+        name: &'static str,
+        install: impl Fn(&Lua) -> LuaResult<()> + 'static,
+    ) {
+        self.modules.push((name, Box::new(install)));
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    #[must_use]
+    pub const fn api_version(&self) -> u32 {
+        self.api_version
+    }
+
+    #[must_use]
+    pub const fn dimension(&self) -> ApiDimension {
+        self.dimension
+    }
+
+    #[must_use]
+    pub fn dependencies(&self) -> &[String] {
+        &self.dependencies
+    }
+
+    #[must_use]
+    pub fn module_names(&self) -> Vec<&'static str> {
+        self.modules.iter().map(|(name, _)| *name).collect()
+    }
+
+    #[must_use]
+    pub fn info(&self) -> ApiPackInfo {
+        ApiPackInfo {
+            id: self.id.clone(),
+            version: self.version.clone(),
+            api_version: self.api_version,
+            dimension: self.dimension,
+            dependencies: self.dependencies.clone(),
+            modules: self.module_names(),
+        }
+    }
+}
 
 /// 绑定集合的注册表：**组合根（engine）填，运行时（scripting）消费**。
 ///
@@ -21,6 +138,8 @@ pub type Installer = Box<dyn Fn(&Lua) -> LuaResult<()>>;
 #[derive(Default)]
 pub struct Registry {
     entries: Vec<(&'static str, Installer)>,
+    packs: Vec<ApiPack>,
+    surface: ApiSurface,
     /// 宿主工程根目录（`settings.toml` 所在目录）。
     ///
     /// 为什么放在这里：设置持久化类绑定（`audio.load_settings` 等）需要它，而它在**运行时
@@ -43,14 +162,38 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// 创建 2D 基础 API 注册表。3D 宿主应显式选择 [`ApiSurface::ThreeD`]。
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
+    pub fn for_surface(surface: ApiSurface) -> Self {
+        Self {
+            surface,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub const fn surface(&self) -> ApiSurface {
+        self.surface
+    }
+
     /// 登记一个模块的安装器。顺序即装配顺序（模块之间互不读取，顺序不影响行为）。
     pub fn add(&mut self, name: &'static str, install: impl Fn(&Lua) -> LuaResult<()> + 'static) {
         self.entries.push((name, Box::new(install)));
+    }
+
+    /// 登记一个独立 API 包。依赖在 VM 装配前拓扑排序；无效清单会在执行任何安装器前失败。
+    pub fn add_pack(&mut self, pack: ApiPack) {
+        self.packs.push(pack);
+    }
+
+    #[must_use]
+    pub fn packs(&self) -> Vec<ApiPackInfo> {
+        self.packs.iter().map(ApiPack::info).collect()
     }
 
     /// 写入宿主工程根。运行时的 `set_project_root` / `set_settings_root` 转发到这里，
@@ -112,32 +255,144 @@ impl Registry {
     /// 已登记的模块名（宿主自检、诊断输出用）。
     #[must_use]
     pub fn names(&self) -> Vec<&'static str> {
-        self.entries.iter().map(|(name, _)| *name).collect()
+        self.entries
+            .iter()
+            .map(|(name, _)| *name)
+            .chain(
+                self.packs
+                    .iter()
+                    .flat_map(|pack| pack.modules.iter().map(|(name, _)| *name)),
+            )
+            .collect()
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
+            + self
+                .packs
+                .iter()
+                .map(|pack| pack.modules.len())
+                .sum::<usize>()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.packs.iter().all(|pack| pack.modules.is_empty())
     }
 
-    /// 按登记顺序装配全部模块。重名在**装配时**报错（含两个名字，便于定位是谁重复登记）。
+    /// 先校验全部清单，再按 legacy 模块和依赖拓扑顺序装配 API 包。
     pub fn install(&self, lua: &Lua) -> LuaResult<()> {
-        let mut seen: Vec<&'static str> = Vec::with_capacity(self.entries.len());
-        for (name, install) in &self.entries {
-            if seen.contains(name) {
+        let order = self.validate()?;
+        for (_, install) in &self.entries {
+            install(lua)?;
+        }
+        for index in order {
+            for (_, install) in &self.packs[index].modules {
+                install(lua)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> LuaResult<Vec<usize>> {
+        let mut seen_modules = Vec::with_capacity(self.len());
+        for (name, _) in &self.entries {
+            if seen_modules.contains(name) {
                 return Err(crate::api_error(format!(
                     "Lua 模块重复登记：{name}（同一张全局表被装两遍会静默覆盖）"
                 )));
             }
-            seen.push(name);
-            install(lua)?;
+            seen_modules.push(*name);
         }
-        Ok(())
+
+        let mut pack_ids = Vec::with_capacity(self.packs.len());
+        for pack in &self.packs {
+            if pack.id.trim().is_empty() || pack.version.trim().is_empty() {
+                return Err(crate::api_error(
+                    "Lua API 包的 id 和 version 不能为空".to_owned(),
+                ));
+            }
+            if pack.api_version != API_PACK_VERSION {
+                return Err(crate::api_error(format!(
+                    "Lua API 包 {} 的契约版本不匹配：期望 {}，实际 {}",
+                    pack.id, API_PACK_VERSION, pack.api_version
+                )));
+            }
+            if pack.dimension == ApiDimension::ThreeD && self.surface != ApiSurface::ThreeD {
+                return Err(crate::api_error(format!(
+                    "当前 Lua API 面为 2D，拒绝安装 3D 包：{}",
+                    pack.id
+                )));
+            }
+            if pack.modules.is_empty() {
+                return Err(crate::api_error(format!(
+                    "Lua API 包 {} 没有登记任何模块",
+                    pack.id
+                )));
+            }
+            if pack_ids.contains(&pack.id.as_str()) {
+                return Err(crate::api_error(format!(
+                    "Lua API 包 id 重复登记：{}",
+                    pack.id
+                )));
+            }
+            pack_ids.push(pack.id.as_str());
+            for (name, _) in &pack.modules {
+                if name.trim().is_empty() || seen_modules.contains(name) {
+                    return Err(crate::api_error(format!(
+                        "Lua 模块重复或为空：{name}（API 包 {}）",
+                        pack.id
+                    )));
+                }
+                seen_modules.push(*name);
+            }
+        }
+
+        let mut indegree = vec![0usize; self.packs.len()];
+        for (index, pack) in self.packs.iter().enumerate() {
+            let mut seen_dependencies: Vec<&str> = Vec::with_capacity(pack.dependencies.len());
+            for dependency in &pack.dependencies {
+                if dependency == &pack.id || seen_dependencies.contains(&dependency.as_str()) {
+                    return Err(crate::api_error(format!(
+                        "Lua API 包 {} 的依赖无效：{}",
+                        pack.id, dependency
+                    )));
+                }
+                if !pack_ids.contains(&dependency.as_str()) {
+                    return Err(crate::api_error(format!(
+                        "Lua API 包 {} 依赖未登记的包：{}",
+                        pack.id, dependency
+                    )));
+                }
+                seen_dependencies.push(dependency.as_str());
+                indegree[index] += 1;
+            }
+        }
+
+        let mut order = Vec::with_capacity(self.packs.len());
+        let mut emitted = vec![false; self.packs.len()];
+        while order.len() < self.packs.len() {
+            let Some(index) =
+                (0..self.packs.len()).find(|&index| !emitted[index] && indegree[index] == 0)
+            else {
+                return Err(crate::api_error("Lua API 包依赖存在循环".to_owned()));
+            };
+            emitted[index] = true;
+            order.push(index);
+            let completed_id = &self.packs[index].id;
+            for (dependent_index, dependent) in self.packs.iter().enumerate() {
+                if !emitted[dependent_index]
+                    && dependent
+                        .dependencies
+                        .iter()
+                        .any(|dependency| dependency == completed_id)
+                {
+                    indegree[dependent_index] -= 1;
+                }
+            }
+        }
+        Ok(order)
     }
 }
 
@@ -146,6 +401,131 @@ impl std::fmt::Debug for Registry {
         formatter
             .debug_struct("Registry")
             .field("names", &self.names())
+            .field("packs", &self.packs())
+            .field("surface", &self.surface)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn api_packs_install_in_dependency_order() {
+        let installed = Rc::new(RefCell::new(Vec::new()));
+        let mut dependent =
+            ApiPack::new("dependent", "1.0", ApiDimension::ThreeD).with_dependency("base");
+        {
+            let installed = Rc::clone(&installed);
+            dependent.module("dependent_api", move |_| {
+                installed.borrow_mut().push("dependent");
+                Ok(())
+            });
+        }
+        let mut base = ApiPack::new("base", "1.0", ApiDimension::Shared);
+        {
+            let installed = Rc::clone(&installed);
+            base.module("base_api", move |_| {
+                installed.borrow_mut().push("base");
+                Ok(())
+            });
+        }
+
+        let mut registry = Registry::for_surface(ApiSurface::ThreeD);
+        registry.add_pack(dependent);
+        registry.add_pack(base);
+        registry.install(&Lua::new()).expect("依赖应可解析");
+
+        assert_eq!(*installed.borrow(), ["base", "dependent"]);
+        assert_eq!(registry.names(), ["dependent_api", "base_api"]);
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn invalid_pack_graph_fails_before_running_installers() {
+        let installed = Rc::new(RefCell::new(false));
+        let mut pack = ApiPack::new("missing-dependency", "1.0", ApiDimension::TwoD)
+            .with_dependency("not-registered");
+        {
+            let installed = Rc::clone(&installed);
+            pack.module("should_not_install", move |_| {
+                *installed.borrow_mut() = true;
+                Ok(())
+            });
+        }
+
+        let mut registry = Registry::new();
+        registry.add_pack(pack);
+        let error = registry.install(&Lua::new()).expect_err("缺失依赖必须报错");
+        assert!(error.to_string().contains("未登记的包"));
+        assert!(!*installed.borrow());
+    }
+
+    #[test]
+    fn duplicate_module_names_across_packs_are_rejected_before_install() {
+        let mut first = ApiPack::new("first", "1.0", ApiDimension::Shared);
+        first.module("duplicate", |_| Ok(()));
+        let mut second = ApiPack::new("second", "1.0", ApiDimension::ThreeD);
+        second.module("duplicate", |_| Ok(()));
+
+        let mut registry = Registry::for_surface(ApiSurface::ThreeD);
+        registry.add_pack(first);
+        registry.add_pack(second);
+        let error = registry
+            .install(&Lua::new())
+            .expect_err("模块名冲突必须报错");
+        assert!(error.to_string().contains("重复或为空"));
+    }
+
+    #[test]
+    fn cyclic_pack_dependencies_are_rejected_before_install() {
+        let mut first =
+            ApiPack::new("first", "1.0", ApiDimension::Shared).with_dependency("second");
+        first.module("first_api", |_| Ok(()));
+        let mut second =
+            ApiPack::new("second", "1.0", ApiDimension::ThreeD).with_dependency("first");
+        second.module("second_api", |_| Ok(()));
+
+        let mut registry = Registry::for_surface(ApiSurface::ThreeD);
+        registry.add_pack(first);
+        registry.add_pack(second);
+        let error = registry.install(&Lua::new()).expect_err("依赖循环必须报错");
+        assert!(error.to_string().contains("依赖存在循环"));
+    }
+
+    #[test]
+    fn unsupported_pack_api_version_is_rejected() {
+        let mut pack = ApiPack::new("future", "1.0", ApiDimension::TwoD).with_api_version(2);
+        pack.module("future_api", |_| Ok(()));
+
+        let mut registry = Registry::new();
+        registry.add_pack(pack);
+        let error = registry
+            .install(&Lua::new())
+            .expect_err("不支持的契约版本必须报错");
+        assert!(error.to_string().contains("契约版本不匹配"));
+    }
+
+    #[test]
+    fn two_dimensional_surface_rejects_three_dimensional_packs_before_install() {
+        let installed = Rc::new(RefCell::new(false));
+        let mut pack = ApiPack::new("rendering-3d", "1.0", ApiDimension::ThreeD);
+        {
+            let installed = Rc::clone(&installed);
+            pack.module("rendering_3d", move |_| {
+                *installed.borrow_mut() = true;
+                Ok(())
+            });
+        }
+
+        let mut registry = Registry::for_surface(ApiSurface::TwoD);
+        registry.add_pack(pack);
+        let error = registry
+            .install(&Lua::new())
+            .expect_err("2D 注册表必须拒绝 3D 包");
+        assert!(error.to_string().contains("拒绝安装 3D 包"));
+        assert!(!*installed.borrow());
     }
 }

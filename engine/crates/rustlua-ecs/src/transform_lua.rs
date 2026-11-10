@@ -429,7 +429,13 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         })?,
     )?;
     lua.globals().set("transform", transform)?;
+    Ok(())
+}
 
+/// M81：3D 包的 `transform3d` 表。领域 crate 不带 feature，由组合根 `register_all`
+/// 在 `3d` 开启时才调用（2D 构建的 Lua 面没有这张表）。统一 `transform` 表留在基底：
+/// 它按实体实际拥有的组件分派，是 docs/54 的单一事实源，不按维度裁剪。
+pub fn install_3d(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
     let transform3d = lua.create_table()?;
     let s = Bindings::new(world);
     transform3d.set(
@@ -582,6 +588,8 @@ mod tests {
         let lua = Lua::new();
         let world = Handle::new(World::new(), "world");
         install(&lua, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &world).unwrap();
         (lua, world)
     }
 

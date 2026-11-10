@@ -9,12 +9,14 @@ use std::collections::HashMap;
 
 use rustlua_assets::asset_handle::AssetHandle;
 use rustlua_camera::camera::{CameraView, RenderView, Viewport};
-use rustlua_math::math3d::Mat4;
+use rustlua_math::math3d::{Aabb3, Mat4, Vec3};
 use rustlua_render::frame::{Scene3d, SceneMesh};
+use rustlua_render::instance_batch::InstanceBatch3D;
 use rustlua_render::mesh3d::MaterialAlphaMode;
+use rustlua_render::water::WaterSpec;
 
 use super::{
-    DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
+    DepthPass, FrameDraw, FrameGpuMotion, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
     apply_declared_viewport, max_model_scale, record_dropped_draw, record_set_pass,
     record_vertex_draw, scaled_model,
 };
@@ -115,7 +117,7 @@ impl Renderer {
         }
         let mut uniform = [0.0_f32; 20];
         uniform[..16].copy_from_slice(&view.matrix.columns.concat());
-        uniform[16] = self.clock.elapsed().as_secs_f32();
+        uniform[16] = self.clock_secs();
         uniform[17] = self.cloud_coverage.clamp(0.0, 1.0);
         uniform[18] = self.cloud_speed.clamp(0.0, 4.0);
         uniform[19] = self.cloud_shadow_strength.clamp(0.0, 0.6);
@@ -254,6 +256,13 @@ impl Renderer {
     /// frustum, resolved to cached geometry. Static drawables sharing a mesh
     /// path and primitive are grouped into one instanced draw when enabled.
     pub(super) fn frame_3d_draws(&mut self, scene: &Scene3d) -> Vec<FrameDraw> {
+        // P3-R183：剔除计数每帧重置；候选 = 网格已缓存、进入剔除判定的 drawable×primitive。
+        // 用局部计数：`cached_mesh` 的借用横跨整个循环，期间不能写 `self`。
+        let mut cull_candidates = 0u64;
+        let mut cull_frustum = 0u64;
+        // P3-R206 读数补全：距离档的剔除量单独记一份，用来在不拆分母的前提下归因到档位。
+        let mut cull_distance = 0u64;
+        let mut skip_mesh = 0u64;
         // 剔除视锥来自本帧**视图的烘焙结果**（拆分批 7）：与写进 uniform 的矩阵同源，
         // 因此"画出来的"与"被剔除的"不可能按两个比例各算一套。
         let frustum = if self.cull_enabled {
@@ -272,6 +281,29 @@ impl Renderer {
         let mut blend_draws: Vec<FrameDraw> = Vec::new();
         let camera_position = scene.camera.position;
         let instancing_enabled = self.instancing_enabled;
+        // P3-R245：本帧暂存的运动批次按实体认领；没被认领的直接丢弃（不跨帧残留）。
+        // 档位关 / 没有 compute 能力时**连取走都不做**（`stage_motion_batch` 的输入原样留到
+        // 下一帧再被丢弃），默认路径一个字节都不碰。
+        let gpu_motion_enabled = self.gpu_motion_batches && self.compute_enabled();
+        let staged_motion = if gpu_motion_enabled {
+            std::mem::take(&mut self.staged_motion)
+        } else {
+            Vec::new()
+        };
+        // `cached_mesh` 取 `&mut self`，档位必须先拷出来再用（同 `instancing_enabled`）。
+        let max_draw_distance = self.max_draw_distance;
+        // P3-R206 分类档：同一个借用原因，子串过滤也先拷出来。
+        let max_draw_distance_filter = self.max_draw_distance_filter.clone();
+        // P3-R248：阴影投射排除档同理（每帧一次 `Option<String>` 克隆，与上一条同价）。
+        let shadow_caster_skip = self.shadow_caster_skip.clone();
+        // P3-R265：点光链专用排除档（同一个借用原因）。
+        let point_shadow_caster_skip = self.point_shadow_caster_skip.clone();
+        // P3-R252：整批跳过的球心/半径与烘焙侧同一份口径（`update_3d_uniforms` 每帧先写）。
+        // 借用原因同 `max_draw_distance`：`cached_mesh` 要 `&mut self`。
+        let batch_cull = (self.gpu_motion_cull_distance > 0.0)
+            .then_some((self.camera_world_position, self.gpu_motion_cull_distance));
+        let mut gpu_motion_culled = 0u64;
+        let mut gpu_motion_culled_instances = 0u64;
         // 覆盖材质先统一解析：失败会缓存为 `None` 并告警一次，绘制侧回退内嵌材质。
         // 预解析还避免在遍历 `scene.drawables`（不可变借用）时对 `self` 取可变借用。
         let mut overrides: HashMap<&str, GpuMaterial> = HashMap::new();
@@ -284,9 +316,27 @@ impl Renderer {
             }
         }
         for drawable in &scene.drawables {
+            // P3-R184：归因开关在缓存查询与剔除**之前**跳过 ⇒ 不进候选分母，
+            // 两档 A/B 的剔除率口径不受开关本身污染。
+            if let Some(filter) = &self.skip_mesh_filter
+                && drawable.mesh_path.contains(filter.as_str())
+            {
+                skip_mesh += 1;
+                continue;
+            }
             // 导入设置里的"模型缩放"在这一步乘进模型矩阵（**在剔除之前**）：
             // 剔除球用同一份矩阵算，缩放后的模型才不会被按旧尺寸剔掉。
             let scale = self.model_scale_for(&drawable.mesh_path);
+            // P3-R248：方向光 CSM 的分类排除档。样本名与网格路径都算类别（无实例合批时
+            // 逐 drawable 判；静态合批组只有一个路径，见下面的组口径）。
+            let drawable_skips_shadow = shadow_caster_skip.as_deref().is_some_and(|filter| {
+                drawable.mesh_path.contains(filter) || drawable.name.contains(filter)
+            });
+            // P3-R265：点光专用档用同一套"路径或样本名"口径；两档叠加时点光链取并集。
+            let drawable_skips_point_shadow =
+                point_shadow_caster_skip.as_deref().is_some_and(|filter| {
+                    drawable.mesh_path.contains(filter) || drawable.name.contains(filter)
+                });
             let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path) else {
                 // 这里**刻意只记 debug、不计入 `dropped_draws`**：网格不在缓存绝大多数是
                 // **异步预热的头几帧**（下一帧就有），把它算成"丢了 draw"会让正常帧也报非零，
@@ -300,54 +350,213 @@ impl Renderer {
                 continue;
             };
             for (prim_index, primitive) in cached.primitives.iter().enumerate() {
-                let model = scaled_model(drawable.model, scale);
-                if let Some(frustum) = frustum {
+                // P3-R245：本帧暂存了这批实例的运动输入 ⇒ 位姿交给 compute 求值。
+                // **放弃逐实例剔除与合批**（R244 模块文档：GPU 批必须单独一条 draw，实例数
+                // 口径才对得上）；包围盒仍按同一批 CPU 矩阵并集算，阴影 range 剔除的结果与
+                // CPU 档一致。`models` 留作烘焙失败时的回退。
+                if let Some((_, batch, time)) = staged_motion
+                    .iter()
+                    .find(|(entity, _, _)| *entity == drawable.entity.0)
+                    && !batch.instances.is_empty()
+                {
+                    cull_candidates += batch.instances.len() as u64;
+                    // P3-R246：宿主跳过 CPU 矩阵时 `drawable.instances` 为空——实例数照样按
+                    // 批次算，包围盒用"路径点 AABB 外扩最大实例半径"（保守，不误剔）。
+                    let bounds = if drawable.instances.is_empty() {
+                        conservative_batch_bounds(batch, primitive.bounds.1, scale)
+                    } else {
+                        let mut bounds = Aabb3 {
+                            min: Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+                            max: Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+                        };
+                        for &instance_model in &drawable.instances {
+                            let model = scaled_model(instance_model, scale);
+                            let center = model
+                                .transform_point(primitive.bounds.0)
+                                .unwrap_or(primitive.bounds.0);
+                            let radius = primitive.bounds.1 * max_model_scale(model);
+                            bounds.min = Vec3::new(
+                                bounds.min.x.min(center.x - radius),
+                                bounds.min.y.min(center.y - radius),
+                                bounds.min.z.min(center.z - radius),
+                            );
+                            bounds.max = Vec3::new(
+                                bounds.max.x.max(center.x + radius),
+                                bounds.max.y.max(center.y + radius),
+                                bounds.max.z.max(center.z + radius),
+                            );
+                        }
+                        bounds
+                    };
+                    // P3-R252：整批都在剔除球外 ⇒ bake 会把每一只都写成零矩阵（退化、不画）。
+                    // 这条 draw 干脆不登记：像素完全相同，但阴影的 53 个 pass、planar 与主视图
+                    // 都不再各录一遍它。判据用上面那份**保守**包围盒（只会少剔，不会误剔）。
+                    if let Some((origin, radius)) = batch_cull
+                        && bounds_outside_sphere(bounds, origin, radius)
+                    {
+                        gpu_motion_culled += 1;
+                        gpu_motion_culled_instances += batch.instances.len() as u64;
+                        continue;
+                    }
+                    let mut material = primitive.material;
+                    material.skinned = false;
+                    if let Some(path) = drawable.material.as_deref()
+                        && let Some(overridden) = overrides.get(path)
+                    {
+                        material = *overridden;
+                        material.skinned = false;
+                    }
+                    let draw = FrameDraw {
+                        geometry: primitive.geometry.clone(),
+                        material,
+                        palette: Vec::new(),
+                        // P3-R246：位姿只走 GPU——`models` 不再克隆一遍 CPU 矩阵（宿主跳过
+                        // 求值后它本来就是空的）；烘焙失败时在绑定组建制处按 `matrices_at` 补算。
+                        models: Vec::new(),
+                        water: WaterSpec::is_water_path(&drawable.mesh_path),
+                        bounds,
+                        gpu_motion: Some(FrameGpuMotion {
+                            batch: batch.clone(),
+                            time: *time,
+                            model_scale: scale,
+                        }),
+                        // P3-R255：局部包围球从原点量起（球心偏移 + 半径），逐实例再乘缩放。
+                        gpu_motion_local_radius: primitive.bounds.0.length() + primitive.bounds.1,
+                        cast_shadow: !drawable_skips_shadow,
+                        cast_point_shadow: !drawable_skips_shadow && !drawable_skips_point_shadow,
+                    };
+                    if material.alpha_mode == MaterialAlphaMode::Blend {
+                        blend_draws.push(draw);
+                    } else {
+                        draws.push(draw);
+                    }
+                    continue;
+                }
+                // P3-R237：实例批次（crowd）——一个 drawable 带 N 份实例矩阵时，剔除与合批
+                // 都**逐实例**进行：一只被剔掉的蚂蚁不影响同批的其它蚂蚁，留在视锥里的
+                // 那些合进同一次实例化绘制。候选计数随之按**实例**计（普通 drawable 仍是
+                // 每 primitive 一份）。
+                let single_model = [drawable.model];
+                let models: &[Mat4] = if drawable.instances.is_empty() {
+                    &single_model
+                } else {
+                    &drawable.instances
+                };
+                cull_candidates += models.len() as u64;
+                for &instance_model in models {
+                    let model = scaled_model(instance_model, scale);
+                    // 剔除与 P3-R188 的阴影 range 剔除共用同一份世界包围球：剔除关掉也要算。
                     let world_center = model
                         .transform_point(primitive.bounds.0)
                         .unwrap_or(primitive.bounds.0);
                     let world_radius = primitive.bounds.1 * max_model_scale(model);
-                    if !frustum.contains_sphere(world_center, world_radius) {
+                    if let Some(frustum) = frustum
+                        && !frustum.contains_sphere(world_center, world_radius)
+                    {
+                        cull_frustum += 1;
                         continue;
                     }
-                }
-                let skinned = !drawable.palette.is_empty();
-                let mut material = primitive.material;
-                material.skinned = skinned;
-                if let Some(path) = drawable.material.as_deref()
-                    && let Some(overridden) = overrides.get(path)
-                {
-                    material = *overridden;
+                    // P3-R206：最大绘制距离（0 = 关闭）。按包围球边缘判：近处大物体的可见
+                    // 边缘不能因为"圆心在远处"被整块剔掉。
+                    if max_draw_distance > 0.0
+                        && max_draw_distance_filter
+                            .as_deref()
+                            .is_none_or(|filter| drawable.mesh_path.contains(filter))
+                        && (world_center - camera_position).length()
+                            > max_draw_distance + world_radius
+                    {
+                        cull_frustum += 1;
+                        cull_distance += 1;
+                        continue;
+                    }
+                    let bounds = Aabb3 {
+                        min: Vec3::new(
+                            world_center.x - world_radius,
+                            world_center.y - world_radius,
+                            world_center.z - world_radius,
+                        ),
+                        max: Vec3::new(
+                            world_center.x + world_radius,
+                            world_center.y + world_radius,
+                            world_center.z + world_radius,
+                        ),
+                    };
+                    let skinned = !drawable.palette.is_empty();
+                    let mut material = primitive.material;
                     material.skinned = skinned;
-                }
-                if !skinned && instancing_enabled && material.alpha_mode != MaterialAlphaMode::Blend
-                {
-                    groups
-                        .entry((
-                            drawable.mesh_path.as_str(),
-                            prim_index,
-                            drawable.material.as_deref(),
-                        ))
-                        .or_insert_with(|| StaticGroup {
+                    if let Some(path) = drawable.material.as_deref()
+                        && let Some(overridden) = overrides.get(path)
+                    {
+                        material = *overridden;
+                        material.skinned = skinned;
+                    }
+                    if !skinned
+                        && instancing_enabled
+                        && material.alpha_mode != MaterialAlphaMode::Blend
+                    {
+                        let group = groups
+                            .entry((
+                                drawable.mesh_path.as_str(),
+                                prim_index,
+                                drawable.material.as_deref(),
+                            ))
+                            .or_insert_with(|| StaticGroup {
+                                geometry: primitive.geometry.clone(),
+                                material,
+                                models: Vec::new(),
+                                water: WaterSpec::is_water_path(&drawable.mesh_path),
+                                bounds,
+                                cast_shadow: !shadow_caster_skip
+                                    .as_deref()
+                                    .is_some_and(|filter| drawable.mesh_path.contains(filter)),
+                                // P3-R265：组口径同样只按路径判（组键里只有路径）。
+                                cast_point_shadow: !shadow_caster_skip
+                                    .as_deref()
+                                    .is_some_and(|filter| drawable.mesh_path.contains(filter))
+                                    && !point_shadow_caster_skip
+                                        .as_deref()
+                                        .is_some_and(|filter| drawable.mesh_path.contains(filter)),
+                            });
+                        group.models.push(model);
+                        group.bounds.min = Vec3::new(
+                            group.bounds.min.x.min(bounds.min.x),
+                            group.bounds.min.y.min(bounds.min.y),
+                            group.bounds.min.z.min(bounds.min.z),
+                        );
+                        group.bounds.max = Vec3::new(
+                            group.bounds.max.x.max(bounds.max.x),
+                            group.bounds.max.y.max(bounds.max.y),
+                            group.bounds.max.z.max(bounds.max.z),
+                        );
+                    } else if material.alpha_mode == MaterialAlphaMode::Blend {
+                        blend_draws.push(FrameDraw {
                             geometry: primitive.geometry.clone(),
                             material,
-                            models: Vec::new(),
-                        })
-                        .models
-                        .push(model);
-                } else if material.alpha_mode == MaterialAlphaMode::Blend {
-                    blend_draws.push(FrameDraw {
-                        geometry: primitive.geometry.clone(),
-                        material,
-                        palette: drawable.palette.clone(),
-                        models: vec![model],
-                    });
-                } else {
-                    draws.push(FrameDraw {
-                        geometry: primitive.geometry.clone(),
-                        material,
-                        palette: drawable.palette.clone(),
-                        models: vec![model],
-                    });
+                            palette: drawable.palette.clone(),
+                            models: vec![model],
+                            water: WaterSpec::is_water_path(&drawable.mesh_path),
+                            bounds,
+                            gpu_motion: None,
+                            gpu_motion_local_radius: 0.0,
+                            cast_shadow: !drawable_skips_shadow,
+                            cast_point_shadow: !drawable_skips_shadow
+                                && !drawable_skips_point_shadow,
+                        });
+                    } else {
+                        draws.push(FrameDraw {
+                            geometry: primitive.geometry.clone(),
+                            material,
+                            palette: drawable.palette.clone(),
+                            models: vec![model],
+                            water: WaterSpec::is_water_path(&drawable.mesh_path),
+                            bounds,
+                            gpu_motion: None,
+                            gpu_motion_local_radius: 0.0,
+                            cast_shadow: !drawable_skips_shadow,
+                            cast_point_shadow: !drawable_skips_shadow
+                                && !drawable_skips_point_shadow,
+                        });
+                    }
                 }
             }
         }
@@ -360,7 +569,7 @@ impl Renderer {
                 )
             })
             .collect();
-        largest_groups.sort_by(|left, right| right.0.cmp(&left.0));
+        largest_groups.sort_by_key(|group| std::cmp::Reverse(group.0));
         largest_groups.truncate(6);
         let instanced_group_count = groups.len();
         for group in groups.into_values() {
@@ -369,16 +578,63 @@ impl Renderer {
                 material: group.material,
                 palette: Vec::new(),
                 models: group.models,
+                water: group.water,
+                bounds: group.bounds,
+                gpu_motion: None,
+                gpu_motion_local_radius: 0.0,
+                cast_shadow: group.cast_shadow,
+                cast_point_shadow: group.cast_point_shadow,
+            });
+        }
+        // P3-R185：不透明前到后排序——近处网格先写深度，远处被挡像素（被草/蚁压住的
+        // 地形）被 early-Z 拒绝，不再白跑一遍 PBR 片元。不透明渲染与顺序无关，两档像素
+        // 一致；键取组内最近实例的平方距离（整组近者先画，组内远实例仍靠深度互拒）。
+        // 稳定排序：等距保留声明顺序。Blend 队列不参与，仍按远→近排在最后。
+        if self.depth_sort_enabled {
+            // P3-R246：GPU 位姿批次的 `models` 可能为空 ⇒ 用保守包围盒中心作排序键
+            // （排序只为 early-Z，键的精度不影响像素）。
+            let nearest_distance = |draw: &FrameDraw| {
+                if draw.models.is_empty() {
+                    let center = draw_center(draw.bounds);
+                    let dx = center.x - camera_position.x;
+                    let dy = center.y - camera_position.y;
+                    let dz = center.z - camera_position.z;
+                    return dx * dx + dy * dy + dz * dz;
+                }
+                draw.models
+                    .iter()
+                    .map(|model| {
+                        let dx = model.columns[3][0] - camera_position.x;
+                        let dy = model.columns[3][1] - camera_position.y;
+                        let dz = model.columns[3][2] - camera_position.z;
+                        dx * dx + dy * dy + dz * dz
+                    })
+                    .fold(f32::INFINITY, f32::min)
+            };
+            draws.sort_by(|left, right| {
+                nearest_distance(left)
+                    .partial_cmp(&nearest_distance(right))
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
         // 画家算法：远 → 近。距离取实例平移分量到相机的平方距离；排序是稳定的，
         // 等距时保留场景声明顺序（golden 可复现）。
         blend_draws.sort_by(|left, right| {
             let distance = |draw: &FrameDraw| {
-                let model = &draw.models[0];
-                let dx = model.columns[3][0] - camera_position.x;
-                let dy = model.columns[3][1] - camera_position.y;
-                let dz = model.columns[3][2] - camera_position.z;
+                // P3-R246：空 `models`（GPU 位姿批次）不能按下标取，用包围盒中心。
+                let center = draw.models.first().map_or_else(
+                    || draw_center(draw.bounds),
+                    |model| {
+                        Vec3::new(
+                            model.columns[3][0],
+                            model.columns[3][1],
+                            model.columns[3][2],
+                        )
+                    },
+                );
+                let dx = center.x - camera_position.x;
+                let dy = center.y - camera_position.y;
+                let dz = center.z - camera_position.z;
                 dx * dx + dy * dy + dz * dz
             };
             distance(right)
@@ -386,11 +642,17 @@ impl Renderer {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         draws.extend(blend_draws);
+        self.frame_cull_candidates = cull_candidates;
+        self.frame_cull_frustum = cull_frustum;
+        self.frame_cull_distance = cull_distance;
+        self.frame_skip_mesh = skip_mesh;
+        self.frame_gpu_motion_culled = gpu_motion_culled;
+        self.frame_gpu_motion_culled_instances = gpu_motion_culled_instances;
         // Periodic M8-08 baseline: instance/draw counts with culling and
         // instancing active, useful for comparing against --no-cull/--no-instance.
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count.is_multiple_of(120) {
-            let instances: usize = draws.iter().map(|draw| draw.models.len()).sum();
+            let instances: usize = draws.iter().map(FrameDraw::instance_count).sum();
             tracing::info!(
                 target: "render",
                 draws = draws.len(),
@@ -398,6 +660,12 @@ impl Renderer {
                 instanced_groups = instanced_group_count,
                 largest_groups = ?largest_groups,
                 cull = self.cull_enabled,
+                cull_candidates = self.frame_cull_candidates,
+                cull_frustum = self.frame_cull_frustum,
+                cull_distance = self.frame_cull_distance,
+                skip_mesh = self.frame_skip_mesh,
+                gpu_motion_culled = self.frame_gpu_motion_culled,
+                gpu_motion_culled_instances = self.frame_gpu_motion_culled_instances,
                 instancing = self.instancing_enabled,
                 "[render] 3D baseline draws/instances"
             );
@@ -440,4 +708,89 @@ impl Renderer {
         self.world_sprite_capacity = capacity;
         capacity
     }
+}
+
+/// 世界包围盒中心（排序键用；空盒退回原点，排序不参与像素决策）。
+fn draw_center(bounds: Aabb3) -> Vec3 {
+    Vec3::new(
+        (bounds.min.x + bounds.max.x) * 0.5,
+        (bounds.min.y + bounds.max.y) * 0.5,
+        (bounds.min.z + bounds.max.z) * 0.5,
+    )
+}
+
+/// P3-R246：`drawable.instances` 为空（宿主跳过 CPU 矩阵）时的**保守**世界包围盒。
+///
+/// 运动实例的世界中心必落在路径上，姿态怎么转也逃不出"局部包围球 × 缩放"；因此
+/// 路径节点 AABB 外扩 `局部半径 × 最大实例缩放 × 模型缩放` 就是上界。静态批次按实例
+/// 位置取点。路径非法/实例表为空时退回一个巨大的盒（宁可多画，不可误剔阴影）。
+fn conservative_batch_bounds(
+    batch: &InstanceBatch3D,
+    local_radius: f32,
+    model_scale: f32,
+) -> Aabb3 {
+    let mut max_scale = 0.0f32;
+    for instance in &batch.instances {
+        let scale = instance.scale;
+        if scale.iter().all(|value| value.is_finite()) {
+            max_scale = max_scale
+                .max(scale[0].abs())
+                .max(scale[1].abs())
+                .max(scale[2].abs());
+        }
+    }
+    let radius = local_radius * max_scale * model_scale;
+    let positions = || {
+        batch
+            .instances
+            .iter()
+            .map(|instance| instance.position)
+            .collect::<Vec<[f32; 3]>>()
+    };
+    let nodes: Vec<[f32; 3]> = match batch.motion.as_ref() {
+        Some(motion) => match motion.arc() {
+            Some(arc) => arc.nodes(&motion.path),
+            None => positions(),
+        },
+        None => positions(),
+    };
+    let mut bounds = Aabb3 {
+        min: Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+        max: Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+    };
+    for node in nodes {
+        bounds.min = Vec3::new(
+            bounds.min.x.min(node[0] - radius),
+            bounds.min.y.min(node[1] - radius),
+            bounds.min.z.min(node[2] - radius),
+        );
+        bounds.max = Vec3::new(
+            bounds.max.x.max(node[0] + radius),
+            bounds.max.y.max(node[1] + radius),
+            bounds.max.z.max(node[2] + radius),
+        );
+    }
+    if !bounds.min.x.is_finite() {
+        return Aabb3 {
+            min: Vec3::new(-1.0e6, -1.0e6, -1.0e6),
+            max: Vec3::new(1.0e6, 1.0e6, 1.0e6),
+        };
+    }
+    bounds
+}
+
+/// P3-R252：包围盒与剔除球**完全不相交**（球心到盒的最近距离 > 半径）。
+///
+/// 这是"整批都可剔"的保守判据：盒是实例原点集合的超集 ⇒ 盒外则每个原点都在球外，
+/// GPU 会把每只都写成零矩阵。反过来盒与球相交时一律不跳（宁可多录，不许误剔）。
+fn bounds_outside_sphere(bounds: Aabb3, origin: Vec3, radius: f32) -> bool {
+    let nearest = Vec3::new(
+        origin.x.clamp(bounds.min.x, bounds.max.x),
+        origin.y.clamp(bounds.min.y, bounds.max.y),
+        origin.z.clamp(bounds.min.z, bounds.max.z),
+    );
+    let dx = nearest.x - origin.x;
+    let dy = nearest.y - origin.y;
+    let dz = nearest.z - origin.z;
+    dx * dx + dy * dy + dz * dz > radius * radius
 }

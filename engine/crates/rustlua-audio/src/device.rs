@@ -139,8 +139,8 @@ mod imp {
             let channels = inner.channels().clamp(1, 8);
             let sample_rate = inner.sample_rate().max(1) as f32;
             let cutoff = cutoff_hz.clamp(200.0, 20_000.0);
-            let alpha = (1.0 - (-std::f32::consts::TAU * cutoff / sample_rate).exp())
-                .clamp(0.0, 1.0);
+            let alpha =
+                (1.0 - (-std::f32::consts::TAU * cutoff / sample_rate).exp()).clamp(0.0, 1.0);
             Self {
                 inner,
                 state: [0.0; 8],
@@ -222,11 +222,7 @@ mod imp {
             let amount = pan.clamp(-1.0, 1.0).abs();
             let delay = (amount * max_delay as f32).round() as usize;
             // pan > 0 = 声源在右 ⇒ 左耳更远，左耳多延迟。
-            let (delay_left, delay_right) = if pan >= 0.0 {
-                (delay, 0)
-            } else {
-                (0, delay)
-            };
+            let (delay_left, delay_right) = if pan >= 0.0 { (delay, 0) } else { (0, delay) };
             // 头部遮蔽：远耳 4 kHz 一阶低通（与 ITD 同一侧）。
             let shadow_alpha =
                 (1.0 - (-std::f32::consts::TAU * 4000.0 / sample_rate).exp()).clamp(0.0, 1.0);
@@ -398,11 +394,11 @@ mod imp {
             }
             // P3-R113：4×4 Householder 反馈矩阵，让四条延迟互相混合（FDN）而不是各自独立。
             let mut feedback = [[0.0_f32; 2]; 4];
-            for k in 0..4 {
+            for (k, slot) in feedback.iter_mut().enumerate() {
                 self.low[k][0] += self.low_alpha * (self.damp[k][0] - self.low[k][0]);
                 self.low[k][1] += self.low_alpha * (self.damp[k][1] - self.low[k][1]);
                 // P3-R118：低频反馈保留更多能量，高频衰减更快（双频带）。
-                feedback[k] = [
+                *slot = [
                     self.low[k][0] * 0.82 + (self.damp[k][0] - self.low[k][0]) * 0.55,
                     self.low[k][1] * 0.82 + (self.damp[k][1] - self.low[k][1]) * 0.55,
                 ];
@@ -416,10 +412,7 @@ mod imp {
                     feedback[k][0] - mean[0] * 0.5,
                     feedback[k][1] - mean[1] * 0.5,
                 ];
-                self.combs[k][write_idx[k]] = [
-                    input[0] + fed[0] * 0.72,
-                    input[1] + fed[1] * 0.72,
-                ];
+                self.combs[k][write_idx[k]] = [input[0] + fed[0] * 0.72, input[1] + fed[1] * 0.72];
             }
             [
                 input[0] * 0.88 + sum[0] * 0.12 + early_sum[0],
@@ -564,6 +557,7 @@ mod imp {
 
         /// 按位置播放（M74-01 桌面路径）：`folded`/`left`/`right` 已由
         /// [`crate::spatial::fold_to_ears`] 从 `pan` 折算好，这里只负责建 `SpatialSink`。
+        #[allow(clippy::too_many_arguments)]
         pub(crate) fn play_spatial(
             &mut self,
             bytes: Vec<u8>,
@@ -696,7 +690,10 @@ mod imp {
                     right_first = Some(frame);
                 }
             }
-            let (left, right) = (left_first.expect("left impulse"), right_first.expect("right impulse"));
+            let (left, right) = (
+                left_first.expect("left impulse"),
+                right_first.expect("right impulse"),
+            );
             assert!(
                 left > right,
                 "pan=1 must delay the left ear: left={left} right={right}"

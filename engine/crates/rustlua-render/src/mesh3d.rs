@@ -27,6 +27,44 @@ pub struct MeshRenderer {
 /// The mesh path the renderer synthesizes a ground receiver plane for.
 pub const GROUND_PLANE_SENTINEL: &str = "__ground_plane__";
 
+/// 内置哨兵网格（P3-R219）：引擎自己合成几何，**不是资源路径**。
+///
+/// 这条判定原本散在四处（本文件的 `validate_mesh_path` if 链、`scene_codec::mesh_assets`
+/// 的 terrain/water 两项、`editor::is_builtin_asset_reference` 的两张贴图、schema 的
+/// `sentinels` 名单），于是每加一张哨兵就漏一处：`__cells__` 漏在校验（P3-R218，活体日志
+/// 实测那句 `unsupported MeshRenderer mesh extension`），`__ground_plane__` 和 `__cells__`
+/// 漏在依赖图（哨兵串被当成资源路径上报，于是**断链审计**给工程里每一张地面/逐格巢体列一行
+/// 永远修不好的假断链）。新增哨兵只改这里，各处引用它。
+#[must_use]
+pub fn is_builtin_mesh_path(mesh: &str) -> bool {
+    mesh == GROUND_PLANE_SENTINEL
+        || crate::terrain::TerrainSpec::is_terrain_path(mesh)
+        || crate::water::WaterSpec::is_water_path(mesh)
+        || crate::cellmesh::CellMeshSpec::is_cells_path(mesh)
+}
+
+/// 参数级校验：只有 [`is_builtin_mesh_path`] 认下的串才走到这里，逐族解析自己的字段。
+/// 形状对但参数非法（`__terrain__?size=0`）依旧拒绝——放行名单收窄成"是哨兵"，
+/// 不等于"哨兵后面写什么都行"。
+fn parse_builtin_mesh(mesh: &str) -> Result<(), MeshRendererError> {
+    if mesh == GROUND_PLANE_SENTINEL {
+        return Ok(());
+    }
+    if crate::terrain::TerrainSpec::is_terrain_path(mesh) {
+        return crate::terrain::TerrainSpec::parse(mesh)
+            .map(|_| ())
+            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
+    if crate::water::WaterSpec::is_water_path(mesh) {
+        return crate::water::WaterSpec::parse(mesh)
+            .map(|_| ())
+            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
+    crate::cellmesh::CellMeshSpec::parse(mesh)
+        .map(|_| ())
+        .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()))
+}
+
 /// Errors while parsing the scene's `MeshRenderer` component string.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum MeshRendererError {
@@ -87,18 +125,13 @@ pub(crate) fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     if mesh.is_empty() {
         return Err(MeshRendererError::MissingMesh);
     }
-    if mesh == GROUND_PLANE_SENTINEL {
-        return Ok(());
-    }
-    if crate::terrain::TerrainSpec::is_terrain_path(mesh) {
-        return crate::terrain::TerrainSpec::parse(mesh)
-            .map(|_| ())
-            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
-    }
-    if crate::water::WaterSpec::is_water_path(mesh) {
-        return crate::water::WaterSpec::parse(mesh)
-            .map(|_| ())
-            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    if is_builtin_mesh_path(mesh) {
+        // P3-R218：`__cells__` 漏了这道门。渲染器（`gpu_mesh`）早就认这张哨兵串了，
+        // 但 `mesh.set` 走的是 `MeshRenderer::from_component_str` ⇒ 逐格巢体在真引擎上一句
+        // `unsupported MeshRenderer mesh extension` 直接被拒（活体日志实测），
+        // 而 lupa 桩门里 `mesh.set` 是假的 ⇒ 渲染侧的 P3-R213 门与接线门一起绿。
+        // P3-R219 把"哪些串是哨兵"收进 `is_builtin_mesh_path`，参数级合法性仍逐族深校验。
+        return parse_builtin_mesh(mesh);
     }
     // 与 `entity_script::EntityScript::validate` 共用 `rustlua_infra::paths` 的权威判定：
     // 只用 `Path::is_absolute()` 会放行 Windows 上的 `/etc/x.glb`（根相对但没有盘符），
@@ -521,6 +554,32 @@ mod tests {
         ));
         assert!(matches!(
             MeshRenderer::from_component_str("mesh=__water__nope"),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+    }
+
+    /// P3-R218：`__cells__` 也必须有这张门。活体日志里真引擎的原话是
+    /// `unsupported MeshRenderer mesh extension: __cells__?…`——渲染器（`gpu_mesh`）认这张串，
+    /// 但 `mesh.set` 先到这里校验，于是逐格巢体在真引擎上从来没有实体；
+    /// lupa 桩把 `mesh.set` 做成 no-op，所以接线门整条看不见它。
+    #[test]
+    fn accepts_cells_sentinel_and_rejects_bad_spec() {
+        let ok = crate::cellmesh::CellMeshSpec::new(1.0, [0.0, 0.0, 0.0], [4, 4, 4]).mesh_path();
+        assert!(crate::cellmesh::CellMeshSpec::is_cells_path(&ok));
+        assert_eq!(
+            MeshRenderer::from_component_str(&format!("mesh={ok}"))
+                .unwrap()
+                .mesh,
+            ok
+        );
+        assert!(matches!(
+            MeshRenderer::from_component_str(
+                "mesh=__cells__?cell=0.5&ox=0&oy=0&oz=0&w=0&h=1&d=1&bits=AA"
+            ),
+            Err(MeshRendererError::InvalidMeshPath(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=__cells__nope"),
             Err(MeshRendererError::InvalidMeshPath(_))
         ));
     }

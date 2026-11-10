@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# M81：2D 基底 + 3D 可插包。`3d` 默认开；2D 发布 = --no-default-features。
+# 透传到组合根（nav 登记在 gameplay 的 registry() 里）。
+default = ["3d"]
+3d = ["rustlua-gameplay/3d"]
+
 [dependencies]
 thiserror.workspace = true
 serde_json = "1"
@@ -27,7 +33,8 @@ web-time = "1"
 # Lua 绑定的契约层（`docs/62` P1）：绑定期的错误口径 + 能力句柄 + 安装器注册表。
 # 它是叶子 crate（只依赖 mlua），所以"绑定下沉到所属 crate"不会成环。
 rustlua-lua-api = { path = "../rustlua-lua-api" }
-rustlua-gameplay = { path = "../rustlua-gameplay" }
+# M81：feature 链上的边必须显式断默认，否则 feature 统一会把 gameplay/3d 悄悄开回来。
+rustlua-gameplay = { path = "../rustlua-gameplay", default-features = false }
 rustlua-infra = { path = "../rustlua-infra" }
 # P3-E03-3：运行时把 `.vgraph` 编译成同一套 Lua，不引入第二套 VM。
 rustlua-visual-script = { path = "../rustlua-visual-script" }

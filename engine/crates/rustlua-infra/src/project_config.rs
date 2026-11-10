@@ -70,6 +70,25 @@ pub fn release_flag(root: &Path) -> bool {
     read_key(root, "release").is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
+/// API 维度（`project.toml` 的 `api = "2d"|"3d"`，M81）：声明工程目标 Lua 面。
+///
+/// 缺省 `"3d"`；非法值回退缺省并给诊断（与 `window_size` 同口径——配置错误不该让工程
+/// 起不来，但也不许静默）。**这是声明不是开关**：真正裁面的是构建 feature（`3d` 默认开，
+/// 2D 发布 = `--no-default-features`），打包脚本读本键决定构建参数并在发布后复核面。
+#[must_use]
+pub fn api_dimension(root: &Path) -> (String, Vec<String>) {
+    match read_key(root, "api") {
+        None => ("3d".to_owned(), Vec::new()),
+        Some(value) if value == "2d" || value == "3d" => (value, Vec::new()),
+        Some(value) => (
+            "3d".to_owned(),
+            vec![format!(
+                "project.toml 的 api = \"{value}\" 非法（只接受 \"2d\"/\"3d\"），按缺省 3d 处理"
+            )],
+        ),
+    }
+}
+
 /// 默认窗口尺寸（横屏）：工程未声明 `window_width`/`window_height` 时的回退值。
 pub const DEFAULT_WINDOW_SIZE: (u32, u32) = (1280, 720);
 
@@ -252,6 +271,25 @@ mod tests {
         .unwrap();
         let (size, _) = window_size(&root);
         assert_eq!(size, DEFAULT_WINDOW_SIZE);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn api_dimension_defaults_to_3d_and_rejects_invalid_values() {
+        let root = temp_dir("api-dimension");
+        // 未声明 → 缺省 3d，且没有诊断（"没声明"不是错误）。
+        fs::write(root.join(PROJECT_TOML), "name = \"Dev\"\n").unwrap();
+        assert_eq!(api_dimension(&root), ("3d".to_owned(), Vec::new()));
+        fs::write(root.join(PROJECT_TOML), "api = \"2d\"\n").unwrap();
+        assert_eq!(api_dimension(&root), ("2d".to_owned(), Vec::new()));
+        fs::write(root.join(PROJECT_TOML), "api = \"3d\"\n").unwrap();
+        assert_eq!(api_dimension(&root), ("3d".to_owned(), Vec::new()));
+        // 非法值 → 回退 3d + 一条诊断（与 window_size 同口径，不静默）。
+        fs::write(root.join(PROJECT_TOML), "api = \"4d\"\n").unwrap();
+        let (dimension, diagnostics) = api_dimension(&root);
+        assert_eq!(dimension, "3d");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].contains("4d"), "{diagnostics:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

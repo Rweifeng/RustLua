@@ -299,9 +299,17 @@ mod tests {
         let base = evaluate([2.0, 0.0, -4.0], &listener, SpatialModel::DEFAULT).unwrap();
         let blocked = evaluate_occluded([2.0, 0.0, -4.0], &listener, SpatialModel::DEFAULT, 0.8)
             .expect("occlusion 0.8 is valid");
-        assert!(blocked.gain < base.gain, "{} vs {}", blocked.gain, base.gain);
+        assert!(
+            blocked.gain < base.gain,
+            "{} vs {}",
+            blocked.gain,
+            base.gain
+        );
         assert!(blocked.cutoff_hz < base.cutoff_hz);
-        assert!((blocked.pan - base.pan).abs() < 1e-6, "occlusion must not move pan");
+        assert!(
+            (blocked.pan - base.pan).abs() < 1e-6,
+            "occlusion must not move pan"
+        );
         assert!(matches!(
             evaluate_occluded([0.0; 3], &listener, SpatialModel::DEFAULT, 1.5),
             Err(SpatialError::InvalidOcclusion)

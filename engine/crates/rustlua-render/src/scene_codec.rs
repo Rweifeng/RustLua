@@ -38,9 +38,10 @@ fn mesh_assets(value: &str) -> Vec<String> {
     // 解析失败时返回空：资源缺失的可见性归资源库依赖图，场景编译不重复报同一件事。
     MeshRenderer::from_component_str(value)
         .map(|renderer| {
-            if crate::terrain::TerrainSpec::is_terrain_path(&renderer.mesh)
-                || crate::water::WaterSpec::is_water_path(&renderer.mesh)
-            {
+            // P3-R219：名单只列 terrain/water ⇒ `__ground_plane__`（示例工程 5 份场景真在用）
+            // 和 `__cells__` 被当成资源路径上报给依赖图，断链审计于是给每张内置地面列一行
+            // 永远修不好的假断链。改问唯一的哨兵判定。
+            if crate::mesh3d::is_builtin_mesh_path(&renderer.mesh) {
                 Vec::new()
             } else {
                 vec![renderer.mesh]
@@ -186,6 +187,16 @@ mod tests {
             MESH.asset_paths("mesh=__water__?size=10&res=8&y=0.06&amp=0.02&seed=3")
                 .is_empty()
         );
+        // P3-R219：这两张以前漏在名单外 ⇒ 哨兵串被当成资源路径上报进依赖图。
+        // 反面对照：把 `mesh_assets` 改回 terrain/water 两项，下面两条一起红。
+        assert!(MESH.asset_paths("mesh=__ground_plane__").is_empty());
+        let cells = crate::cellmesh::CellMeshSpec::new(0.5, [0.0, 0.0, 0.0], [4, 4, 4]).mesh_path();
+        assert!(
+            MESH.asset_paths(&format!("mesh={cells}")).is_empty(),
+            "逐格巢体的规格串不是资源路径：约 700 字节的 bits 段进依赖图就是假断链"
+        );
+        // 形状像哨兵但参数非法：仍然不是资源路径（不写进依赖图），拒绝由 validate 那一侧负责。
+        assert!(MESH.asset_paths("mesh=__terrain__?size=0").is_empty());
         assert_eq!(
             ENVIRONMENT.asset_paths("map=assets/env/studio.hdr"),
             vec!["assets/env/studio.hdr".to_owned()]

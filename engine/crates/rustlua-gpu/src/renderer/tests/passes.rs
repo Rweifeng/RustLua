@@ -17,6 +17,7 @@ fn water_plane_is_extracted_from_scene_drawables() {
         model: Mat4::translation(Vec3::new(10.0, 5.0, -20.0))
             * Mat4::scale(Vec3::new(2.0, 1.0, 2.0)),
         palette: Vec::new(),
+        instances: Vec::new(),
         bounds: Scene3dBounds {
             local_aabb: Aabb3 {
                 min: Vec3::new(-50.0, -1.0, -50.0),

@@ -672,6 +672,59 @@ impl LuaRuntime {
         }
     }
 
+    /// 调用工程级 `on_frame(dt)`：**每个渲染帧一次**，固定步循环之后、提取之前。
+    ///
+    /// 与 [`Self::call_update`] 的分工是"逻辑帧"与"渲染帧"：`update()` 按固定步跑
+    /// （60 Hz；追帧时一渲染帧内会跑多次），适合推进模拟；`on_frame()` 一次
+    /// `run_script_steps` 只调一次，适合**从模拟状态派生画面**的表现层同步（网格位置、
+    /// HUD 绘制）。表现层若留在 `update()` 里，一渲染帧内会被重复算 N 遍，帧率越低
+    /// 浪费越多——这正是把两者拆开的原因。
+    ///
+    /// `dt` 是本帧累计推进的模拟秒数（`固定步长 × 步数`），与帧级 Rust 系统拿到的
+    /// 同一口径；0 步帧（帧率高于逻辑频率）为 0。
+    ///
+    /// 脚本没有 `on_frame` 全局函数时直接返回（旧工程零改动）；错误策略与 `update()`
+    /// 同源：`Strict` 上报、`Contain` 容错并按独立槽位停用。返回值不参与语义，供
+    /// 宿主日志/探针使用。
+    pub fn call_frame(&self, delta_seconds: f32) -> Result<String, LuaBridgeError> {
+        self.reset_instruction_budget();
+        let path = self
+            .current_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("<project script>"));
+        if self.guard.borrow().is_disabled(BudgetSlot::Frame) {
+            self.state.borrow_mut().last_frame_micros = 0;
+            return Ok(String::new());
+        }
+        let callback: Option<Function> = self
+            .lua
+            .globals()
+            .get("on_frame")
+            .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        let Some(callback) = callback else {
+            self.state.borrow_mut().last_frame_micros = 0;
+            return Ok(String::new());
+        };
+        let started = web_time::Instant::now();
+        // 与 `call_update` 同一条崩溃守卫路径：错误在栈展开之前抓现场。
+        let result = crash::bridge_result(
+            crash::call_guarded(&self.lua, callback, (delta_seconds,)),
+            path.clone(),
+            None,
+        )
+        .map(|_| String::new());
+        // 失败也记账：否则"Lua 表现层抛错的那一帧"在性能面板上是零成本。
+        self.state.borrow_mut().last_frame_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        match result {
+            Ok(value) => {
+                self.guard.borrow_mut().record_success(BudgetSlot::Frame);
+                Ok(value)
+            }
+            Err(error) => self.contain_or_propagate(BudgetSlot::Frame, error),
+        }
+    }
+
     /// 按策略处置一次**工程级回调**错误。
     ///
     /// 严格档**不**记诊断：与容器化之前的语义逐字一致（由 `call_update_debug` 负责记录），
@@ -747,6 +800,13 @@ impl LuaRuntime {
     #[must_use]
     pub fn last_update_micros(&self) -> u64 {
         self.state.borrow().last_update_micros
+    }
+
+    /// 上一次 `call_frame` 内部 Lua 调用的耗时（微秒）。取值口径同
+    /// [`Self::last_update_micros`]：只算 Lua 体。
+    #[must_use]
+    pub fn last_frame_micros(&self) -> u64 {
+        self.state.borrow().last_frame_micros
     }
 
     /// 开关 `.vgraph` 节点探针（E03-4b）。默认关闭：关闭时生成物里的调用点直接返回，

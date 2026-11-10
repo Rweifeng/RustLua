@@ -1,5 +1,6 @@
 use rustlua_assets::env_asset::EnvironmentAsset;
 use rustlua_ecs::particle::ParticleEmitter;
+use rustlua_ecs::particle_wind_grid::WindGrid;
 use rustlua_render::render_settings::{
     EnvironmentLighting, EnvironmentSettings, IblMode, IblTier, RenderSettings,
 };
@@ -129,6 +130,10 @@ impl ParticleRenderer for Renderer {
 
     fn set_particle_wind_sources(&mut self, sources: [[f32; 7]; 4]) {
         let _ = Renderer::set_gpu_particle_wind_sources(self, sources);
+    }
+
+    fn set_particle_wind_grid(&mut self, grid: Option<&WindGrid>) {
+        Renderer::set_gpu_particle_wind_grid(self, grid);
     }
 
     fn step_particles(&mut self, delta_seconds: f32) -> Result<ParticleStepReport, String> {

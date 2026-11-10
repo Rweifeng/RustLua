@@ -47,6 +47,20 @@ const HEADER_END = '<!-- 以上为自动生成头，以下第一段散文是模�
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
 const UPDATE_BASELINE = args.has('--update-baseline');
+// M81 批 3：`--surface <json>` 只影响 LuaLS 产物——按给定 API 面基线裁剪函数集，
+// 写到同目录 `rustlua_api_<名>.d.lua`（名取基线文件名去掉 `lua_api_surface` 前缀）。
+// 文档桩/rustdoc/桩数基线永远全量（引擎文档不按维度残缺），默认行为逐字节不变。
+const surfaceArgIndex = process.argv.indexOf('--surface');
+const SURFACE_OVERRIDE =
+  surfaceArgIndex >= 0 ? process.argv[surfaceArgIndex + 1] : null;
+if (surfaceArgIndex >= 0 && !SURFACE_OVERRIDE) {
+  console.error('--surface 需要一个基线 JSON 路径');
+  process.exit(1);
+}
+if (SURFACE_OVERRIDE && UPDATE_BASELINE) {
+  console.error('--surface 与 --update-baseline 互斥（桩数基线永远全量）');
+  process.exit(1);
+}
 
 function rel(target) {
   return path.relative(REPO_ROOT, target).split(path.sep).join('/');
@@ -67,6 +81,25 @@ const surface = JSON.parse(readText(SURFACE_JSON));
 const modules = new Map();
 for (const table of surface.tables ?? []) {
   modules.set(table.name, [...(table.funcs ?? [])].sort());
+}
+// --surface 的裁剪面：只用于 LuaLS 产物，不进文档桩/签名解析/桩数统计。
+let surfaceSubset = null;
+let surfaceMetaPath = META_LUA;
+let surfaceLabel = null;
+if (SURFACE_OVERRIDE) {
+  const file = path.resolve(REPO_ROOT, SURFACE_OVERRIDE);
+  const subset = JSON.parse(readText(file));
+  surfaceSubset = new Map();
+  for (const table of subset.tables ?? []) {
+    surfaceSubset.set(table.name, new Set(table.funcs ?? []));
+  }
+  const stem = path.basename(file, '.json').replace(/^lua_api_surface_?/, '');
+  if (!stem) {
+    console.error('--surface 需要一份带维度后缀的基线（如 lua_api_surface_2d.json）');
+    process.exit(1);
+  }
+  surfaceLabel = stem;
+  surfaceMetaPath = path.join(path.dirname(META_LUA), `rustlua_api_${stem}.d.lua`);
 }
 
 // ------------------------------------------------------------------ 绑定源码解析
@@ -522,11 +555,18 @@ fs.mkdirSync(DOC_DIR, { recursive: true });
 
 for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
   const existing = readExistingDoc(module);
-  const moduleNote = metaDescription(`## ${module}\n${existing.preamble}`);
-  if (moduleNote !== null) metaLines.push(`--- ${moduleNote}`);
-  metaLines.push(`--- ${module}：运行期 API 面基线里的 ${list.length} 个函数`);
-  metaLines.push(`${module} = {}`);
-  metaLines.push('');
+  // --surface 时 LuaLS 只收子集里的表/函数；文档桩仍走全量 list。
+  const metaFuncs = surfaceSubset
+    ? list.filter((func) => surfaceSubset.get(module)?.has(func))
+    : list;
+  const emitMeta = !surfaceSubset || surfaceSubset.has(module);
+  if (emitMeta) {
+    const moduleNote = metaDescription(`## ${module}\n${existing.preamble}`);
+    if (moduleNote !== null) metaLines.push(`--- ${moduleNote}`);
+    metaLines.push(`--- ${module}：运行期 API 面基线里的 ${metaFuncs.length} 个函数`);
+    metaLines.push(`${module} = {}`);
+    metaLines.push('');
+  }
   const out = [
     `# Lua 模块 \`${module}\``,
     '',
@@ -544,9 +584,11 @@ for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCo
     const previous = existing.sections.get(func);
     const keep = previous !== undefined && !previous.includes(STUB_MARKER);
     const note = metaDescription(previous);
-    if (note !== null) metaLines.push(`--- ${note}`);
-    metaLines.push(...metaFunction(module, func, binding?.sig));
-    metaLines.push('');
+    if (emitMeta && metaFuncs.includes(func)) {
+      if (note !== null) metaLines.push(`--- ${note}`);
+      metaLines.push(...metaFunction(module, func, binding?.sig));
+      metaLines.push('');
+    }
     // 人工说明保留，但标题里的签名跟着源码走（绑定参数变了，文档桩立刻反映）。
     const section = keep
       ? `${sectionHeading(module, func, binding?.sig)}\n${previous.split('\n').slice(1).join('\n')}`
@@ -565,30 +607,39 @@ for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCo
 }
 
 // ------------------------------------------------------------------ `---@meta` 落盘
-const metaExpected = `${[
-  '---@meta',
-  '-- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。',
-  '-- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。',
-  '-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）' +
-    '发成 `---@param ... any`，本文件 ' +
-    metaUnknown +
-    ' 个；另有 ' +
-    metaZero +
-    ' 个真的不收参数。两种声明不合并（合并 = 假诊断）。',
-  '-- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则',
-  '-- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。',
-  '-- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，',
-  '-- 并保证 `.luarc.json` 的 `workspace.library` 挂着它。',
-  '',
-  ...metaLines,
-].join('\n').replace(/\n+$/, '')}\n`;
-const metaCurrent = fs.existsSync(META_LUA) ? readText(META_LUA) : null;
+const metaHeader = surfaceSubset
+  ? [
+      '---@meta',
+      `-- 生成物，请勿手改：\`node scripts/docgen/gen-lua-api-docs.js --surface ${SURFACE_OVERRIDE}\`。`,
+      `-- 事实源：\`${path.basename(SURFACE_OVERRIDE)}\`——${surfaceLabel} 构建面的运行期基线，由快照门钉住；`,
+      '-- 签名与说明同全量 `rustlua_api.d.lua`（同一份绑定源码推断），这里只裁函数集。',
+      '-- 装进工程：与全量定义二选一挂进 `.luarc.json` 的 `workspace.library`（两份同挂会互相覆盖）。',
+      '',
+    ]
+  : [
+      '---@meta',
+      '-- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。',
+      '-- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。',
+      '-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）' +
+        '发成 `---@param ... any`，本文件 ' +
+        metaUnknown +
+        ' 个；另有 ' +
+        metaZero +
+        ' 个真的不收参数。两种声明不合并（合并 = 假诊断）。',
+      '-- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则',
+      '-- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。',
+      '-- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，',
+      '-- 并保证 `.luarc.json` 的 `workspace.library` 挂着它。',
+      '',
+    ];
+const metaExpected = `${[...metaHeader, ...metaLines].join('\n').replace(/\n+$/, '')}\n`;
+const metaCurrent = fs.existsSync(surfaceMetaPath) ? readText(surfaceMetaPath) : null;
 if (metaCurrent !== metaExpected) {
   if (CHECK) {
-    drift.push(`${rel(META_LUA)} 与再生成结果不一致（API 面或签名变了：跑生成器并提交）`);
+    drift.push(`${rel(surfaceMetaPath)} 与再生成结果不一致（API 面或签名变了：跑生成器并提交）`);
   } else {
-    fs.mkdirSync(path.dirname(META_LUA), { recursive: true });
-    fs.writeFileSync(META_LUA, metaExpected);
+    fs.mkdirSync(path.dirname(surfaceMetaPath), { recursive: true });
+    fs.writeFileSync(surfaceMetaPath, metaExpected);
   }
 }
 

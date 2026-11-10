@@ -1,5 +1,6 @@
 use rustlua_assets::env_asset::EnvironmentAsset;
 use rustlua_ecs::particle::ParticleEmitter;
+use rustlua_ecs::particle_wind_grid::WindGrid;
 
 use crate::render_settings::{
     EnvironmentLighting, EnvironmentSettings, IblMode, IblTier, RenderSettings,
@@ -87,6 +88,12 @@ pub trait ParticleRenderer {
     /// 4 个局部风源 `[x, y(height), z, radius, radial, lift]`；默认 no-op。
     fn set_particle_wind_sources(&mut self, sources: [[f32; 7]; 4]) {
         let _ = sources;
+    }
+    /// 网格体积风/温度浮力场（CPU `WindGrid`）：默认 no-op，纯 CPU mock 不受影响。
+    ///
+    /// 场在 CPU 侧推进，后端只收一份显存副本去采样；`None` = 无场。
+    fn set_particle_wind_grid(&mut self, grid: Option<&WindGrid>) {
+        let _ = grid;
     }
     fn step_particles(&mut self, delta_seconds: f32) -> Result<ParticleStepReport, String>;
     fn spawned_particles(&self) -> Option<u32>;

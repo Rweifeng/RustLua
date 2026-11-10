@@ -4,6 +4,8 @@ use crate::sprite::{Sprite, SpriteError, SpriteVertex};
 use rustlua_camera::camera::{Camera2D, CameraBounds, CoordinateError, OrthoTerms, Viewport};
 use rustlua_ecs::transform::Transform;
 use rustlua_infra::par::{Parallelism, map_chunks_in_place};
+use rustlua_math::geom3d::{Frustum, Plane};
+use rustlua_math::math3d::Vec3;
 
 /// One Sprite submitted to a batch. Sprites with the same texture and layer are
 /// emitted as one draw range; lower layers are always emitted first.
@@ -511,6 +513,18 @@ impl SpriteBatch {
         cull_bounds: Option<CameraBounds>,
         parallelism: Parallelism,
     ) -> Result<(), SpriteBatchError> {
+        self.build_world_into_in_frustum(out, draws, cull_bounds, None, parallelism)
+    }
+
+    /// 世界通道提取，同时按 3D 主视图视锥剔除。`None` 保留旧行为。
+    pub fn build_world_into_in_frustum<V: WorldSpriteVertexSink>(
+        &self,
+        out: &mut Vec<V>,
+        draws: &mut Vec<SpriteDrawBatch>,
+        cull_bounds: Option<CameraBounds>,
+        frustum: Option<Frustum>,
+        parallelism: Parallelism,
+    ) -> Result<(), SpriteBatchError> {
         let mut ordered: Vec<(usize, &SpriteBatchItem)> = self.items.iter().enumerate().collect();
         // WP6 世界通道的排序契约（"不写深度 + 按 z 排序"）：**先层、再深度、最后纹理**。
         // - `layer` 是作者声明的排序层，语义上必须压过 z（docs/54：排序层 ≠ 深度）；
@@ -528,6 +542,10 @@ impl SpriteBatch {
         });
         if let Some(bounds) = cull_bounds {
             ordered.retain(|(_, item)| sprite_intersects_world_bounds(item, bounds));
+        }
+        if let Some(frustum) = frustum {
+            let planes = frustum.planes();
+            ordered.retain(|(_, item)| sprite_intersects_frustum(item, &planes));
         }
         if ordered.is_empty() {
             return Ok(());
@@ -692,6 +710,29 @@ fn classify_world_failure(
         Ok(_) => SpriteBatchError::InvalidTransform { index },
         Err(error) => SpriteBatchError::Sprite { index, error },
     }
+}
+
+fn sprite_intersects_frustum(item: &SpriteBatchItem, planes: &[Plane; 6]) -> bool {
+    let transform = item.transform;
+    if !transform.position.x.is_finite()
+        || !transform.position.y.is_finite()
+        || !transform.rotation.is_finite()
+        || !transform.scale.x.is_finite()
+        || !transform.scale.y.is_finite()
+        || !item.sprite.z.is_finite()
+    {
+        return true;
+    }
+    // Sprite pivot is normalized and may be at an edge; the full-size diagonal
+    // is a conservative radius around the pivot for every valid pivot.
+    let width = item.sprite.size.x * transform.scale.x.abs();
+    let height = item.sprite.size.y * transform.scale.y.abs();
+    let radius = (width * width + height * height).sqrt() + 1.0;
+    Frustum::contains_sphere_with_planes(
+        planes,
+        Vec3::new(transform.position.x, transform.position.y, item.sprite.z),
+        radius,
+    )
 }
 
 /// 精灵是否**可能**与给定的世界矩形相交（收集阶段剔除）。
@@ -898,6 +939,38 @@ mod tests {
             .unwrap();
         assert_eq!(culled.len(), 6, "矩形外的精灵应被剔除");
         assert_eq!(culled[0].position, [95.0, 60.0, -2.5]);
+    }
+
+    #[test]
+    fn world_sprite_builder_culls_against_3d_view_frustum() {
+        let sprite = Sprite::new(Vec2::new(0.1, 0.1)).unwrap();
+        let mut batch = SpriteBatch::new();
+        for x in [0.5, 5.0] {
+            batch.push(SpriteBatchItem::new(
+                7,
+                0,
+                sprite,
+                Transform {
+                    position: Vec2::new(x, 0.5),
+                    rotation: 0.0,
+                    scale: Vec2::new(1.0, 1.0),
+                },
+            ));
+        }
+        let frustum = Frustum::from_view_projection(rustlua_math::math3d::Mat4::identity());
+        let mut vertices: Vec<WorldSpriteVertex> = Vec::new();
+        let mut draws = Vec::new();
+        batch
+            .build_world_into_in_frustum(
+                &mut vertices,
+                &mut draws,
+                None,
+                Some(frustum),
+                Parallelism::SEQUENTIAL,
+            )
+            .unwrap();
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(draws.len(), 1);
     }
 
     /// docs/54 §8-④：同纹理、同层、同 z 的精灵，只要**不透明性不同**就必须拆成两个分段——

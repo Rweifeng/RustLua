@@ -33,6 +33,14 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"
 if (-not (Test-Path $projectToml)) { throw "Game project.toml was not found: $projectToml" }
+# M81 批 3：API 维度（project.toml 的 `api = "2d"|"3d"`，缺省 3d）。2d 时 game/game_web
+# 构建加 --no-default-features（3d 是默认 feature），发布后再跑 2D 面探针复核（80-validate）。
+# 非法值直接拒：静默回退会让"以为发了 2D 包"与"实际是全量面"并存。
+$apiLine = Get-Content -LiteralPath $projectToml -Encoding UTF8 | Where-Object { $_ -match '^\s*api\s*=\s*"(2d|3d)"\s*$' } | Select-Object -First 1
+$ApiDimension = if ($apiLine -and $apiLine -match '^\s*api\s*=\s*"(2d|3d)"\s*$') { $Matches[1] } else { "3d" }
+$apiRawLine = Get-Content -LiteralPath $projectToml -Encoding UTF8 | Where-Object { $_ -match '^\s*api\s*=' } | Select-Object -First 1
+if ($apiRawLine -and -not $apiLine) { throw "project.toml 的 api 只接受 ""2d"" 或 ""3d""（当前行：$apiRawLine）" }
+if ($ApiDimension -eq "2d") { Write-Host "==> API dimension: 2d (game/game_web build with --no-default-features)" -ForegroundColor DarkGray }
 if ([string]::IsNullOrWhiteSpace($PublishName)) {
     # 必须显式 -Encoding UTF8：Windows PowerShell 5.1 默认按 ANSI 解码，project.toml 里的
     # 中文注释会让整行匹配失配——`font` 行（纯 ASCII）也一样读不到，于是静默回退到默认

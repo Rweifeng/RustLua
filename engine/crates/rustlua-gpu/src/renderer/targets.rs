@@ -97,6 +97,41 @@ impl Renderer {
         }
     }
 
+    /// P3-R170：确保平面反射目标（半分辨率 `Rgba16Float` + 自己的深度）与主目标同尺寸。
+    ///
+    /// 半分辨率是有意的：反射随后要做 5 抽头柔化、还要按波法线扰动 UV，全分辨率看不出差别，
+    /// 但 pass 的填充率会翻四倍。深度附件与主通道同格式（`Depth32Float`），因此反射 pass
+    /// 能原样复用主通道的管线与深度状态。
+    pub(super) fn ensure_planar_reflection_target(&mut self, width: u32, height: u32) {
+        let divisor = self.planar_reflection_divisor.max(1);
+        let width = (width.max(divisor) / divisor).max(1);
+        let height = (height.max(divisor) / divisor).max(1);
+        if self.planar_reflection_size == (width, height) {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-planar-reflection"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // 与 HDR 场景同格式：反射图是**线性**辐射度，Tonemap 只做一次曝光。
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.planar_reflection_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.planar_reflection_texture = texture;
+        self.planar_reflection_depth = Self::create_depth_view(&self.device, width, height);
+        self.planar_reflection_size = (width, height);
+    }
+
     /// docs/54 §4.3：确保后处理的场景离屏颜色纹理与目标同尺寸。
     ///
     /// 尺寸变化才重建（与深度附件同一策略）。视图单独存进 `self.post_process_scene_view`，

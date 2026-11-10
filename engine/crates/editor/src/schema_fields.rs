@@ -522,6 +522,13 @@ const BUILTIN_ASSET_SENTINELS: &[&str] = &[
 #[must_use]
 pub fn is_builtin_asset_reference(text: &str) -> bool {
     let text = text.trim().replace('\\', "/");
+    // P3-R219：内置**网格**哨兵也走这里。清单只列两张贴图 ⇒ 示例工程 5 份场景里的
+    // `mesh=__ground_plane__` 每一行都被断链检查列成"找不到的资源"（它永远不在资源索引里，
+    // 也永远改指不到任何文件），而带参数的规格串更长：`__cells__?…&bits=…` 整串约 700 字节
+    // 会当成资源路径进依赖图。判据与渲染侧同源，不再抄第二份名单。
+    if rustlua_render::mesh3d::is_builtin_mesh_path(&text) {
+        return true;
+    }
     BUILTIN_ASSET_SENTINELS
         .iter()
         .any(|sentinel| *sentinel == text)

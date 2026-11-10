@@ -26,6 +26,7 @@ use rustlua_infra::par::Parallelism;
 use rustlua_input::input::InputSnapshot;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_render::font::{FontAtlas, FontVectorAtlas, project_font};
+use rustlua_render::instance_batch::InstanceBatch3D;
 use rustlua_render::sprite_batch::{OverlayVertexSink, SpriteBatch, ndc_from_screen};
 use rustlua_render::text::TextMesh;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -112,9 +113,11 @@ pub struct RuntimeScene {
     ///
     /// 与 `script` 一样是"宿主每帧推、Lua 读"的单向关系：脚本不反向驱动宿主。
     pub(crate) input: rustlua_input::host::HostInput,
-    /// 自上次 `take_script_micros` 以来所有固定步里 Lua `update()` 的累计耗时
-    /// （微秒）。宿主把它送进 `PerformanceStats::lua_ms`，性能面板因此显示的是
-    /// "Lua 花了多少"而不是恒为 0（P4 接线）。
+    /// 自上次 `take_script_micros` 以来 Lua 回调的累计耗时（微秒）：所有固定步里的
+    /// `update()` + 每个渲染帧一次的 `on_frame()`。宿主把它送进
+    /// `PerformanceStats::lua_ms`，性能面板因此显示的是"Lua 花了多少"而不是恒为 0
+    /// （P4 接线）。两者合并计数是因为面板问的是"Lua 总成本"，拆分见各自的
+    /// `last_update_micros` / `last_frame_micros`。
     pub(crate) script_micros: u64,
     pub(crate) sprite_batch: SpriteBatch,
     /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
@@ -127,12 +130,11 @@ pub struct RuntimeScene {
     /// 用 uniform grid 预筛视口候选，静态场景收集从 O(N) 降为 O(视口内)
     /// （docs/40 WP6 ⑧ / docs/53 §3.9）。关闭即逐字节回滚。
     pub(crate) spatial_index: bool,
-    /// 空间索引网格（惰性创建）。跨帧复用：`hierarchy::local_fingerprint` 不变则不重建
-    /// ——静态场景收集从 O(N) 降为 O(视口内)；任何实体一动（指纹变）就整体重建。
+    /// 空间索引网格（惰性创建）。跨帧复用：空间组件与 Sprite 修订号不变则不重建
+    /// ——静态场景收集从 O(N) 降为 O(视口内)；空间或 Sprite 数据变化时整体重建。
     pub(crate) spatial_grid: Option<rustlua_render::spatial_index::SpatialGrid2D>,
-    /// 上次重建网格时的指纹（与 `hierarchy::local_fingerprint` 返回同型；
-    /// 与层级传播的 `spatial_fingerprint` 是两套独立缓存）。
-    pub(crate) spatial_index_fingerprint: Option<(u64, usize, usize)>,
+    /// 上次重建网格时的空间修订号（与层级传播共享 ECS 失效源）。
+    pub(crate) spatial_index_revision: Option<(u64, u64)>,
     /// 网格 cell 边长（世界单位）。只影响性能不影响正确性；默认 256。
     pub(crate) spatial_index_cell_size: f32,
     /// collider 调试绘制开关（WP7 ②）。默认关闭。
@@ -308,9 +310,11 @@ pub struct RuntimeScene {
     /// docs/54 §4.1：**场景声明的** `parent` 语义（与 `spatial_inheritance` 区分：后者是当前
     /// 生效的开关，宿主可覆盖；这一份是场景自己说的，用于诊断与验收）。
     pub(crate) spatial_mode: rustlua_scene::scene_space::SpatialMode,
-    /// docs/54 §10 批 R：上一帧传播用的**局部真源指纹**（`(hash, 组件数, Parent 数)`）。
-    /// 与上一帧相同 ⇒ 世界值仍然是上一帧算出来的那一份，整趟跳过传播。
+    /// 上一帧传播用的**局部真源指纹**（`(hash, 组件数, Parent 数)`）；用空间修订号作 O(1)
+    /// 快速失效检查，只在输入可能变化时重算指纹。
     pub(crate) spatial_fingerprint: Option<(u64, usize, usize)>,
+    /// 指纹对应的 ECS 空间修订号；相同则静态帧不再扫描层级组件。
+    pub(crate) spatial_world_revision: Option<u64>,
     /// 跳过策略的开关（回滚档：`false` = 每帧全量传播，与收敛前逐字节一致）。
     pub(crate) spatial_skip_unchanged: bool,
     /// 累计"因为输入没变而跳过传播"的帧数（诊断/验收用）。
@@ -388,6 +392,14 @@ pub struct RuntimeScene {
     /// 用 `Cell` 是因为 `scene_3d` 是 `&self`（编辑器与宿主都只借用），而它同样要记这个数。
     /// 语义与 `take_script_micros` 一致：**取走即清空**。
     pub(crate) view_filtered: std::cell::Cell<usize>,
+    /// P3-R246：GPU 位姿批次档（宿主 opt-in）。开档后提取**跳过** `matrices_at`，
+    /// 把批次与场景时刻登记到 [`Self::staged_motion`]，由渲染器现场求值。
+    ///
+    /// 默认关：关档时提取路径一个字节都不变（照旧求 CPU 矩阵）。
+    pub(crate) gpu_motion_batches: bool,
+    /// 本帧提取登记下来的运动批次 `(实体, 批次, 场景时刻)`；宿主在 `render` 前
+    /// `take_staged_motion_batches()` 取走并推进渲染器。
+    pub(crate) staged_motion: std::cell::RefCell<Vec<(u64, InstanceBatch3D, f32)>>,
 }
 
 /// P3-R07-1：一步里**场景声明的发射器**的落点分布（诊断/验收用，不参与玩法）。
@@ -683,13 +695,27 @@ impl RuntimeScene {
         self.script.render_post_fx()
     }
 
+    /// P3-R210：脚本设置的剖面封口深度（米，0 = 关）。
+    pub fn render_clip_cap(&self) -> Option<f32> {
+        self.script.render_clip_cap()
+    }
+
+    /// P3-R211：脚本设置的「封口吃到单面网格」档（`None` = 保持宿主启动档）。
+    pub fn render_clip_cap_both_sides(&self) -> Option<bool> {
+        self.script.render_clip_cap_both_sides()
+    }
+
+    /// P3-R242：脚本设置的水面折射步进数（`None` = 保持宿主启动档）。
+    pub fn render_water_refract_steps(&self) -> Option<u32> {
+        self.script.render_water_refract_steps()
+    }
+
     /// P3-R151：写入上一帧渲染统计，供 `render.stats()` 读取。
     pub fn set_render_stats(&self, stats: [u64; 4]) {
         self.script.set_render_stats(stats);
     }
 
     pub fn text_capture_requested(&self) -> bool {
-
         self.input.text_capture()
     }
 

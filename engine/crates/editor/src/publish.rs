@@ -3,6 +3,7 @@
 use crate::EditorApp;
 use crate::panels::progress::{ProgressEvent, ProgressKind};
 use crate::util::{display_path, strip_verbatim_prefix};
+use rustlua_editor_core::AndroidToolchainConfig;
 use std::{
     env, fmt, fs,
     io::BufRead,
@@ -20,16 +21,18 @@ pub(crate) enum PublishPlatform {
     Pc,
     WebGl,
     WechatMiniGame,
+    Android,
 }
 
 impl PublishPlatform {
-    pub(crate) const ALL: [Self; 3] = [Self::Pc, Self::WebGl, Self::WechatMiniGame];
+    pub(crate) const ALL: [Self; 4] = [Self::Pc, Self::WebGl, Self::WechatMiniGame, Self::Android];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Pc => "PC",
             Self::WebGl => "WebGL",
             Self::WechatMiniGame => "微信小游戏",
+            Self::Android => "Android APK",
         }
     }
 
@@ -38,6 +41,7 @@ impl PublishPlatform {
             Self::Pc => "pc",
             Self::WebGl => "webgl",
             Self::WechatMiniGame => "wechat-minigame",
+            Self::Android => "android",
         }
     }
 }
@@ -55,6 +59,8 @@ impl fmt::Display for PublishPlatform {
 /// 导入的 `project.config.json` 每次发布都由 `plugins/wechat-minigame/` 模板重新生成，
 /// 只有工程配置能活过重新打包。appid 本身会随包分发，不是密钥。
 pub(crate) const WECHAT_APPID_KEY: &str = "wechat_appid";
+pub(crate) const ANDROID_APPLICATION_ID_KEY: &str = "android_application_id";
+pub(crate) const DEFAULT_ANDROID_APPLICATION_ID: &str = "com.rustlua.game";
 
 /// 发布面板的全部 UI 状态（P1 EditorApp 瘦身：从 `EditorApp` 5 个散字段收敛）。
 #[derive(Clone, Debug)]
@@ -70,6 +76,12 @@ pub(crate) struct PublishState {
     pub(crate) appid_edited: bool,
     /// 最近一次 appid 落盘的结果提示（空串表示无话可说）。
     pub(crate) message: String,
+    /// Android applicationId，保存于工程 project.toml。
+    pub(crate) android_application_id: String,
+    pub(crate) android_application_id_edited: bool,
+    pub(crate) android_toolchain: AndroidToolchainConfig,
+    pub(crate) android_toolchain_edited: bool,
+    pub(crate) android_license_accepted: bool,
 }
 
 impl PublishState {
@@ -83,33 +95,58 @@ impl PublishState {
             wechat_appid: String::new(),
             appid_edited: false,
             message: String::new(),
+            android_application_id: DEFAULT_ANDROID_APPLICATION_ID.to_owned(),
+            android_application_id_edited: false,
+            android_toolchain: default_android_toolchain_config(),
+            android_toolchain_edited: false,
+            android_license_accepted: false,
         };
         state.reseed(project_root);
         state
     }
 
-    /// 换工程后按**新工程**的配置重新播种「发布名 / appid」（平台、压缩等会话选择保留）。
+    /// 换工程后按**新工程**的配置重新播种「发布名 / 平台 ID」（平台、压缩等会话选择保留）。
     ///
     /// 为什么必须重新播种：`EditorApp::new` 只在启动时跑一次，而项目导入是就地替换
     /// `self.project`（`import.rs`）。不重播的话面板里还是上一个工程的值，
-    /// 用户点一下发布或关面板就把旧工程的 appid/发布名写进了新工程的 `project.toml`。
+    /// 用户点一下发布或关面板就把旧工程的平台 ID/发布名写进了新工程的 `project.toml`。
     pub(crate) fn reseed(&mut self, project_root: &Path) {
         self.name = default_publish_name(project_root);
         self.wechat_appid = read_wechat_appid(project_root);
+        self.android_application_id = read_android_application_id(project_root);
+        self.android_application_id_edited = false;
+        if let Some(store) = editor::UserConfigStore::default_store()
+            && let Some(config) = store.load_android_toolchain()
+        {
+            self.android_toolchain =
+                merge_android_toolchain_config(config, &self.android_toolchain.install_root);
+        }
+        self.android_toolchain_edited = false;
         self.appid_edited = false;
         self.message.clear();
     }
 }
 
 impl EditorApp {
-    /// 启动 Release 发布打包（后台执行 scripts/build/package.ps1，非阻塞、不弹终端窗）。
+    /// 启动发布打包（后台执行平台脚本，非阻塞、不弹终端窗）。
     pub(crate) fn start_publish(&mut self) {
         if self.progress.running {
             return;
         }
-        let Some(found) = find_publish_script(&self.project.root) else {
+        if self.publish.platform == PublishPlatform::Android
+            && !valid_android_application_id(&self.publish.android_application_id)
+        {
+            self.progress.output =
+                "Android applicationId 格式无效：请使用至少两段、以字母开头且仅含字母/数字/下划线的名称（例如 com.rustlua.game）。".to_owned();
+            self.progress.done = true;
+            self.progress.success = false;
+            self.progress.show = true;
+            return;
+        }
+        let Some(found) = find_publish_script(&self.project.root, self.publish.platform) else {
             self.progress.output = format!(
-                "未找到发布脚本 scripts/build/package.ps1（项目：{}）",
+                "未找到 {} 发布脚本（项目：{}）",
+                self.publish.platform,
                 display_path(&self.project.root)
             );
             self.progress.done = true;
@@ -129,7 +166,14 @@ impl EditorApp {
         } else {
             String::new()
         };
-        // 发布脚本 package.ps1 把产物直接发布到 <工程>/builds/<平台>（$finalRoot），
+        let android_application_id = if self.publish.platform == PublishPlatform::Android {
+            self.commit_android_application_id();
+            self.commit_android_toolchain();
+            self.publish.android_application_id.trim().to_owned()
+        } else {
+            String::new()
+        };
+        // 发布脚本把产物直接发布到 <工程>/builds/<平台>，
         // 不会再生成 <平台>/<发布名> 子目录；「打开目录」必须指向真实产物根，
         // 否则 ShellExecuteW 对不存在的路径静默失败，按钮点了没反应。
         let package_dir = project_root
@@ -145,6 +189,10 @@ impl EditorApp {
                 wechat_appid,
                 compress: self.publish.compress,
                 encrypt: self.publish.encrypt,
+                android_application_id,
+                android_toolchain: self.publish.android_toolchain.clone(),
+                install_android_toolchain: false,
+                accept_android_licenses: false,
                 skip_build: false,
             },
             tx,
@@ -173,6 +221,199 @@ impl EditorApp {
             Err(error) => self.publish.message = error,
         }
     }
+
+    pub(crate) fn commit_android_application_id(&mut self) {
+        if self.publish.platform != PublishPlatform::Android
+            || !self.publish.android_application_id_edited
+        {
+            return;
+        }
+        if !valid_android_application_id(&self.publish.android_application_id) {
+            self.publish.message = "applicationId 格式无效（例如 com.rustlua.game）".to_owned();
+            return;
+        }
+        match write_project_key(
+            &self.project.root,
+            ANDROID_APPLICATION_ID_KEY,
+            &self.publish.android_application_id,
+        ) {
+            Ok(_) => self.publish.message.clear(),
+            Err(error) => self.publish.message = error,
+        }
+    }
+
+    pub(crate) fn commit_android_toolchain(&mut self) {
+        if !self.publish.android_toolchain_edited {
+            return;
+        }
+        let Some(store) = editor::UserConfigStore::default_store() else {
+            self.publish.message =
+                "无法定位用户配置目录，Android 工具链路径只保存在本次编辑器会话。".to_owned();
+            return;
+        };
+        match store.save_android_toolchain(&self.publish.android_toolchain) {
+            Ok(()) => {
+                self.publish.android_toolchain_edited = false;
+                self.publish.message.clear();
+            }
+            Err(error) => {
+                self.publish.message = format!("保存 Android 工具链设置失败：{error}");
+            }
+        }
+    }
+
+    pub(crate) fn install_android_toolchain(&mut self) {
+        if self.progress.running {
+            return;
+        }
+        if !self.publish.android_license_accepted {
+            self.publish.message =
+                "请先阅读并勾选 Android SDK licenses 接受项，再开始下载和安装。".to_owned();
+            return;
+        }
+        if self
+            .publish
+            .android_toolchain
+            .install_root
+            .trim()
+            .is_empty()
+        {
+            self.publish.message = "Android 工具链安装目录不能为空。".to_owned();
+            return;
+        }
+        self.set_android_install_paths_from_root();
+        self.commit_android_application_id();
+        self.commit_android_toolchain();
+        let Some(script) = find_workspace_script("install-android-toolchain.ps1") else {
+            self.progress.output = "未找到 scripts/build/install-android-toolchain.ps1".to_owned();
+            self.progress.done = true;
+            self.progress.success = false;
+            self.progress.show = true;
+            return;
+        };
+        let (tx, rx) = channel();
+        spawn_publish(
+            PublishRequest {
+                script: strip_verbatim(&script),
+                project_root: self.project.root.clone(),
+                platform: PublishPlatform::Android,
+                publish_name: String::new(),
+                wechat_appid: String::new(),
+                android_application_id: self.publish.android_application_id.clone(),
+                android_toolchain: self.publish.android_toolchain.clone(),
+                install_android_toolchain: true,
+                accept_android_licenses: self.publish.android_license_accepted,
+                compress: false,
+                encrypt: false,
+                skip_build: false,
+            },
+            tx,
+        );
+        self.progress.start(
+            ProgressKind::Publish,
+            "安装 Android 打包环境",
+            rx,
+            None,
+            None,
+        );
+    }
+
+    fn set_android_install_paths_from_root(&mut self) {
+        let root = PathBuf::from(self.publish.android_toolchain.install_root.trim());
+        let sdk = root.join("sdk");
+        self.publish.android_toolchain.sdk_root = sdk.to_string_lossy().into_owned();
+        self.publish.android_toolchain.ndk_root = sdk
+            .join("ndk")
+            .join("27.2.12479018")
+            .to_string_lossy()
+            .into_owned();
+        self.publish.android_toolchain.jdk_home =
+            root.join("jdk-17").to_string_lossy().into_owned();
+        self.publish.android_toolchain.gradle_executable = root
+            .join("gradle-8.9")
+            .join("bin")
+            .join("gradle.bat")
+            .to_string_lossy()
+            .into_owned();
+        self.publish.android_toolchain_edited = true;
+    }
+}
+
+fn default_android_toolchain_config() -> AndroidToolchainConfig {
+    let root = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(env::temp_dir)
+        })
+        .join("RustLua")
+        .join("android-toolchain");
+    let sdk = root.join("sdk");
+    AndroidToolchainConfig {
+        install_root: root.to_string_lossy().into_owned(),
+        sdk_root: sdk.to_string_lossy().into_owned(),
+        ndk_root: sdk
+            .join("ndk")
+            .join("27.2.12479018")
+            .to_string_lossy()
+            .into_owned(),
+        jdk_home: root.join("jdk-17").to_string_lossy().into_owned(),
+        gradle_executable: root
+            .join("gradle-8.9")
+            .join("bin")
+            .join("gradle.bat")
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+fn merge_android_toolchain_config(
+    stored: AndroidToolchainConfig,
+    default_root: &str,
+) -> AndroidToolchainConfig {
+    let defaults = default_android_toolchain_config();
+    let use_default_root =
+        stored.install_root.trim().is_empty() || stored.install_root.trim() == default_root;
+    AndroidToolchainConfig {
+        install_root: if stored.install_root.trim().is_empty() {
+            defaults.install_root
+        } else {
+            stored.install_root
+        },
+        sdk_root: if stored.sdk_root.trim().is_empty() && use_default_root {
+            defaults.sdk_root
+        } else {
+            stored.sdk_root
+        },
+        ndk_root: if stored.ndk_root.trim().is_empty() && use_default_root {
+            defaults.ndk_root
+        } else {
+            stored.ndk_root
+        },
+        jdk_home: if stored.jdk_home.trim().is_empty() && use_default_root {
+            defaults.jdk_home
+        } else {
+            stored.jdk_home
+        },
+        gradle_executable: if stored.gradle_executable.trim().is_empty() && use_default_root {
+            defaults.gradle_executable
+        } else {
+            stored.gradle_executable
+        },
+    }
+}
+
+fn valid_android_application_id(value: &str) -> bool {
+    let segments: Vec<_> = value.trim().split('.').collect();
+    segments.len() >= 2
+        && segments.iter().all(|segment| {
+            let mut chars = segment.chars();
+            chars
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic())
+                && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
 }
 
 /// 读工程已缓存的微信 appid（未配置返回空串）。
@@ -182,46 +423,55 @@ pub(crate) fn read_wechat_appid(project_root: &Path) -> String {
         .unwrap_or_default()
 }
 
+pub(crate) fn read_android_application_id(project_root: &Path) -> String {
+    read_project_toml(project_root)
+        .and_then(|text| {
+            rustlua_infra::project_config::parse_key(&text, ANDROID_APPLICATION_ID_KEY)
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_ANDROID_APPLICATION_ID.to_owned())
+}
+
 /// 写微信 appid 到 `<工程>/project.toml`，返回「是否真的改了文件」。
 ///
 /// 空值写成 `wechat_appid = ""` 而不是删行：读取侧把空值视为缺失，删行则要动别人的文件结构。
 fn write_wechat_appid(project_root: &Path, appid: &str) -> Result<bool, String> {
+    write_project_key(project_root, WECHAT_APPID_KEY, appid)
+}
+
+fn write_project_key(project_root: &Path, key: &str, value: &str) -> Result<bool, String> {
     let path = project_root.join("project.toml");
-    let text = read_project_toml(project_root).ok_or_else(|| {
-        format!(
-            "无法读写工程配置，微信 appid 未缓存：{}",
-            display_path(&path)
-        )
-    })?;
-    let appid = appid.trim();
-    if read_wechat_appid(project_root).as_str() == appid {
+    let text = read_project_toml(project_root)
+        .ok_or_else(|| format!("无法读写工程配置，{key} 未缓存：{}", display_path(&path)))?;
+    let value = value.trim();
+    if rustlua_infra::project_config::parse_key(&text, key).as_deref() == Some(value) {
         return Ok(false);
     }
-    let updated = put_wechat_appid(&text, appid);
+    let updated = put_project_key(&text, key, value);
     if updated == text {
         return Ok(false);
     }
     fs::write(&path, updated)
-        .map_err(|error| format!("微信 appid 写入 {} 失败：{error}", display_path(&path)))?;
+        .map_err(|error| format!("{key} 写入 {} 失败：{error}", display_path(&path)))?;
     Ok(true)
 }
 
-/// 把 `wechat_appid` 落在 **`[project]` 段内**。
+/// 把键落在 **`[project]` 段内**（微信 appid 与 Android applicationId 共用）。
 ///
 /// 为什么不能用 `panels::project_settings::upsert_project_toml`（它缺失键时追加到文件末尾）：
 /// 真实工程的 `project.toml` 普遍以 `[audio]`/`[input]` 段结尾，追加进去就成了
 /// `input.wechat_appid` —— 我方按行扁平扫描照样读得到，但任何真正的 TOML 解析方都会读到
 /// 错的段（第一版就这么把 appid 写进了 `game_jhyt` 的 `[input]` 里）。
 ///
-/// 顺带自愈：先把**任意位置**的旧 `wechat_appid` 行删掉再插到 `[project]` 段末，
+/// 顺带自愈：先把**任意位置**的旧键行删掉再插到 `[project]` 段末，
 /// 所以上面那批被写坏的工程，用户重新填一次 appid 就会被搬回正确的段。
 /// 没有 `[project]` 表头的工程（纯扁平键）退回追加到文件末尾。
-fn put_wechat_appid(content: &str, appid: &str) -> String {
-    let line = format!("{WECHAT_APPID_KEY} = \"{appid}\"");
+fn put_project_key(content: &str, key: &str, value: &str) -> String {
+    let line = format!("{key} = \"{value}\"");
     let had_newline = content.ends_with('\n');
     let kept: Vec<String> = content
         .lines()
-        .filter(|raw| !line_is_wechat_appid(raw))
+        .filter(|raw| !line_has_key(raw, key))
         .map(str::to_owned)
         .collect();
     let mut section_end = None;
@@ -251,10 +501,10 @@ fn put_wechat_appid(content: &str, appid: &str) -> String {
 }
 
 /// 某行是否为 `wechat_appid =`（去前导空白/BOM 后判断；注释行以 `#` 开头不会命中）。
-fn line_is_wechat_appid(line: &str) -> bool {
+fn line_has_key(line: &str, key: &str) -> bool {
     let trimmed = line.trim().trim_start_matches('\u{feff}');
     trimmed
-        .strip_prefix(WECHAT_APPID_KEY)
+        .strip_prefix(key)
         .is_some_and(|rest| rest.starts_with(" ="))
 }
 
@@ -262,14 +512,18 @@ fn read_project_toml(project_root: &Path) -> Option<String> {
     fs::read_to_string(project_root.join("project.toml")).ok()
 }
 
-/// 定位发布脚本 `scripts/build/package.ps1`。
+/// 定位当前平台的发布脚本。
 ///
-/// 发布脚本属于引擎工作区（`E:\Codex\RustLua\scripts\build\package.ps1`）。优先从编辑器
-/// 自身定位工作区：
+/// 发布脚本属于引擎工作区。优先从编辑器自身定位工作区：
 /// 1. 编译期 `CARGO_MANIFEST_DIR`（编辑器 crate 上溯 3 级 = 工作区根，见 `workspace_root`）；
 /// 2. 运行时 `current_exe()` 所在目录及其祖先（编辑器被复制/安装到别处也有效）；
 /// 3. 回退从项目根向上查找。
-fn find_publish_script(root: &Path) -> Option<PathBuf> {
+fn find_publish_script(root: &Path, platform: PublishPlatform) -> Option<PathBuf> {
+    let script_name = if platform == PublishPlatform::Android {
+        "package-android.ps1"
+    } else {
+        "package.ps1"
+    };
     let mut dirs = vec![crate::workspace_root()];
     if let Ok(exe) = env::current_exe()
         && let Some(parent) = exe.parent()
@@ -278,7 +532,19 @@ fn find_publish_script(root: &Path) -> Option<PathBuf> {
     }
     dirs.extend(root.ancestors().map(Path::to_path_buf));
     dirs.into_iter()
-        .map(|dir| dir.join("scripts").join("build").join("package.ps1"))
+        .map(|dir| dir.join("scripts").join("build").join(script_name))
+        .find(|path| path.is_file())
+}
+
+fn find_workspace_script(name: &str) -> Option<PathBuf> {
+    let mut dirs = vec![crate::workspace_root()];
+    if let Ok(exe) = env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.extend(parent.ancestors().map(Path::to_path_buf));
+    }
+    dirs.into_iter()
+        .map(|dir| dir.join("scripts").join("build").join(name))
         .find(|path| path.is_file())
 }
 
@@ -339,10 +605,9 @@ fn prepend_path(bin: &Path) -> String {
     parts.join(";")
 }
 
-/// 一次发布请求的全部参数（M20-03）。
+/// 一次发布请求的全部参数。
 ///
-/// 打成结构体而不是长参数表：`spawn_publish` 原先有 8 个参数，越过 clippy 的
-/// `too_many_arguments` 阈值，且新增开关（如 `-SkipBuild`）时调用点极易错位。
+/// 使用结构体而不是长参数表，避免新增平台参数或开关时调用点错位。
 #[derive(Debug, Clone)]
 struct PublishRequest {
     script: PathBuf,
@@ -351,6 +616,10 @@ struct PublishRequest {
     publish_name: String,
     /// 微信小游戏 appid；非微信平台传空串（脚本侧因此保持模板的 `touristappid`）。
     wechat_appid: String,
+    android_application_id: String,
+    android_toolchain: AndroidToolchainConfig,
+    install_android_toolchain: bool,
+    accept_android_licenses: bool,
     compress: bool,
     encrypt: bool,
     /// 测试专用：复用 `target/release` 既有产物（`-SkipBuild`），正式发布传 false。
@@ -371,6 +640,10 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
         platform,
         publish_name,
         wechat_appid,
+        android_application_id,
+        android_toolchain,
+        install_android_toolchain,
+        accept_android_licenses,
         compress,
         encrypt,
         skip_build,
@@ -382,18 +655,41 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
             .arg(&script)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // PowerShell 参数：项目路径、发布平台必传，switch 参数勾选才传 `-Compress`/`-Encrypt`。
-        command.arg("-ProjectRoot").arg(&project_root);
-        command.arg("-Platform").arg(platform.script_value());
-        command.arg("-PublishName").arg(&publish_name);
+        if install_android_toolchain {
+            command
+                .arg("-InstallRoot")
+                .arg(&android_toolchain.install_root);
+            if accept_android_licenses {
+                command.arg("-AcceptAndroidLicenses");
+            }
+        } else {
+            command.arg("-ProjectRoot").arg(&project_root);
+        }
+        if platform != PublishPlatform::Android {
+            command.arg("-Platform").arg(platform.script_value());
+        } else if !install_android_toolchain {
+            command.arg("-ApplicationId").arg(&android_application_id);
+            command
+                .arg("-SdkRoot")
+                .arg(&android_toolchain.sdk_root)
+                .arg("-NdkRoot")
+                .arg(&android_toolchain.ndk_root)
+                .arg("-JdkHome")
+                .arg(&android_toolchain.jdk_home)
+                .arg("-GradleExecutable")
+                .arg(&android_toolchain.gradle_executable);
+        }
+        if !install_android_toolchain {
+            command.arg("-PublishName").arg(&publish_name);
+        }
         // appid 只在微信小游戏平台传（非微信传的是空串，且脚本侧只有微信分支消费它）。
         if platform == PublishPlatform::WechatMiniGame && !wechat_appid.trim().is_empty() {
             command.arg("-WechatAppId").arg(wechat_appid.trim());
         }
-        if compress {
+        if compress && !install_android_toolchain {
             command.arg("-Compress");
         }
-        if encrypt {
+        if encrypt && !install_android_toolchain {
             command.arg("-Encrypt");
         }
         if skip_build {
@@ -466,9 +762,9 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
 }
 
 /// 把发布脚本的阶段标记映射为大致进度 `0..=1`；未知行返回 `None`（保持当前进度）。
-/// 对应 scripts/build/package.ps1 里的 `==>` 阶段与最终就绪标记。
+/// 对应各平台发布脚本里的 `==>` 阶段与最终就绪标记。
 fn publish_stage_progress(line: &str) -> Option<f32> {
-    if line.contains("==> Release build") {
+    if line.contains("==> Release build") || line.contains("==> Android release build") {
         Some(0.15)
     } else if line.contains("==> Install wasm-bindgen-cli") {
         Some(0.4)
@@ -478,7 +774,7 @@ fn publish_stage_progress(line: &str) -> Option<f32> {
         Some(0.7)
     } else if line.contains("==> Directory-isolation self test") {
         Some(0.85)
-    } else if line.contains("Release package ready") {
+    } else if line.contains("Release package ready") || line.contains("Android APK ready") {
         Some(0.95)
     } else {
         None
@@ -565,9 +861,14 @@ mod publish_tests {
     [switch]$Compress,
     [switch]$Encrypt,
     [string]$WechatAppId
+    [string]$ApplicationId
+    [string]$SdkRoot
+    [string]$NdkRoot
+    [string]$JdkHome
+    [string]$GradleExecutable
 )
 Write-Output "==> Release build ($Platform)"
-Write-Output "publish_stub_ok project=$ProjectRoot platform=$Platform name=$PublishName skip=$SkipBuild"
+Write-Output "publish_stub_ok project=$ProjectRoot platform=$Platform app=$ApplicationId name=$PublishName skip=$SkipBuild"
 exit 0
 "#,
         )
@@ -582,6 +883,10 @@ exit 0
                 platform: PublishPlatform::Pc,
                 publish_name: "examples".to_owned(),
                 wechat_appid: String::new(),
+                android_application_id: String::new(),
+                android_toolchain: default_android_toolchain_config(),
+                install_android_toolchain: false,
+                accept_android_licenses: false,
                 compress: false,
                 encrypt: false,
                 skip_build: true,
@@ -610,6 +915,42 @@ exit 0
             output.contains("platform=pc") && output.contains("skip=True"),
             "参数应原样传给脚本：\n{output}"
         );
+
+        let (tx, rx) = channel();
+        spawn_publish(
+            PublishRequest {
+                script: root.join("publish-stub.ps1"),
+                project_root: root.join("project"),
+                platform: PublishPlatform::Android,
+                publish_name: "Android demo".to_owned(),
+                wechat_appid: String::new(),
+                android_application_id: "org.example.demo".to_owned(),
+                android_toolchain: default_android_toolchain_config(),
+                install_android_toolchain: false,
+                accept_android_licenses: false,
+                compress: false,
+                encrypt: false,
+                skip_build: true,
+            },
+            tx,
+        );
+        let mut output = String::new();
+        let mut success = false;
+        while let Ok(event) = rx.recv() {
+            match event {
+                ProgressEvent::Line(text) => output.push_str(&text),
+                ProgressEvent::Finished { success: s, .. } => {
+                    success = s;
+                    break;
+                }
+                ProgressEvent::Progress(_) => {}
+            }
+        }
+        assert!(success, "Android 发布桩应成功；输出：\n{output}");
+        assert!(
+            output.contains("app=org.example.demo") && output.contains("name=Android demo"),
+            "applicationId 和发布名应传到 Android 脚本：\n{output}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -627,12 +968,66 @@ exit 0
             .parent()
             .map(|github| github.join("games").join("ui_demo"))
             .unwrap_or_else(|| PathBuf::from(r"C:\GitHub\games\ui_demo"));
-        let script = find_publish_script(&outside_project).expect("应命中工作区根下的发布脚本");
+        let script = find_publish_script(&outside_project, PublishPlatform::Pc)
+            .expect("应命中工作区根下的发布脚本");
         assert!(script.is_file());
         assert_eq!(
             script,
             workspace.join("scripts").join("build").join("package.ps1")
         );
+        let android_script = find_publish_script(&outside_project, PublishPlatform::Android)
+            .expect("Android 应命中独立发布脚本");
+        assert_eq!(
+            android_script,
+            workspace
+                .join("scripts")
+                .join("build")
+                .join("package-android.ps1")
+        );
+    }
+
+    #[test]
+    fn android_application_id_validation_and_default_are_stable() {
+        assert!(valid_android_application_id("com.rustlua.game"));
+        assert!(valid_android_application_id("org.example.game_2"));
+        assert!(!valid_android_application_id("rustlua"));
+        assert!(!valid_android_application_id("com.2game"));
+        assert!(!valid_android_application_id("com.example.game-name"));
+
+        let root = temp_project("android-appid", "[project]\nname = \"DemoGame\"\n");
+        assert_eq!(
+            PublishState::new(&root).android_application_id,
+            DEFAULT_ANDROID_APPLICATION_ID
+        );
+        assert!(write_project_key(&root, ANDROID_APPLICATION_ID_KEY, "org.example.game").unwrap());
+        assert_eq!(read_android_application_id(&root), "org.example.game");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn android_toolchain_defaults_follow_install_root_and_keep_custom_paths() {
+        let defaults = default_android_toolchain_config();
+        assert!(
+            defaults
+                .sdk_root
+                .ends_with(r"RustLua\android-toolchain\sdk")
+        );
+        assert!(defaults.ndk_root.ends_with(r"sdk\ndk\27.2.12479018"));
+        assert!(defaults.jdk_home.ends_with(r"android-toolchain\jdk-17"));
+        assert!(
+            defaults
+                .gradle_executable
+                .ends_with(r"android-toolchain\gradle-8.9\bin\gradle.bat")
+        );
+        let stored = AndroidToolchainConfig {
+            install_root: "D:\\AndroidTools".to_owned(),
+            sdk_root: "D:\\AndroidTools\\sdk-custom".to_owned(),
+            ndk_root: String::new(),
+            jdk_home: "D:\\Java\\jdk-17".to_owned(),
+            gradle_executable: "D:\\Gradle\\bin\\gradle.bat".to_owned(),
+        };
+        let merged = merge_android_toolchain_config(stored.clone(), &defaults.install_root);
+        assert_eq!(merged, stored);
     }
 
     #[test]
@@ -649,6 +1044,10 @@ exit 0
         );
         assert_eq!(
             publish_stage_progress("Release package ready: C:/x"),
+            Some(0.95)
+        );
+        assert_eq!(
+            publish_stage_progress("Android APK ready: C:/x"),
             Some(0.95)
         );
         assert_eq!(publish_stage_progress("cargo build finished"), None);
@@ -765,21 +1164,26 @@ exit 0
         // 项目导入是就地替换 `self.project`：面板缓冲不重播就会把上一个工程的值写进新工程。
         let first = temp_project(
             "reseed-a",
-            "[project]\nname = \"A\"\nwechat_appid = \"wxaaaaaaaaaaaaaaaa\"\n",
+            "[project]\nname = \"A\"\nwechat_appid = \"wxaaaaaaaaaaaaaaaa\"\nandroid_application_id = \"org.example.a\"\n",
         );
         let second = temp_project(
             "reseed-b",
-            "[project]\nname = \"B\"\nwechat_appid = \"wxbbbbbbbbbbbbbbbb\"\n",
+            "[project]\nname = \"B\"\nwechat_appid = \"wxbbbbbbbbbbbbbbbb\"\nandroid_application_id = \"org.example.b\"\n",
         );
         let mut state = PublishState::new(&first);
         assert_eq!(state.wechat_appid, "wxaaaaaaaaaaaaaaaa");
+        assert_eq!(state.android_application_id, "org.example.a");
         // 模拟"用户在 A 里改过 appid"后切到 B：脏标记必须随重播清掉。
         state.wechat_appid = "typed-by-hand".to_owned();
         state.appid_edited = true;
+        state.android_application_id = "org.example.typed".to_owned();
+        state.android_application_id_edited = true;
         state.reseed(&second);
         assert_eq!(state.wechat_appid, "wxbbbbbbbbbbbbbbbb");
+        assert_eq!(state.android_application_id, "org.example.b");
         assert_eq!(state.name, "B");
         assert!(!state.appid_edited, "换工程后不该把上一个工程的值回写");
+        assert!(!state.android_application_id_edited);
         fs::remove_dir_all(&first).ok();
         fs::remove_dir_all(&second).ok();
     }

@@ -411,6 +411,67 @@ fn lua_physics3d_ccd_flag_reaches_the_rigid_body() {
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
 }
+
+/// P3-R217：`entity.destroy` 只记账，逐格碰撞体要等**下一次 `step_physics`** 才被统一摘掉。
+///
+/// Myrmex 退出 3D 特写靠的就是这条通路（`view/nest_cells.lua` 只 despawn 实体，Lua 面没有 remove
+/// 通路）：摘除若不成立，最后一次位图砌出来的墙会一直挡着音频遮挡射线。时序也一并钉住——销毁当场
+/// 射线仍撞上（deferred removal 是设计，不是漏），推进一步才真的让开。
+#[test]
+fn destroying_the_owner_drops_its_cells_collider_on_the_next_step() {
+    use rustlua_scene::scene::Scene;
+    use rustlua_scene::scene::SceneEntityId;
+
+    let mut scene = Scene::new("cells_destroy");
+    scene.add_entity(SceneEntityId(1), "Nest", None).unwrap();
+    scene
+        .entities
+        .get_mut(&SceneEntityId(1))
+        .unwrap()
+        .components
+        .insert(
+            "Transform".into(),
+            "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
+    let path = script(
+        "function raycast() return physics3d.raycast(0.5, 3.0, 0.5, 0, -1, 0, 5) end\n\
+         function update()\n\
+           if not wall then\n\
+             wall = entity.find('Nest')\n\
+             local boxes = physics3d.add_cells(wall,\n\
+               { cell = 1, x = 0, y = 0, z = 0, w = 2, h = 1, d = 1, solids = { 0, 1 } })\n\
+             return 'added ' .. boxes .. ' ' .. tostring(raycast() == wall)\n\
+           end\n\
+           if not destroyed then\n\
+             destroyed = true\n\
+             entity.destroy(wall)\n\
+             return 'destroyed ' .. tostring(raycast() == wall)\n\
+           end\n\
+           return 'after_step ' .. tostring(raycast() == wall)\n\
+         end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(
+        runtime.call_update().unwrap(),
+        "added 1 true",
+        "两格一行该并成 1 个碰撞体，且射线必须撞上它"
+    );
+    assert_eq!(
+        runtime.call_update().unwrap(),
+        "destroyed true",
+        "销毁只记账：下一次推进前刚体还在，射线仍撞上"
+    );
+    runtime.step_physics(1.0 / 60.0);
+    assert_eq!(
+        runtime.call_update().unwrap(),
+        "after_step false",
+        "推进一步后统一摘除必须真的让射线穿过去"
+    );
+    let _ = fs::remove_file(path);
+}
 #[test]
 fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
     use rustlua_scene::scene::Scene;

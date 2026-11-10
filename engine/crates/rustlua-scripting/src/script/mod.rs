@@ -55,6 +55,7 @@ use domain::camera::camera::{Camera2D, Camera3D};
 use domain::ecs::{
     entity::EntityId,
     particle::{Particle, ParticleEmitter, ParticleMode, ParticleSystem},
+    particle_wind_grid::WindGrid,
     world::World,
 };
 use domain::gameplay::gameplay::GameClock;
@@ -213,6 +214,10 @@ pub(crate) struct ScriptState {
     /// 上一次 Lua `update()` 的耗时（微秒）。宿主把它累加进 `PerformanceStats::lua_ms`
     /// ——这个指标此前只有单测在写，真实运行恒为 `0.000`（P4 接线，见 `docs/37` 5-6）。
     last_update_micros: u64,
+    /// 上一次 Lua `on_frame()` 的耗时（微秒）。与 `last_update_micros` 分开记：
+    /// 一个渲染帧里 `update()` 可能跑 N 次而 `on_frame()` 只跑一次，混在一起会把
+    /// "每帧表现层成本"算成"每次逻辑步成本"。
+    last_frame_micros: u64,
     /// 世界数据域的能力单元（P1 ⑤-4c：状态与绑定都归 `rustlua-gameplay`）。
     world_data: Handle<crate::script::domain::gameplay::world_data_state::WorldDataState>,
     /// 相机域的能力单元（P1 ⑤-8：选中项 / 2D 控制器 / 两份每帧快照与三张 Lua 表都归
@@ -263,6 +268,12 @@ pub(crate) struct ScriptState {
     render_ripple: Option<[f32; 2]>,
     /// P3-R140：暗角/颗粒（0..1）。
     render_post_fx: Option<[f32; 2]>,
+    /// P3-R210：剖切口的实体封口深度（米，0 = 关）。
+    render_clip_cap: Option<f32>,
+    /// P3-R211：封口是否也吃到单面网格；`None` = 脚本没碰过，渲染器保持宿主启动档。
+    render_clip_cap_both_sides: Option<bool>,
+    /// P3-R242：水面折射的 Snell 屏幕空间步进数（0 = 关 = R207 的偏移近似）。
+    render_water_refract_steps: Option<u32>,
     /// P3-R151：上一帧渲染统计（draws/vertices/triangles/set-passes）。
     render_stats: Option<[u64; 4]>,
     /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
@@ -886,6 +897,18 @@ impl LuaRuntime {
     pub fn render_post_fx(&self) -> Option<[f32; 2]> {
         self.state.borrow().render_post_fx
     }
+    /// 脚本设置的剖面封口深度（米，0 = 关）；`None` = 渲染器默认。
+    pub fn render_clip_cap(&self) -> Option<f32> {
+        self.state.borrow().render_clip_cap
+    }
+    /// 脚本设置的「封口吃到单面网格」档；`None` = 渲染器保持宿主启动值（`--clip-cap-both-sides`）。
+    pub fn render_clip_cap_both_sides(&self) -> Option<bool> {
+        self.state.borrow().render_clip_cap_both_sides
+    }
+    /// 脚本设置的水面折射步进数；`None` = 渲染器保持宿主启动值（`--water-refract-steps`）。
+    pub fn render_water_refract_steps(&self) -> Option<u32> {
+        self.state.borrow().render_water_refract_steps
+    }
     /// 写入上一帧渲染统计。
     pub fn set_render_stats(&self, stats: [u64; 4]) {
         self.state.borrow_mut().render_stats = Some(stats);
@@ -911,6 +934,13 @@ impl LuaRuntime {
     /// 当前存活粒子数（宿主侧读取，避免为了拿长度而借用整个切片）。
     pub fn particle_count(&self) -> usize {
         self.state.borrow().particles.len()
+    }
+    /// 网格体积风/温度浮力场（宿主同步给 GPU 粒子后端）。
+    ///
+    /// 用闭包包住 `RefCell` 借用：场的格阵数据大，不能按值拷出借用期，只能在借用期里
+    /// 同步。`None` = 脚本层没建场。
+    pub fn with_wind_grid<R>(&self, f: impl FnOnce(Option<&WindGrid>) -> R) -> R {
+        f(self.state.borrow().particles.wind_grid())
     }
     /// Snapshot of Lua-declared 3D continuous emitters. The host maps each key
     /// to a renderer stream, so the returned value deliberately does not borrow

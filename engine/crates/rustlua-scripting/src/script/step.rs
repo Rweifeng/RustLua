@@ -11,6 +11,19 @@ use crate::script::domain::ecs::transform::Transform3D;
 // WP11-USE:END
 
 impl LuaRuntime {
+    /// 渲染域的脚本可见状态（P3-R238：宿主用它推进**场景时钟**）。
+    ///
+    /// 场景时钟是程序化实例运动（实例批次的路径流）的时间基准：宿主推进它，渲染提取与
+    /// 脚本读回都按它求值 ⇒ "画出来的姿态"与"读回来的姿态"永远是同一个时刻。
+    #[must_use]
+    pub fn renderable_state(
+        &self,
+    ) -> rustlua_lua_api::Handle<crate::script::domain::render::renderable_lua::RenderableState>
+    {
+        self.state.borrow().renderable.clone()
+    }
+
+    /// 物理一步：**只推进模拟**，把被移动的动态刚体暂存起来等 `Writeback` 阶段写回。
     /// 物理一步：**只推进模拟**，把被移动的动态刚体暂存起来等 `Writeback` 阶段回写。
     ///
     /// WP7 把"推进"与"回写"拆成两个阶段（`Physics` → `Writeback`），于是 2D 与 3D 的**所有**

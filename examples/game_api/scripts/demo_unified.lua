@@ -45,6 +45,15 @@ local light_side = "sun"
 local palette = 1
 local cleared_nil = false
 local camera_ok = false
+local batch_count = 0
+local cleared_count = 0
+local motion_count = 0
+local motion_pose = nil
+local patch_replaced = 0
+local patch_count = 0
+local patch_x = nil
+local patch_zero = nil
+local patch_oob = nil
 
 --- `entity.find` + 存活校验：缺实体时返回 nil，调用方据此跳过而不是让 API 报错。
 local function live(name)
@@ -182,6 +191,168 @@ local steps = {
             end
             t:eq(mesh.get(tri), TRIANGLE_MESH, "mesh.set restored the glTF path")
             t:eq(cleared_nil, true, "mesh.clear made mesh.get return nil")
+        end,
+    },
+    {
+        id = "crowd_batch",
+        title = "Crowd batch",
+        claim = "mesh.set_batch 把 N 份实例变换收进**一个**实体（渲染侧一次实例化绘制）；mesh.batch_count 读回实例数，mesh.clear_batch 摘掉批次",
+        api = { "mesh.set_batch", "mesh.batch_count", "mesh.clear_batch", "entity.find", "entity.is_alive" },
+        code = "mesh.set_batch(tri, ground, {{x=0,y=0,z=0},{x=2,y=0,z=0,yaw=1.57}}); mesh.batch_count(tri)",
+        enter = function()
+            reset_world()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            -- 两份实例摆位：一份在原点、一份偏 2 米并转 90°。姿态给 yaw（弧度，绕 +Y），
+            -- 缩放给 sx/sy/sz；也可以给 q={x,y,z,w} 用完整四元数（给了 q 就以 q 为准）。
+            mesh.set_batch(tri, GROUND_MESH, {
+                { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0 },
+                { x = 2.0, y = 0.0, z = 0.0, yaw = 1.5707963, sx = 0.5, sy = 0.5, sz = 0.5 },
+            })
+            batch_count = mesh.batch_count(tri)
+            mesh.clear_batch(tri)
+            cleared_count = mesh.batch_count(tri)
+        end,
+        run = function()
+            local tri = live(TRI)
+            lab.note("mesh.batch_count = " .. tostring(batch_count) .. "（clear 之后 " .. tostring(cleared_count) .. "）")
+        end,
+        read = function()
+            return {
+                batch_count = tostring(batch_count),
+                cleared_count = tostring(cleared_count),
+            }
+        end,
+        check = function(t)
+            local tri = live(TRI)
+            if not tri then
+                t:ok(false, "TriMesh is required")
+                return
+            end
+            t:eq(batch_count, 2, "mesh.set_batch stored two instances")
+            t:eq(cleared_count, 0, "mesh.clear_batch removed the batch")
+            t:eq(mesh.batch_count(tri), 0, "batch_count reads back zero after clear")
+        end,
+    },
+    {
+        id = "crowd_batch_patch",
+        title = "Crowd batch range patch",
+        claim = "mesh.set_batch_range 只解析并替换从 start 起的一段实例：批次数量与其余实例都不动；越界段直接报错（不扩批、不静默）",
+        api = { "mesh.set_batch", "mesh.set_batch_range", "mesh.batch_count", "mesh.batch_pose", "entity.find", "entity.is_alive" },
+        code = "mesh.set_batch(tri, ground, {{x=0},{x=2},{x=4}}); mesh.set_batch_range(tri, 1, {{x=9}}); mesh.batch_pose(tri, 1)",
+        enter = function()
+            reset_world()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            mesh.set_batch(tri, GROUND_MESH, {
+                { x = 0.0, y = 0.0, z = 0.0 },
+                { x = 2.0, y = 0.0, z = 0.0 },
+                { x = 4.0, y = 0.0, z = 0.0 },
+            })
+            patch_replaced = mesh.set_batch_range(tri, 1, {
+                { x = 9.0, y = 0.0, z = 0.0 },
+            })
+            patch_count = mesh.batch_count(tri)
+            patch_zero = mesh.batch_pose(tri, 0)
+            local pose = mesh.batch_pose(tri, 1)
+            patch_x = pose and pose.x
+            -- 越界段必须报错：返回非 nil 说明引擎把它当成"扩批"静默接受了。
+            -- pcall 的错误值是 userdata（mlua 的 Error 包装），tostring 之后才能查文案。
+            patch_oob = tostring((select(2, pcall(mesh.set_batch_range, tri, 3, { { x = 1.0, y = 0.0, z = 0.0 } }))))
+        end,
+        run = function()
+            lab.note("mesh.set_batch_range 替换 " .. tostring(patch_replaced) .. " 只；第 1 只 x="
+                .. tostring(patch_x) .. "；越界报错：" .. tostring(patch_oob))
+        end,
+        read = function()
+            return {
+                patch_replaced = tostring(patch_replaced),
+                patch_count = tostring(patch_count),
+                patch_x = tostring(patch_x),
+                patch_zero_x = tostring(patch_zero and patch_zero.x),
+                patch_oob = tostring(patch_oob),
+            }
+        end,
+        check = function(t)
+            local tri = live(TRI)
+            if not tri then
+                t:ok(false, "TriMesh is required")
+                return
+            end
+            t:eq(patch_replaced, 1, "set_batch_range replaced exactly one instance")
+            t:eq(patch_count, 3, "range patch kept the batch size")
+            t:ok(type(patch_x) == "number" and math.abs(patch_x - 9.0) < 1e-4,
+                "patched instance moved to x=9")
+            t:ok(type(patch_zero) == "table" and math.abs(patch_zero.x) < 1e-4,
+                "instance #0 is untouched")
+            t:ok(type(patch_oob) == "string" and patch_oob:find("out of bounds", 1, true) ~= nil,
+                "an out-of-range patch is rejected, not silently extended")
+        end,
+    },
+    {
+        id = "crowd_motion",
+
+        title = "Crowd motion",
+        claim = "mesh.set_batch 的第五个参数是批次级程序化运动：位姿由引擎按路径与场景时钟求值，脚本只写一次静态表；mesh.batch_pose 读回的就是引擎算出来的那一个位姿",
+        api = { "mesh.set_batch", "mesh.batch_pose", "mesh.batch_count", "entity.find", "entity.is_alive" },
+        code = 'mesh.set_batch(tri, ground, {{s=0, align=true, forward="z"}}, nil, {kind="path", path={{x=10,y=0,z=0},{x=14,y=0,z=0}}, speed=2}); mesh.batch_pose(tri, 0)',
+        enter = function()
+            reset_world()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            -- 路径故意**不从原点起**：带运动时实例表里不许写 x/y/z（写了引擎直接报错），
+            -- 于是"退回静态表"的位置只能是 (0,0,0) ⇒ 读回位置落在 10..14 就说明引擎真的
+            -- 按路径算了，而不是退回静态。
+            mesh.set_batch(tri, GROUND_MESH, {
+                { s = 0.0, align = true, forward = "z", sx = 0.5, sy = 0.5, sz = 0.5 },
+            }, nil, {
+                kind = "path",
+                path = {
+                    { x = 10.0, y = 0.0, z = 0.0 },
+                    { x = 14.0, y = 0.0, z = 0.0 },
+                },
+                speed = 2.0,
+            })
+            motion_count = mesh.batch_count(tri)
+            motion_pose = mesh.batch_pose(tri, 0)
+        end,
+        run = function()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            motion_pose = mesh.batch_pose(tri, 0)
+        end,
+        read = function()
+            return {
+                motion_count = tostring(motion_count),
+                motion_x = tostring(motion_pose and motion_pose.x),
+                motion_yaw = tostring(motion_pose and motion_pose.yaw),
+            }
+        end,
+        check = function(t)
+            local tri = live(TRI)
+            if not tri then
+                t:ok(false, "TriMesh is required")
+                return
+            end
+            t:eq(motion_count, 1, "motion batch stored one instance")
+            t:ok(motion_pose ~= nil, "mesh.batch_pose read back a pose")
+            if not motion_pose then
+                return
+            end
+            t:ok(
+                motion_pose.x >= 10.0 and motion_pose.x <= 14.0,
+                "pose is on the path (a static fallback would land at 0)"
+            )
+            -- 模型前向轴写的是 "+Z 前向" ⇒ 路径沿 +X 走时 yaw = atan2(dx, dz) = π/2。
+            t:near(motion_pose.yaw, math.pi * 0.5, 0.01, "yaw follows the tangent (forward = z)")
         end,
     },
     {

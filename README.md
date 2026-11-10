@@ -1,13 +1,13 @@
 # RustLua
 
 Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编辑器、一个资源打包器（assetc）、
-一个 Windows 桌面游戏运行器，以及引擎 API 活文档（`examples/game_api`）。
+一个 Windows 桌面 / Android 游戏运行器，以及引擎 API 活文档（`examples/game_api`）。
 《江湖有田》完整玩法工程已整体迁出仓库，现在位于 `E:\Qoder\game_jhyt`。
 
 - **引擎**：Rust 负责渲染（wgpu）、ECS、物理（rapier）、输入、音频、字体与资源；玩法规则全部用 Lua。
 - **编辑**：`editor` 提供场景/层级/Inspector、Tilemap 与 2D Animation 编辑、Play 预览、资源面板与发布；
   场景里的变换与相机各只有**一个**组件名——`Transform` 与 `Camera`。
-- **发布**：`scripts/build/package.ps1` 产 PC / WebGL / 微信小游戏三种平台产物；`scripts/build/package-engine.ps1`
+- **发布**：`scripts/build/package.ps1` 产 PC / WebGL / 微信小游戏，`scripts/build/package-android.ps1` 产 Android APK；`scripts/build/package-engine.ps1`
   产免安装的编辑器绿色版（含便携模式，不写 `%APPDATA%`）。PC 与引擎包由 `v*` tag 触发
   `.github/workflows/release.yml` 构建、签名（有证书时）、生成 SBOM 与 `SHA256SUMS.txt` 并上传 Release；
   tag 不干净/版本不一致即阻断，见 [docs/69](docs/69-发布与供应链安全.md)。
@@ -22,7 +22,7 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
 |---|---|
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
 | `examples/game_api` | 仓库唯一的样板工程（引擎 API 活文档）：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 12 条门守 |
-| `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
+| `plugins/` | 平台模板：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由）、`android/`（NativeActivity 与 Gradle 模板） |
 | `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`metrics/`（覆盖率/cfg/趋势/编译/体积测量）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
@@ -55,6 +55,7 @@ cargo run -p editor -- --project ..\examples\game_api --check
 | PC | `scripts\build\package.ps1 -ProjectRoot examples/game_api` | 干净目录可运行、`pack/` 只读、存档与设置写用户数据目录（`-SelfTest` 每次复核） |
 | WebGL | 加 `-Platform webgl` | **产物层 + 浏览器契约门（2026-11-02 复测）**：`verify-webgl-bundle.ps1` 在无头 Edge 里起 `game_api` 的发布包，`boot=ok`、`missing_host_api=0`、`draws=3 tris=2582`；`verify-webgl.ps1` 的浏览器契约检查 `webgl2=true`（ANGLE 软件光栅）、manifest 105 项、缺件 404。**边界**：页面自报 `legacy JS world skipped`，那段"完整玩法剧本"门自 B8 起**没有写者**；旧的 `-DriveJhyt` 证据随 jhyt 迁出仓库失效——README 不再据此宣称"浏览器内跑完整玩法" |
 | 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **真机验收是历史证据**（2026-09-27、Android：进山庄 / 摇杆 / 按钮全通）；**产物层每天可复核**：2026-11-03 复测 `wechat_minigame_package_ok`（主包 16.6% / 分包 42.0% / 合计 45.3%，9,280 KB）、`l3_api_contract=ok`、`eh_probe=accepted`、`subpackage_case=ok,delay,delay-move,never,fail-once,no-game-json`、字体 `NotoSansSC-VF.ttf` 真加载（2026-11-02 同口径读数为主包 16.6% / 分包 41.9% / 合计 45.3%，可复现）；harness 明确 `runtime=env-limited:no-webgl2`（假宿主拿不到 WebGL2 ⇒ `frames=0`，**帧与像素未证**，不是通过） |
+| Android APK | `scripts\build\package-android.ps1 -ProjectRoot examples/game_api` | NativeActivity、`arm64-v8a`、默认 `com.rustlua.game`；需要 JDK 17、Android SDK/NDK、Gradle、`cargo-ndk`。当前机器缺少 Android 工具链，未验证 APK 或真机运行；debug key 签名仅用于侧载测试 |
 | 编辑器绿色版 | `scripts\build\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
 | GitHub Release（PC + 引擎包） | `scripts\repo\tag-release.ps1 -Push`（先跑默认 dry-run 复核；或 Actions 手动 `dry_run`） | tag 触发 `release.yml`：构建 → 安全门/SBOM → 可选 Authenticode 签名 → zip + `SHA256SUMS.txt` + notes；WebGL/微信仍手工，见 [docs/69](docs/69-发布与供应链安全.md) |
 
@@ -131,7 +132,7 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **47 个模块表 / 377 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
+  **49 个模块表 / 414 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
   `scripts/verify/check-doc-claims.mjs` 与覆盖率门自动守，不靠人记；1.3 版核对时把 README 里过期的
   40/270 改正，2026-10-27 又把 283 校正为 313，2026-10-28 随 `nav` 模块校正为 319，
   2026-10-29 随 `net.now()` 校正为 328）/ 31 个运行时组件全部有演示；引擎新增一个

@@ -26,11 +26,12 @@ use winit::{
 };
 
 use engine::host::{
-    FrameProfile, OverlayVertex, RenderSettings, RuntimeScene, SceneDraw, SceneMesh,
+    FrameProfile, HostPhases, OverlayVertex, RenderSettings, RuntimeScene, SceneDraw, SceneMesh,
     ScriptErrorPolicy, apply_scene_environment,
 };
 use rustlua_gpu::{RenderOutcome, Renderer};
 
+use crate::cli::Quality;
 use crate::memory::{self, MemoryStats};
 
 pub struct GameApp {
@@ -55,7 +56,9 @@ pub struct GameApp {
     last_frame: Instant,
     performance: PerformanceStats,
     /// P3-R155：上一帧渲染统计（draw/vertices/triangles），供 F3 overlay 显示。
-    last_render_stats: [u64; 6],
+    /// [draw, vert, tri, inst_all, mesh_inst, mesh_draw, cull_cand, cull_rej,
+    ///  pcull, scull, pl_cull, face_cull]。
+    last_render_stats: [u64; 12],
     /// 调试 overlay（帧率/耗时文本）是否绘制。**默认关闭**：发布包不应带开发者
     /// 读数，游戏内按 `F3` 可随时开启/关闭（诊断用）。数值本身仍每帧统计并写
     /// `[perf]` 日志，因此关掉绘制不影响性能基线。
@@ -74,6 +77,68 @@ pub struct GameApp {
     cull_enabled: bool,
     /// Same mesh/material instancing (M8-08); off via `--no-instance`.
     instancing_enabled: bool,
+    /// P3-R184：开发期归因开关（`--skip-mesh`）；`None` = 不跳过（默认）。
+    skip_mesh: Option<String>,
+    /// P3-R185：不透明前到后排序；`false`（`--no-depth-sort`）= A/B 回滚档。
+    depth_sort_enabled: bool,
+    /// P3-R191：平面反射镜像视锥剔除；`false`（`--no-planar-cull`）= A/B 回滚档。
+    planar_cull_enabled: bool,
+    /// P3-R194：点光阴影逐面剔除；`false`（`--no-point-face-cull`）= A/B 回滚档。
+    point_face_cull_enabled: bool,
+    /// P3-R196：平面反射目标分辨率除数（2 = 默认半分辨率）。
+    planar_reflection_divisor: u32,
+    /// P3-R197：全部水面强制廉价光照档（`--water-cheap`，A/B 用）。
+    water_cheap: bool,
+    /// P3-R203：全部地形强制廉价细节档（`--terrain-cheap`，A/B 用）。
+    terrain_cheap: bool,
+    /// P3-R206：3D 最大绘制距离（米，0 = 关闭；植被 LOD 的硬截断档，低端机用）。
+    draw_distance: u32,
+    /// P3-R206 分类档：距离只掐网格路径含该子串的实例（`None` = 全体）。
+    draw_distance_filter: Option<String>,
+    /// P3-R248：方向光 CSM 链的分类排除档（网格路径含该子串的 drawable 不投影；
+    /// `None` = 不排除）。只影响阴影链，主视图照画。
+    shadow_caster_skip: Option<String>,
+    /// P3-R265：点光链专用分类排除档（样本名或网格路径含该子串的 drawable 不投点光阴影；
+    /// `None` = 不排除）。方向光 CSM 与主视图照画。
+    point_shadow_caster_skip: Option<String>,
+    /// P3-R256：阴影投射者的距离预算（米，`0` = 关闭）。超过者不进阴影链，主视图照画。
+    shadow_caster_distance: u32,
+    /// P3-R207：深度加权水面折射增益（`0` = 关闭 = 旧的固定偏移）。
+    water_refraction: f32,
+    /// P3-R208：水下视角的水-气界面强度（`0..=1`，`0` = 关闭 = 只有 P3-R173 的整帧吸收）。
+    underwater_view: f32,
+    /// P3-R241：水面折射的屏幕空间 Snell 步进次数（`0` = 关闭 = R207 的偏移近似）。
+    water_refract_steps: u32,
+    /// P3-R243：启动期预热 GPU 粒子管线（`--prewarm-particles`，默认关）。
+    prewarm_particles: bool,
+    /// P3-R246：实例位姿交给渲染器现场求值（`--gpu-motion`，默认关）。
+    gpu_motion: bool,
+    /// P3-R250：GPU 烘焙的逐实例距离剔除半径（米，`0` = 关闭）。
+    gpu_motion_cull: f32,
+    /// P3-R255：GPU 烘焙的逐实例视锥剔除（`--gpu-motion-frustum-cull`，默认关）。
+    gpu_motion_frustum_cull: bool,
+    /// P3-R266：GPU 烘焙的远程密度档 `(米, 步长)`（`--gpu-motion-thin`，默认关）。
+    gpu_motion_thin: Option<(f32, u32)>,
+    /// P3-R267：第二远带（只在第一带已开且更远时生效；与第一带取交集）。
+    gpu_motion_thin_far: Option<(f32, u32)>,
+    /// P3-R209：剖切口的实体封口深度（米，`0` = 关闭 = P3-R54 的 0.08 薄带）。
+    clip_cap: f32,
+    /// P3-R211：封口是否也吃到单面网格（`--clip-cap-both-sides`，默认关）。
+    clip_cap_both_sides: bool,
+    /// P3-R198：方向光 CSM 分辨率（构建期，默认 2048）。
+    shadow_resolution: u32,
+    /// P3-R199：方向光 CSM 实际渲染的级联层数（构建期，默认 4）。
+    shadow_cascades: u32,
+    /// P3-R200：点光 cube 阴影面的边长（构建期，默认 1024）。
+    point_shadow_resolution: u32,
+    /// P3-R202：点光阴影盏数预算（运行期，默认 8）。
+    point_shadow_lights: u32,
+    /// P3-R201/R204：画质预设是否生效（只用于日志；具体档位落在上面各字段）。
+    quality: Quality,
+    /// P3-R236：确定性帧档——每帧恰好推进一个固定步，不读墙钟。
+    fixed_step: bool,
+    /// P3-R236：着色器时间钉在给定秒数（`None` = 渲染钟）。
+    freeze_clock: Option<f32>,
     splash: Option<crate::splash::Splash>,
     /// GPU 就绪之前的启动图（GDI 子窗口）。首帧 `Presented` 之后撤下，
     /// 由 `splash` 接管同一张图；见 `crate::boot_splash`。
@@ -140,7 +205,7 @@ impl GameApp {
             modifiers: ModifiersState::empty(),
             last_frame: Instant::now(),
             performance: PerformanceStats::new(),
-            last_render_stats: [0; 6],
+            last_render_stats: [0; 12],
             // 发布默认不带帧率 overlay（F3 可手动开启，见字段注释）。
             overlay_enabled: false,
             runtime_scene: None,
@@ -150,14 +215,46 @@ impl GameApp {
             packaged,
             cull_enabled,
             instancing_enabled,
+            skip_mesh: None,
+            depth_sort_enabled: true,
+            planar_cull_enabled: true,
+            point_face_cull_enabled: true,
+            planar_reflection_divisor: 2,
+            water_cheap: false,
+            terrain_cheap: false,
+            draw_distance: 0,
+            draw_distance_filter: None,
+            shadow_caster_skip: None,
+            point_shadow_caster_skip: None,
+            shadow_caster_distance: 0,
+            water_refraction: 0.0,
+            underwater_view: 0.0,
+            water_refract_steps: 0,
+            prewarm_particles: false,
+            gpu_motion: false,
+            gpu_motion_cull: 0.0,
+            gpu_motion_frustum_cull: false,
+            gpu_motion_thin: None,
+            gpu_motion_thin_far: None,
+            clip_cap: 0.0,
+            clip_cap_both_sides: false,
+            shadow_resolution: 2048,
+            shadow_cascades: 4,
+            point_shadow_resolution: 1024,
+            point_shadow_lights: 8,
+            quality: Quality::default(),
+            fixed_step: false,
+            freeze_clock: None,
             splash: None,
             boot_splash: None,
             deferred_verify,
             frame_profile: frame_profile_path.as_ref().map(|_| {
                 let mut profile = FrameProfile::new();
                 // `Script`（Lua）永远串行：不标独占会让真实工程把 76% 读成"该并行"
-                // （见 M74-02 §实现记录）。
-                profile.set_exclusive_stages([ScheduleStage::Script]);
+                // （见 M74-02 §实现记录）。`Render` 现在跑工程级 `on_frame()`（`lua_frame`），
+                // 同样是单线程 Lua，一并标独占——否则闸门会把表现层算成可并行。若以后
+                // `Render` 里加了真正可并行的宿主系统，这里要重新分开统计。
+                profile.set_exclusive_stages([ScheduleStage::Script, ScheduleStage::Render]);
                 profile
             }),
             frame_profile_path,
@@ -179,6 +276,259 @@ impl GameApp {
     #[must_use]
     pub fn with_shader_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.shader_dir = dir;
+        self
+    }
+
+    /// P3-R184：归因开关（`--skip-mesh`）；`None` = 不跳过（默认）。
+    #[must_use]
+    pub fn with_skip_mesh(mut self, filter: Option<String>) -> Self {
+        self.skip_mesh = filter;
+        self
+    }
+
+    /// P3-R185：不透明前到后排序；`false` = `--no-depth-sort` 回滚档。
+    #[must_use]
+    pub fn with_depth_sort(mut self, enabled: bool) -> Self {
+        self.depth_sort_enabled = enabled;
+        self
+    }
+
+    /// P3-R191：平面反射镜像视锥剔除；`false` = `--no-planar-cull` 回滚档。
+    #[must_use]
+    pub fn with_planar_cull(mut self, enabled: bool) -> Self {
+        self.planar_cull_enabled = enabled;
+        self
+    }
+
+    /// P3-R194：点光阴影逐面剔除；`false` = `--no-point-face-cull` 回滚档。
+    #[must_use]
+    pub fn with_point_face_cull(mut self, enabled: bool) -> Self {
+        self.point_face_cull_enabled = enabled;
+        self
+    }
+
+    /// P3-R196：平面反射目标分辨率除数（2 = 默认半分辨率）。
+    #[must_use]
+    pub fn with_planar_divisor(mut self, divisor: u32) -> Self {
+        self.planar_reflection_divisor = divisor;
+        self
+    }
+
+    /// P3-R197：全部水面强制廉价光照档（A/B 开关）。
+    #[must_use]
+    pub fn with_water_cheap(mut self, enabled: bool) -> Self {
+        self.water_cheap = enabled;
+        self
+    }
+
+    /// P3-R203：全部地形强制廉价细节档（A/B；默认只按 spec 的 `cheap=1`）。
+    #[must_use]
+    pub fn with_terrain_cheap(mut self, enabled: bool) -> Self {
+        self.terrain_cheap = enabled;
+        self
+    }
+
+    /// P3-R198：方向光 CSM 分辨率（构建期；默认 2048）。
+    #[must_use]
+    pub fn with_shadow_resolution(mut self, resolution: u32) -> Self {
+        self.shadow_resolution = resolution;
+        self
+    }
+
+    /// P3-R199：方向光 CSM 实际渲染的级联层数（构建期；默认 4）。
+    #[must_use]
+    pub fn with_shadow_cascades(mut self, cascades: u32) -> Self {
+        self.shadow_cascades = cascades;
+        self
+    }
+
+    /// P3-R200：点光 cube 阴影面的边长（构建期；默认 1024）。
+    #[must_use]
+    pub fn with_point_shadow_resolution(mut self, resolution: u32) -> Self {
+        self.point_shadow_resolution = resolution;
+        self
+    }
+
+    /// P3-R202：点光阴影盏数预算（运行期；默认 8 = 旧行为）。
+    #[must_use]
+    pub fn with_point_shadow_lights(mut self, lights: u32) -> Self {
+        self.point_shadow_lights = lights;
+        self
+    }
+
+    /// P3-R201/R204：低端画质预设——medium 的两个档位再加点光 cube 阴影 512
+    /// （与 R201 交付内容一致；不并入地形廉价档，见 R203 §21.489）。
+    /// 调用顺序在逐项开关之后 ⇒ 预设覆盖它包含的同名单项开关。
+    #[must_use]
+    pub fn with_quality_low(mut self, low: bool) -> Self {
+        if low {
+            self.quality = Quality::Low;
+            self.planar_reflection_divisor = 4;
+            self.water_cheap = true;
+            self.point_shadow_resolution = 512;
+        }
+        self
+    }
+
+    /// P3-R204：中端画质预设——planar 1/4（R196）+ 水面廉价光照（R197）；阴影分辨率与
+    /// 地形细节保持默认（与 low 的唯一差别是点光 cube 阴影 512）。
+    #[must_use]
+    pub fn with_quality_medium(mut self, medium: bool) -> Self {
+        if medium {
+            self.quality = Quality::Medium;
+            self.planar_reflection_divisor = 4;
+            self.water_cheap = true;
+        }
+        self
+    }
+
+    /// P3-R206：3D 最大绘制距离（米；0 = 关闭，默认不变）。只影响绘制，不改场景数据。
+    #[must_use]
+    pub fn with_draw_distance(mut self, meters: u32) -> Self {
+        self.draw_distance = meters;
+        self
+    }
+
+    /// P3-R206 分类档：距离只作用于网格路径含 `filter` 子串的实例（`None` = 全体，默认）。
+    #[must_use]
+    pub fn with_draw_distance_filter(mut self, filter: Option<String>) -> Self {
+        self.draw_distance_filter = filter;
+        self
+    }
+
+    /// P3-R248：方向光 CSM 链的分类排除档（网格路径含 `filter` 子串的 drawable 不投影；
+    /// `None` = 不排除，默认）。主视图照画，属观感取舍档。
+    #[must_use]
+    pub fn with_shadow_caster_skip(mut self, filter: Option<String>) -> Self {
+        self.shadow_caster_skip = filter;
+        self
+    }
+
+    /// P3-R265：点光链专用分类排除档（样本名或网格路径含 `filter` 子串的 drawable 不投
+    /// 点光阴影；`None` = 不排除，默认）。方向光 CSM 与主视图照画，属观感取舍档。
+    #[must_use]
+    pub fn with_point_shadow_caster_skip(mut self, filter: Option<String>) -> Self {
+        self.point_shadow_caster_skip = filter;
+        self
+    }
+
+    /// P3-R256：阴影投射者的距离预算（米；`0` = 关闭，默认）。超过者不进阴影链，
+    /// 主视图/平面反射照画，属观感取舍档。
+    #[must_use]
+    pub fn with_shadow_caster_distance(mut self, meters: u32) -> Self {
+        self.shadow_caster_distance = meters;
+        self
+    }
+
+    /// P3-R207：水面折射偏移按「光程 × 掠射角」加权（`0` = 关闭，默认像素逐字节不变）。
+    #[must_use]
+    pub fn with_water_refraction(mut self, gain: f32) -> Self {
+        self.water_refraction = gain;
+        self
+    }
+
+    /// P3-R208：水下视角把水-气界面换成 Snell 窗口 + 全反射镜像（`0` = 关闭，
+    /// 默认像素逐字节不变；只在相机入水且低于水位时生效，视觉代价未目验）。
+    #[must_use]
+    pub fn with_underwater_view(mut self, strength: f32) -> Self {
+        self.underwater_view = strength;
+        self
+    }
+
+    /// P3-R241：水面折射沿 Snell 折射方向做屏幕空间步进（`0` = 关闭 = R207 的偏移近似，
+    /// 默认像素逐字节不变；1..=32 = 步数，超过 32 由渲染器截断）。
+    #[must_use]
+    pub fn with_water_refract_steps(mut self, steps: u32) -> Self {
+        self.water_refract_steps = steps;
+        self
+    }
+
+    /// P3-R209：剖切口向内多深仍然画实体截面（米，`0` = 关闭 = P3-R54 的 0.08 薄带，
+    /// 默认像素逐字节不变；只对双面网格生效，视觉代价未目验）。
+    #[must_use]
+    pub fn with_clip_cap(mut self, depth: f32) -> Self {
+        self.clip_cap = depth;
+        self
+    }
+
+    /// P3-R211：封口要不要也吃到单面网格（`--clip-cap-both-sides`，默认关 = 单面 glb 壳的
+    /// 背面仍被剔除、剖面进不了它；开 = 挂了会话裁剪平面的帧把主网格通道改用双面管线）。
+    #[must_use]
+    pub fn with_clip_cap_both_sides(mut self, enabled: bool) -> Self {
+        self.clip_cap_both_sides = enabled;
+        self
+    }
+
+    /// P3-R243：启动期预热 GPU 粒子管线（`--prewarm-particles`，默认关）。
+    #[must_use]
+    pub fn with_prewarm_particles(mut self, prewarm: bool) -> Self {
+        self.prewarm_particles = prewarm;
+        self
+    }
+
+    /// P3-R246：实例位姿交给渲染器现场求值（`--gpu-motion`，默认关）。
+    ///
+    /// 开档后带运动的实例批次在提取阶段跳过 `matrices_at`（每帧省 N 份矩阵与其克隆），
+    /// 由渲染器的 compute 烘焙进实例缓冲。像素与 CPU 档相同；关档逐字节不变。
+    #[must_use]
+    pub fn with_gpu_motion(mut self, enabled: bool) -> Self {
+        self.gpu_motion = enabled;
+        self
+    }
+
+    /// P3-R250：GPU 烘焙的逐实例距离剔除半径（米）。`0` = 关（默认，逐矩阵不变）。
+    /// 只对走 GPU 烘焙的批次生效；半径非正/非有限归 0。观感取舍档，不进 `--quality`。
+    #[must_use]
+    pub fn with_gpu_motion_cull(mut self, meters: f32) -> Self {
+        self.gpu_motion_cull = if meters.is_finite() && meters > 0.0 {
+            meters
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// P3-R255：GPU 烘焙的逐实例视锥剔除（默认关，逐矩阵不变）。
+    /// 只对走 GPU 烘焙的批次生效；主视图看不见的实例连槽位都不领，阴影/planar 里也
+    /// 一起消失（矩阵共享）⇒ 与距离剔除同类的观感取舍，不进 `--quality`。
+    #[must_use]
+    pub fn with_gpu_motion_frustum_cull(mut self, enabled: bool) -> Self {
+        self.gpu_motion_frustum_cull = enabled;
+        self
+    }
+
+    /// P3-R266：GPU 烘焙的远程密度档 `(米, 步长)`（默认 `None` = 关，逐矩阵不变）。
+    /// 离相机超过米数的实例只留批次内 `index % 步长 == 0` 的那些；步长 < 2 或米数非正
+    /// 归一为关。只对走 GPU 烘焙的批次生效；观感取舍档，不进 `--quality`。
+    #[must_use]
+    pub fn with_gpu_motion_thin(mut self, thin: Option<(f32, u32)>) -> Self {
+        self.gpu_motion_thin =
+            thin.filter(|(meters, stride)| meters.is_finite() && *meters > 0.0 && *stride >= 2);
+        self
+    }
+
+    /// P3-R267：第二远带 `(米, k)`——与第一带取交集，提高远区稀疏度而不动中景。
+    /// 半径写反（不比第一带更远）时归一为关。
+    #[must_use]
+    pub fn with_gpu_motion_thin_far(mut self, thin_far: Option<(f32, u32)>) -> Self {
+        self.gpu_motion_thin_far =
+            thin_far.filter(|(meters, stride)| meters.is_finite() && *meters > 0.0 && *stride >= 2);
+        self
+    }
+
+    /// P3-R236：确定性帧档——每帧恰好推进一个固定步，不读墙钟。
+    /// 帧号与模拟步一一对应 ⇒ 两次运行到同一帧号的世界状态相同，逐像素对账成立。
+    #[must_use]
+    pub fn with_fixed_step(mut self, enabled: bool) -> Self {
+        self.fixed_step = enabled;
+        self
+    }
+
+    /// P3-R236：把着色器时间钉在给定秒数（`None` = 渲染钟 = 旧行为）。
+    /// 水波/云/后期颗粒的相位由渲染钟驱动，不钉住的话两次运行的像素差里混着相位差。
+    #[must_use]
+    pub fn with_freeze_clock(mut self, secs: Option<f32>) -> Self {
+        self.freeze_clock = secs;
         self
     }
 
@@ -226,6 +576,8 @@ impl GameApp {
         self.runtime_scene = match RuntimeScene::new_with_layout(root, self.packaged) {
             Ok(mut scene) => {
                 scene.set_script_error_policy(ScriptErrorPolicy::Contain);
+                // P3-R246：与渲染器同档（渲染器侧在 `initialize_renderer` 打开）。
+                scene.set_gpu_motion_batches(self.gpu_motion);
                 Some(scene)
             }
             Err(error) => {
@@ -331,8 +683,11 @@ impl GameApp {
     /// JSON 给台账存档。未开 `--frame-profile`、或一帧都没采样到时什么都不写——
     /// 一份 `frames=0` 的报告只会让下游把"没量到"读成"占比 0%"。
     pub fn finish_frame_profile(&mut self) -> Option<PathBuf> {
-        let summary = self.frame_profile.as_ref()?.summary();
         let path = self.frame_profile_path.clone()?;
+        let environment = self.frame_profile_environment();
+        let profile = self.frame_profile.as_mut()?;
+        profile.set_environment(environment);
+        let summary = profile.summary();
         if summary.frames == 0 {
             eprintln!("game_frame_profile_skipped: 没有采样到任何帧");
             return None;
@@ -354,6 +709,25 @@ impl GameApp {
                 None
             }
         }
+    }
+
+    /// P3-R205：帧剖面 JSON 的自描述字段——写入时取**生效后**的档位（预设已展开），
+    /// 台账里的数字才不会与产生它的配置脱钩。
+    fn frame_profile_environment(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("quality", self.quality.as_str().to_owned()),
+            ("planar_divisor", self.planar_reflection_divisor.to_string()),
+            ("water_cheap", self.water_cheap.to_string()),
+            ("terrain_cheap", self.terrain_cheap.to_string()),
+            ("draw_distance", self.draw_distance.to_string()),
+            ("shadow_resolution", self.shadow_resolution.to_string()),
+            ("shadow_cascades", self.shadow_cascades.to_string()),
+            (
+                "point_shadow_resolution",
+                self.point_shadow_resolution.to_string(),
+            ),
+            ("point_shadow_lights", self.point_shadow_lights.to_string()),
+        ]
     }
 
     /// 窗口当前能不能出画：被遮挡或尺寸为 0（最小化）时都算不能。
@@ -421,7 +795,14 @@ impl GameApp {
         // P0（脚本迭代闭环）：先查磁盘 Lua 再跑本帧固定步——重载成功的那份脚本立刻参与
         // 这一帧的 `update()`，用户感到的延迟只剩一次去抖。
         self.poll_script_hot_reload(Duration::from_secs_f64(elapsed));
-        let report = self.time_step.advance(elapsed);
+        // P3-R236：确定性帧档不把墙钟喂进时钟——每帧恰好一个固定步，帧号与模拟步
+        // 一一对应。墙钟档里同一帧号可能对应 0/1/2 步（机器快慢不同），两次运行到
+        // 同一帧号的世界状态可能不同 ⇒ 逐像素对账无从谈起。
+        let report = if self.fixed_step {
+            self.time_step.advance_fixed(1)
+        } else {
+            self.time_step.advance(elapsed)
+        };
         if report.dropped_steps > 0 {
             tracing::warn!(target: "engine", "[time] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s", report.dropped_steps, report.total_dropped_steps, report.accumulator_seconds);
         }
@@ -634,6 +1015,12 @@ impl GameApp {
                     metrics.instances,
                     metrics.mesh3d_instances,
                     metrics.mesh3d_draw_calls,
+                    metrics.cull_candidates,
+                    metrics.cull_frustum,
+                    metrics.point_shadow_draws_culled,
+                    metrics.shadow_cascade_draws_culled,
+                    metrics.planar_draws_culled,
+                    metrics.point_shadow_face_draws_culled,
                 ];
                 if let Some(scene) = self.runtime_scene.as_ref() {
                     scene.set_render_stats([
@@ -672,12 +1059,16 @@ impl GameApp {
         // M74-02 P0：整帧墙钟从这里起算（固定步 + 提取 + 提交都在里面）。调度器只知道自己
         // 那一段，用它的总耗时当分母会把"串行系统占帧比"算大好几倍。
         let frame_started = Instant::now();
+        // 调度器之外的宿主阶段：与 `FrameProfile::record` 同帧配对，`other` 由整帧减去三段得到。
+        let mut host_phases = HostPhases::default();
         self.performance.begin_frame();
         let report = self.advance_clock();
         self.run_simulation_steps(report.steps, report.delta_seconds, event_loop);
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
+        host_phases.sim = frame_started.elapsed();
+        let extract_started = Instant::now();
         // F2 / 脚本请求的落点都只读 self；必须在 `renderer.as_mut()` 借用之前算好。
         let lua_capture = self
             .runtime_scene
@@ -767,13 +1158,8 @@ impl GameApp {
         };
         if self.overlay_enabled {
             let render_stats = Some(self.last_render_stats);
-            let overlay = build_overlay(
-                snapshot,
-                render_stats,
-                memory::sample(),
-                design_w,
-                design_h,
-            );
+            let overlay =
+                build_overlay(snapshot, render_stats, memory::sample(), design_w, design_h);
             if !overlay.ranges.is_empty() {
                 let base = mesh.vertices.len() as u32;
                 let atlas_texture = mesh.paths.len() as u32 + 1;
@@ -810,6 +1196,15 @@ impl GameApp {
             .runtime_scene
             .as_ref()
             .and_then(|scene| scene.scene_3d(viewport));
+        // P3-R246：GPU 位姿批次档——提取阶段把批次登记在场景里，这里取走推给渲染器
+        // （渲染器在 `render` 里 compute 烘焙）。关档时场景从不登记，这一步零开销。
+        if self.gpu_motion
+            && let Some(scene) = self.runtime_scene.as_ref()
+        {
+            for (entity, batch, time) in scene.take_staged_motion_batches() {
+                renderer.stage_motion_batch(entity, batch, time);
+            }
+        }
         // WP5：把本帧的相机侧视图交给渲染器——清屏色与 2D overlay 的视口由这些声明决定，
         // 渲染器不再自己写死。2D 视图与上面 `vertices()` 用的是同一个 `RuntimeScene` 相机，
         // 因此"取景"和"清屏/视口"不会各说一套。
@@ -832,9 +1227,7 @@ impl GameApp {
             && (scene.render_fog_density().is_some() || scene.render_fog_color().is_some())
         {
             let settings = renderer.render_settings();
-            let density = scene
-                .render_fog_density()
-                .unwrap_or(settings.fog_density);
+            let density = scene.render_fog_density().unwrap_or(settings.fog_density);
             let color = scene.render_fog_color().unwrap_or(settings.fog_color);
             if (settings.fog_density - density).abs() > 1e-6
                 || (0..3).any(|i| (settings.fog_color[i] - color[i]).abs() > 1e-6)
@@ -959,9 +1352,93 @@ impl GameApp {
         {
             renderer.set_post_fx(fx[0], fx[1]);
         }
+        // P3-R210：脚本推进剖切封口深度（`render.set_clip_cap`）；只在变化时写入。
+        if let Some(depth) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_clip_cap())
+            && (renderer.clip_cap_depth() - depth).abs() > 1e-6
+        {
+            renderer.set_clip_cap_depth(depth);
+        }
+        // P3-R211：脚本开关「封口吃到单面网格」（`render.set_clip_cap_both_sides`）；只在变化时写入。
+        if let Some(on) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_clip_cap_both_sides())
+            && renderer.clip_cap_both_sides() != on
+        {
+            renderer.set_clip_cap_both_sides(on);
+        }
+        // P3-R242：脚本推进水面折射的 Snell 步进数（`render.set_water_refract_steps`）；只在变化时写入。
+        if let Some(steps) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_water_refract_steps())
+            && renderer.water_refract_steps() != steps
+        {
+            renderer.set_water_refract_steps(steps);
+        }
+        host_phases.extract = extract_started.elapsed();
+        let submit_started = Instant::now();
         let outcome = renderer.render(&mesh, scene3d.as_ref());
+        host_phases.submit = submit_started.elapsed();
         {
             let metrics = renderer.last_frame_metrics();
+            host_phases.render_cpu_us = Some(metrics.cpu_frame_us);
+            host_phases.gpu_frame_us = metrics.gpu_frame_us;
+            // P3-R181：把渲染器自报的 `submit` 四段与两个阴影子桶带上宿主剖面，
+            // 否则「4.6 ms 花在录制还是帧步调」在真机上仍然只能靠猜。
+            host_phases.render_acquire_us = Some(metrics.cpu_acquire_us);
+            host_phases.render_record_us = Some(metrics.cpu_record_us);
+            host_phases.render_submit_us = Some(metrics.cpu_submit_us);
+            host_phases.render_present_us = Some(metrics.cpu_present_us);
+            host_phases.shadow_record_us = Some(metrics.record_shadow_us);
+            host_phases.point_shadow_record_us = Some(metrics.record_point_shadow_us);
+            // P3-R183：剔除计数进台账——「剔掉多少实例」与逐 pass GPU 时间同帧对账，
+            // 下一刀（遮挡剔除/LOD）的收益才有基准。纯 2D 帧两者皆 0，累计桶自动跳过。
+            host_phases.cull_candidates = Some(metrics.cull_candidates);
+            host_phases.cull_frustum = Some(metrics.cull_frustum);
+            // P3-R253：整批跳过数单独一列——R252 省的是「draw 登记」而不是「逐实例剔除」，
+            // 与 `cull_frustum` 不同量纲，混在一起会把两把刀的效果记成一把。
+            host_phases.gpu_motion_culled = Some(renderer.frame_gpu_motion_culled());
+            host_phases.gpu_motion_culled_instances =
+                Some(renderer.frame_gpu_motion_culled_instances());
+            // P3-R247：方向光阴影的提交/剔除计数——"阴影便宜了"要能拆成 draw 粒度，
+            // 否则只能靠机制推断（§21.527 的归因段就是这么写的）。
+            host_phases.shadow_draws = Some(metrics.shadow_draws_drawn);
+            host_phases.shadow_draws_culled = Some(metrics.shadow_cascade_draws_culled);
+            host_phases.shadow_instances = Some(metrics.shadow_instances_drawn);
+            host_phases.shadow_draws_skipped = Some(metrics.shadow_draws_skipped);
+            // P3-R249：点光链的排除次数单独一列——两条链的尝试分母不同。
+            host_phases.point_shadow_draws_skipped = Some(metrics.point_shadow_draws_skipped);
+            // P3-R256：距离预算档的排除量也要能单独读，否则打开预算后的读数只能
+            // 从"提交变少"倒推是预算还是视锥干的。
+            host_phases.shadow_draws_distance_skipped = Some(metrics.shadow_distance_skipped);
+            host_phases.point_shadow_draws_distance_skipped =
+                Some(metrics.point_shadow_distance_skipped);
+            // P3-R261：点光链的**提交**也要有读数——此前只有跳过/剔除计数，CSM 的账干净了
+            // 而点光链的 crowd 提交仍在跑时，shadow pass 的时间没有对应的 draw 分母（§21.540）。
+            host_phases.point_shadow_draws = Some(metrics.point_shadow_draws_drawn);
+            host_phases.point_shadow_instances = Some(metrics.point_shadow_instances_drawn);
+            // P3-R262：点光链的另两项剔除也导出，守恒式才能闭合：
+            // 提交 + range 剔除 + 面剔除 + 分类排除 + 距离预算 = drawable × 灯 × 面。
+            host_phases.point_shadow_range_culled = Some(metrics.point_shadow_draws_culled);
+            host_phases.point_shadow_face_draws_culled =
+                Some(metrics.point_shadow_face_draws_culled);
+            // P3-R182：逐 pass GPU 归因。只在开了帧剖面时采样——`gpu_pass_report()` 每帧
+            // 会分配一个 Vec 并解析时间戳回读，发布路径不该付这份钱。
+            // 设备不支持时间戳查询时 `passes` 为空 ⇒ 台账里 `gpu_passes` 是空数组，
+            // 而不是一排 0 µs（0 会被读成「这个 pass 不花钱」）。
+            if self.frame_profile.is_some() {
+                let pass_report = renderer.gpu_pass_report();
+                host_phases.gpu_pass_frame_us = pass_report.frame_us;
+                host_phases.gpu_passes = pass_report
+                    .passes
+                    .iter()
+                    .map(|timing| (timing.pass.as_str(), timing.gpu_us))
+                    .collect();
+            }
             let stats = [
                 metrics.draw_calls,
                 metrics.vertices,
@@ -969,6 +1446,12 @@ impl GameApp {
                 metrics.instances,
                 metrics.mesh3d_instances,
                 metrics.mesh3d_draw_calls,
+                metrics.cull_candidates,
+                metrics.cull_frustum,
+                metrics.point_shadow_draws_culled,
+                metrics.shadow_cascade_draws_culled,
+                metrics.planar_draws_culled,
+                metrics.point_shadow_face_draws_culled,
             ];
             if let Some(scene) = self.runtime_scene.as_ref() {
                 scene.set_render_stats([
@@ -1032,6 +1515,8 @@ impl GameApp {
             && let Some(report) = scene.last_schedule_report()
         {
             profile.record(report, frame_started.elapsed());
+            // 同帧配对：`record` 先推整帧样本，宿主阶段的 `other` 才有分母。
+            profile.record_host_phases(host_phases);
         }
         if snapshot.frames.is_multiple_of(60) {
             tracing::info!(target: "engine", "[perf] fps={:.1} frame_ms={:.3} update_ms={:.3} lua_ms={:.3} frames={} overlay={}", snapshot.fps, snapshot.frame_ms, snapshot.update_ms, snapshot.lua_ms, snapshot.frames, self.overlay_enabled);
@@ -1118,6 +1603,14 @@ impl ApplicationHandler for GameApp {
             }
             None => rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
         };
+        // `api` 维度真正生效在发布期（package.ps1 按它决定构建 feature）；运行期的 API 面
+        // 由二进制 feature 决定、不读这个键，所以这里**只报非法值**（与 window_size 同口径），
+        // 免得"声明了 4d"的工程带着静默回退一路发到线上。
+        if let Some(root) = self.project_root.as_deref() {
+            for diagnostic in rustlua_infra::project_config::api_dimension(root).1 {
+                tracing::warn!(target: "config", "[config] {diagnostic}");
+            }
+        }
         // 内置启动图按设计尺寸的方向选横/竖版，所以解码排在尺寸解析之后；两者都在
         // `create_window` 之前完成，窗口不会先空一帧。
         let boot_image =
@@ -1193,14 +1686,74 @@ impl ApplicationHandler for GameApp {
         self.boot_splash = boot_image
             .as_ref()
             .and_then(|image| crate::boot_splash::BootSplash::show(&window, image));
-        match Renderer::new(
+        match Renderer::new_with_shadow_resolution(
             window.clone(),
             self.project_root.clone(),
             self.cull_enabled,
             self.instancing_enabled,
+            self.shadow_resolution,
+            self.shadow_cascades,
+            self.point_shadow_resolution,
         ) {
             Ok(mut renderer) => {
+                renderer.set_point_shadow_light_budget(self.point_shadow_lights);
+                tracing::info!(
+                    target: "game",
+                    quality = self.quality.as_str(),
+                    planar_divisor = self.planar_reflection_divisor,
+                    water_cheap = self.water_cheap,
+                    terrain_cheap = self.terrain_cheap,
+                    draw_distance = self.draw_distance,
+                    point_shadow_resolution = self.point_shadow_resolution,
+                    point_shadow_lights = renderer.point_shadow_light_budget(),
+                    "渲染品质档已应用"
+                );
                 self.attach_shader_override_dir(&mut renderer);
+                if let Some(filter) = self.skip_mesh.clone() {
+                    tracing::info!(target: "game", filter = %filter, "skip-mesh 归因开关已启用（开发期 A/B）");
+                    renderer.set_skip_mesh_filter(Some(filter));
+                }
+                if !self.depth_sort_enabled {
+                    tracing::info!(target: "game", "不透明前到后排序已关闭（--no-depth-sort 回滚档）");
+                }
+                renderer.set_depth_sort_enabled(self.depth_sort_enabled);
+                renderer.set_planar_cull_enabled(self.planar_cull_enabled);
+                renderer.set_point_face_cull_enabled(self.point_face_cull_enabled);
+                renderer.set_planar_reflection_divisor(self.planar_reflection_divisor);
+                renderer.set_water_cheap_override(self.water_cheap);
+                renderer.set_terrain_cheap_override(self.terrain_cheap);
+                renderer.set_max_draw_distance(self.draw_distance as f32);
+                renderer.set_max_draw_distance_filter(self.draw_distance_filter.clone());
+                renderer.set_shadow_caster_skip(self.shadow_caster_skip.clone());
+                renderer.set_point_shadow_caster_skip(self.point_shadow_caster_skip.clone());
+                renderer.set_shadow_caster_max_distance(self.shadow_caster_distance as f32);
+                renderer.set_water_refraction_gain(self.water_refraction);
+                renderer.set_submerged_view_gain(self.underwater_view);
+                renderer.set_water_refract_steps(self.water_refract_steps);
+                renderer.set_clip_cap_depth(self.clip_cap);
+                renderer.set_clip_cap_both_sides(self.clip_cap_both_sides);
+                if self.prewarm_particles {
+                    // P3-R243：把粒子管线的首次编译从「第一股连续流那一帧」挪到启动期；
+                    // 两种目标格式都编，HDR/LDR 切换以后也不再重编。
+                    let built = renderer.prewarm_gpu_particles();
+                    tracing::info!(
+                        target: "game",
+                        built,
+                        "GPU 粒子管线已预热（--prewarm-particles）"
+                    );
+                }
+                // P3-R236：着色器时间钉住（`None` = 渲染钟 = 旧行为）。
+                renderer.set_frozen_clock_secs(self.freeze_clock);
+                // P3-R246：接受场景提取登记的 GPU 位姿批次（两层开关都开才生效）。
+                renderer.set_gpu_motion_batches(self.gpu_motion);
+                // P3-R250：逐实例距离剔除（0 = 关；只作用于 GPU 烘焙批次）。
+                renderer.set_gpu_motion_cull_distance(self.gpu_motion_cull);
+                // P3-R255：逐实例视锥剔除（默认关；多压一层主视图六面）。
+                renderer.set_gpu_motion_frustum_cull(self.gpu_motion_frustum_cull);
+                // P3-R266：远程密度档（None = 关；只作用于 GPU 烘焙批次）。
+                renderer.set_gpu_motion_thin(self.gpu_motion_thin);
+                // P3-R267：第二远带（交集语义；第一带关时整体无效）。
+                renderer.set_gpu_motion_thin_far(self.gpu_motion_thin_far);
                 self.window = Some(window);
                 self.renderer = Some(renderer);
                 let splash = match boot_image {
@@ -1453,7 +2006,7 @@ struct OverlayRange {
 /// `TextLayout::build_bitmap`），不依赖项目字体。
 fn build_overlay(
     snapshot: PerformanceSnapshot,
-    render_stats: Option<[u64; 6]>,
+    render_stats: Option<[u64; 12]>,
     memory: Option<MemoryStats>,
     width: u32,
     height: u32,
@@ -1504,7 +2057,12 @@ fn build_overlay(
     let mem_color = memory_mb_color(memory.map_or(0.0, |m| m.working_set_mb));
     let peak_color = memory_mb_color(memory.map_or(0.0, |m| m.peak_working_set_mb));
     let priv_color = memory_mb_color(memory.map_or(0.0, |m| m.private_mb));
-    let stats = render_stats.unwrap_or([0, 0, 0, 0, 0, 0]);
+    let stats = render_stats.unwrap_or([0; 12]);
+    let cull_ratio = if stats[6] > 0 {
+        (stats[7] as f32 / stats[6] as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let rows = [
         (
             "FPS",
@@ -1575,6 +2133,42 @@ fn build_overlay(
             (stats[4] as f32 / 2048.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
+        (
+            "CULL CAND",
+            format!("{}", stats[6]),
+            (stats[6] as f32 / 4096.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "CULL REJ",
+            format!("{}", stats[7]),
+            cull_ratio,
+            [0.55, 1.0, 0.72, 1.0],
+        ),
+        (
+            "PCULL",
+            format!("{}", stats[8]),
+            (stats[8] as f32 / 1024.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "SCULL",
+            format!("{}", stats[9]),
+            (stats[9] as f32 / 1024.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "PL CULL",
+            format!("{}", stats[10]),
+            (stats[10] as f32 / 1024.0).clamp(0.0, 1.0),
+            [0.72, 0.90, 1.0, 1.0],
+        ),
+        (
+            "FACE CULL",
+            format!("{}", stats[11]),
+            (stats[11] as f32 / 2048.0).clamp(0.0, 1.0),
+            [0.55, 1.0, 0.72, 1.0],
+        ),
     ];
 
     // 像素布局：标题 + 指标行（标签/数值在上，量条在下），行高 34.
@@ -1583,7 +2177,11 @@ fn build_overlay(
     const ROW_H: f32 = 27.0;
     const SCALE: f32 = 2.0;
     const PANEL_W: f32 = 340.0;
-    let panel_h = PAD_Y * 2.0 + 20.0 + rows.len() as f32 * ROW_H;
+    // 小窗放不下全部行时按可用高度截断：面板底与文字都不许越出 NDC（640×480 档只剩
+    // 16 行可放）。行数只增不减的设计在小窗上会整块画出界。
+    let available = (height - PAD_Y * 2.0 - 20.0).max(0.0);
+    let max_rows = ((available / ROW_H) as usize).min(rows.len());
+    let panel_h = PAD_Y * 2.0 + 20.0 + max_rows as f32 * ROW_H;
     let panel_x1 = -1.0 + PANEL_W / width * 2.0;
     let panel_y1 = 1.0 - panel_h / height * 2.0;
 
@@ -1671,7 +2269,7 @@ fn build_overlay(
     let bars_start = vertices.len() as u32;
     let bar_x0 = PAD_X;
     let bar_x1 = PANEL_W - PAD_X;
-    for (index, (label, value, ratio, value_color)) in rows.iter().enumerate() {
+    for (index, (label, value, ratio, value_color)) in rows.iter().take(max_rows).enumerate() {
         let row_y = PAD_Y + 26.0 + index as f32 * ROW_H;
         let bar_y = row_y + 18.0;
         vertices.extend(rect_vertices_colored(
@@ -2083,6 +2681,17 @@ mod tests {
         }
     }
 
+    /// P3-R236：确定性帧档的两个开关要真的落到宿主上，默认全关（= 墙钟档 + 渲染钟）。
+    #[test]
+    fn deterministic_frame_switches_reach_the_app() {
+        let plain = GameApp::new(None, "t".to_owned(), true, true, false, false, None);
+        assert!(!plain.fixed_step, "默认不是确定性帧档");
+        assert_eq!(plain.freeze_clock, None, "默认用渲染钟");
+        let app = plain.with_fixed_step(true).with_freeze_clock(Some(3.5));
+        assert!(app.fixed_step);
+        assert_eq!(app.freeze_clock, Some(3.5));
+    }
+
     /// P3-R05-4 的默认形态门：没有 `--shader-dir`/`RUSTLUA_SHADER_DIR` 时运行时**一次
     /// shader 文件 IO 都不做**——轮询入口必须原地返回，也不排下一次到期。
     #[test]
@@ -2148,5 +2757,114 @@ mod tests {
         );
         assert!(idle.script_note_shown.is_none(), "没查过就不该有结果文本");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P3-R204：画质预设落到具体档位字段。默认必须与旧行为逐字段一致；medium 只动 planar
+    /// 与水面两个视觉档（阴影/地形保持默认）；low = medium + 点光 cube 阴影 512
+    /// （低端档不得比中端更贵，且与 R201 交付内容一致）。
+    #[test]
+    fn quality_presets_apply_measured_dials_and_low_is_a_superset_of_medium() {
+        let new = || GameApp::new(None, "t".to_owned(), true, true, false, false, None);
+
+        let base = new();
+        assert_eq!(base.quality, Quality::Default);
+        assert_eq!(base.planar_reflection_divisor, 2);
+        assert!(!base.water_cheap && !base.terrain_cheap);
+        assert_eq!(base.point_shadow_resolution, 1024);
+
+        let medium = new().with_quality_medium(true);
+        assert_eq!(medium.quality, Quality::Medium);
+        assert_eq!(medium.planar_reflection_divisor, 4);
+        assert!(medium.water_cheap);
+        assert!(!medium.terrain_cheap, "地形廉价档未并入预设（视觉未定档）");
+        assert_eq!(
+            medium.point_shadow_resolution, 1024,
+            "medium 不动阴影档（与 low 的唯一差别）"
+        );
+
+        let low = new().with_quality_low(true);
+        assert_eq!(low.quality, Quality::Low);
+        assert_eq!(low.planar_reflection_divisor, 4);
+        assert!(low.water_cheap);
+        assert!(!low.terrain_cheap, "地形廉价档未并入预设（视觉未定档）");
+        assert_eq!(low.point_shadow_resolution, 512);
+    }
+
+    /// P3-R205：帧剖面自描述字段必须取**生效后**的档位（预设已展开），且键集/顺序稳定；
+    /// 默认档也要齐全，否则台账里少了字段会被读成"没开这一项"。
+    #[test]
+    fn frame_profile_environment_reports_effective_dials() {
+        let new = || GameApp::new(None, "t".to_owned(), true, true, false, false, None);
+
+        let base = new().frame_profile_environment();
+        assert_eq!(
+            base,
+            vec![
+                ("quality", "default".to_owned()),
+                ("planar_divisor", "2".to_owned()),
+                ("water_cheap", "false".to_owned()),
+                ("terrain_cheap", "false".to_owned()),
+                ("draw_distance", "0".to_owned()),
+                ("shadow_resolution", "2048".to_owned()),
+                ("shadow_cascades", "4".to_owned()),
+                ("point_shadow_resolution", "1024".to_owned()),
+                ("point_shadow_lights", "8".to_owned()),
+            ]
+        );
+
+        let medium = new().with_quality_medium(true).frame_profile_environment();
+        assert_eq!(medium[0], ("quality", "medium".to_owned()));
+        assert_eq!(medium[1], ("planar_divisor", "4".to_owned()));
+        assert_eq!(medium[2], ("water_cheap", "true".to_owned()));
+        assert_eq!(medium[7], ("point_shadow_resolution", "1024".to_owned()));
+
+        let low = new().with_quality_low(true).frame_profile_environment();
+        assert_eq!(low[0], ("quality", "low".to_owned()));
+        assert_eq!(low[7], ("point_shadow_resolution", "512".to_owned()));
+
+        let far = new().with_draw_distance(42).frame_profile_environment();
+        assert_eq!(far[4], ("draw_distance", "42".to_owned()));
+    }
+
+    /// P3-R205 端到端：`finish_frame_profile` 真写出的 JSON 必须带生效档位——单测分别覆盖
+    /// 「字段内容」与「序列化」，这条覆盖两者之间的接线（写盘前有没有真把 environment 填进 profile）。
+    #[test]
+    fn finish_frame_profile_writes_environment_block() {
+        let path = std::env::temp_dir().join(format!("rustlua-r205-{}.json", std::process::id()));
+        let mut app = GameApp::new(
+            None,
+            "t".to_owned(),
+            true,
+            true,
+            false,
+            false,
+            Some(path.clone()),
+        )
+        .with_quality_medium(true);
+        app.frame_profile
+            .as_mut()
+            .expect("开启后应有累加器")
+            .record(
+                &engine::host::runtime_scene::FrameScheduleReport {
+                    steps: 1,
+                    total_elapsed: std::time::Duration::from_micros(900),
+                    timings: Vec::new(),
+                },
+                std::time::Duration::from_micros(1_000),
+            );
+        assert_eq!(app.finish_frame_profile().as_deref(), Some(path.as_path()));
+        let json = std::fs::read_to_string(&path).expect("报告应已落盘");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            json.contains(
+                "\"environment\":{\"quality\":\"medium\",\"planar_divisor\":\"4\",\
+                 \"water_cheap\":\"true\""
+            ),
+            "JSON 缺少生效档位: {json}"
+        );
+        assert!(
+            json.contains("\"point_shadow_resolution\":\"1024\""),
+            "{json}"
+        );
     }
 }

@@ -41,6 +41,9 @@ pub enum ScriptErrorPolicy {
 pub enum BudgetSlot {
     /// 工程级 `update()`。
     Update,
+    /// 工程级 `on_frame()`：每个渲染帧一次（固定步之后）。与 `Update` 分开计数：
+    /// 表现层回调炸掉时不该连带停掉逻辑回调。
+    Frame,
     /// UI 点击分发（`UiEvents` 绑定的任意 Lua 函数）。
     UiClicks,
     /// 每实体脚本钩子。
@@ -75,6 +78,7 @@ impl BudgetSlot {
     pub fn key(self) -> String {
         match self {
             Self::Update => "update()".to_owned(),
+            Self::Frame => "on_frame()".to_owned(),
             Self::UiClicks => "ui.click".to_owned(),
             Self::Entity(id, hook) => {
                 format!("entity:{}:g{}:{}", id.index(), id.generation(), hook.name())
@@ -131,6 +135,7 @@ pub struct ScriptGuard {
     error_limit: u32,
     total_errors: u64,
     update: CallbackBudget,
+    frame: CallbackBudget,
     ui_clicks: CallbackBudget,
     entity_hooks: HashMap<(EntityId, EntityHook), CallbackBudget>,
     /// 已停用回调的可读键（宿主与诊断面板用）。用集合是为了"每槽位只报一次"。
@@ -144,6 +149,7 @@ impl Default for ScriptGuard {
             error_limit: DEFAULT_CALLBACK_ERROR_LIMIT,
             total_errors: 0,
             update: CallbackBudget::default(),
+            frame: CallbackBudget::default(),
             ui_clicks: CallbackBudget::default(),
             entity_hooks: HashMap::new(),
             disabled: BTreeSet::new(),
@@ -239,6 +245,7 @@ impl ScriptGuard {
     fn budget(&self, slot: BudgetSlot) -> &CallbackBudget {
         match slot {
             BudgetSlot::Update => &self.update,
+            BudgetSlot::Frame => &self.frame,
             BudgetSlot::UiClicks => &self.ui_clicks,
             BudgetSlot::Entity(id, hook) => {
                 self.entity_hooks.get(&(id, hook)).unwrap_or(&EMPTY_BUDGET)
@@ -249,6 +256,7 @@ impl ScriptGuard {
     fn budget_mut(&mut self, slot: BudgetSlot) -> &mut CallbackBudget {
         match slot {
             BudgetSlot::Update => &mut self.update,
+            BudgetSlot::Frame => &mut self.frame,
             BudgetSlot::UiClicks => &mut self.ui_clicks,
             BudgetSlot::Entity(id, hook) => self.entity_hooks.entry((id, hook)).or_default(),
         }

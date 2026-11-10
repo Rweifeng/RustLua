@@ -136,6 +136,70 @@ fn scan_aggregates_one_broken_path_across_documents() {
     let _ = root;
 }
 
+/// 写一份带 `MeshRenderer` 的场景：网格值可以是内置哨兵，也可以是真实资源路径。
+fn write_mesh_scene(path: &Path, mesh_values: &[String]) {
+    let mut scene = Scene::new("mesh-fixture");
+    for (index, value) in mesh_values.iter().enumerate() {
+        let id = SceneEntityId(index as u64 + 1);
+        scene
+            .add_entity(id, format!("M{}", index + 1), None)
+            .unwrap();
+        scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert("MeshRenderer".to_owned(), format!("mesh={value}"));
+    }
+    scene.save(path).unwrap();
+}
+
+#[test]
+fn builtin_mesh_sentinels_are_not_reported_as_broken() {
+    // P3-R219：清单原来只认两张贴图 ⇒ `examples/game_api/scenes/*.scene` 里 5 行
+    // `mesh=__ground_plane__` 每行都被扫成"找不到的资源"，而它永远不在索引里、也永远
+    // 改指不到文件。带参数的规格串同理更糟（`__cells__?…&bits=…` 约 700 字节整串当路径）。
+    let cells =
+        rustlua_render::cellmesh::CellMeshSpec::new(0.5, [0.0, 0.0, 0.0], [4, 4, 4]).mesh_path();
+    let (mut app, root) = indexed_fixture("scan-mesh-sentinel");
+    write_mesh_scene(
+        &root.join("scenes/mesh_sentinel.scene"),
+        &[
+            "__ground_plane__".to_owned(),
+            "__terrain__?size=240&res=96&amp=2.4&seed=7".to_owned(),
+            "__water__?size=10&res=8&y=0.06&amp=0.02&seed=3".to_owned(),
+            cells,
+            "assets/missing/rock.glb".to_owned(),
+        ],
+    );
+    assert_eq!(
+        app.dispatch(EditorCommand::ScanBrokenReferences),
+        CommandResult::Applied
+    );
+    assert!(
+        app.broken_refs.unreadable.is_empty(),
+        "四张哨兵不能让这份文档变成读不了：{:?}",
+        app.broken_refs.unreadable
+    );
+    let listed: Vec<String> = app
+        .broken_refs
+        .rows
+        .iter()
+        .map(|row| row.value.clone())
+        .collect();
+    assert!(
+        listed
+            .iter()
+            .any(|value| value == "assets/missing/rock.glb"),
+        "真缺的网格要照常列出（否则这条绿是因为整个网格字段根本没被扫）：{listed:?}"
+    );
+    assert!(
+        !listed.iter().any(|value| value.starts_with("__")),
+        "内置哨兵不该出现在断链清单里：{listed:?}"
+    );
+    let _ = root;
+}
+
 #[test]
 fn a_missing_index_never_claims_there_are_no_broken_links() {
     // 负控：资源索引还没建立时，扫描必须**不产出清单**也不把 `scanned` 打开。

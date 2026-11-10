@@ -48,6 +48,13 @@ pub(super) fn local_transform_in(
 }
 
 impl RuntimeScene {
+    pub(crate) fn invalidate_spatial_caches(&mut self) {
+        self.spatial_fingerprint = None;
+        self.spatial_world_revision = None;
+        self.spatial_incremental.reset();
+        self.spatial_index_revision = None;
+    }
+
     /// docs/54 §4.1：按**场景实体 id** 读运行时局部变换，**用统一的 `LocalTransform` 表示**。
     ///
     /// 运行时 ECS 里存的是 `Transform`（2D）与 `Transform3D`（3D）——它们是**序列化边界格式**，也是
@@ -167,6 +174,7 @@ impl RuntimeScene {
         if !enabled {
             // 关掉时清掉指纹：打开开关后第一帧必须重新全量传播一次（不能靠旧指纹跳过）。
             self.spatial_fingerprint = None;
+            self.spatial_world_revision = None;
         }
         previous
     }
@@ -615,6 +623,10 @@ impl RuntimeScene {
         renderer.set_particle_wind_profile([profile.0, profile.1, profile.2]);
         let sources = self.script.particle_wind_sources();
         renderer.set_particle_wind_sources(sources);
+        // 网格体积风/温度浮力场：脚本层每帧推进的**同一份** `WindGrid`，这里同步给 GPU
+        // 粒子后端去三线性采样——CPU/GPU 读的是同一份场，不存在两套模拟。
+        self.script
+            .with_wind_grid(|grid| renderer.set_particle_wind_grid(grid));
         let bursts = self.script.take_gpu_bursts();
         let mut report = ParticleDispatchReport {
             requested: bursts.len(),
@@ -803,17 +815,25 @@ impl RuntimeScene {
         // 只有**真的存在层级**时才传播：平面场景（每个实体都没有 `Parent`）里世界值恒等于局部值，
         // 传播纯属白做——而提取路径是按这个布尔量选组件遍历的，所以它必须与实际写入的组件一致。
         //
-        // docs/54 §10 批 R：传播的输入只有四样（参与集合、局部值、父子边、是否启用）。前三样哈希成
-        // 一个指纹，**与上一帧相同就整趟跳过**——静态层级场景因此不再付"每实体 3 次组件查找 + 矩阵
-        // 组合 + 写入"那三成帧成本。指纹只是"上一帧算出来的世界值还有效吗"的判据，不参与渲染，
-        // 也不是第二份真值；任何一位变了（组件增删/实体重生/换父/局部值改动）都会退回全量传播。
+        // docs/54 §10 批 R/S：空间组件修订号不变就直接复用缓存指纹，不扫描实体；只有
+        // Parent/Transform/Transform3D 可变借用或结构变化时才精确哈希输入，再决定增量传播。
+        // 指纹只是"上一帧算出来的世界值还有效吗"的判据，不参与渲染，也不是第二份真值。
         //
         // docs/54 §10 批 S：指纹只说"**有东西**变了"，增量路径再说"**哪些**实体变了"，于是只重算
-        // 那些实体的子树。两级判据分工明确：一级是最便宜的哈希（静态帧 0.48 ms/万实体），二级是
-        // 逐实体精确快照比较（只在指纹变化时才付）。回滚档是 `set_spatial_incremental(false)`。
-        let fingerprint = self
+        // 那些实体的子树。一级修订号是 O(1)，二级精确指纹与逐实体快照比较只在输入变化时才付。
+        // 回滚档是 `set_spatial_incremental(false)`。
+        let world_revision = self
             .script
-            .with_world(rustlua_ecs::hierarchy::local_fingerprint);
+            .with_world(rustlua_ecs::world::World::spatial_revision);
+        let fingerprint = if self.spatial_world_revision == Some(world_revision) {
+            self.spatial_fingerprint.unwrap_or_else(|| {
+                self.script
+                    .with_world(rustlua_ecs::hierarchy::local_fingerprint)
+            })
+        } else {
+            self.script
+                .with_world(rustlua_ecs::hierarchy::local_fingerprint)
+        };
         let (_, _, parents) = fingerprint;
         let active_now = enabled && parents > 0;
         if self.spatial_skip_unchanged
@@ -846,6 +866,7 @@ impl RuntimeScene {
         };
         let report = outcome.report;
         self.spatial_fingerprint = Some(fingerprint);
+        self.spatial_world_revision = Some(world_revision);
         self.spatial_active = active;
         self.last_spatial_path = outcome.path;
         self.last_spatial_recomputed = outcome.recomputed;
@@ -879,6 +900,8 @@ impl RuntimeScene {
         let previous = self.spatial_incremental_enabled;
         self.spatial_incremental_enabled = enabled;
         self.spatial_incremental.reset();
+        self.spatial_fingerprint = None;
+        self.spatial_world_revision = None;
         previous
     }
 
@@ -990,7 +1013,7 @@ impl RuntimeScene {
         self.spatial_index = enabled;
         if !enabled {
             self.spatial_grid = None;
-            self.spatial_index_fingerprint = None;
+            self.spatial_index_revision = None;
         }
         previous
     }

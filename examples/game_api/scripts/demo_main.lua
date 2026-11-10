@@ -516,6 +516,16 @@ local steps = {
             local wx, wy = particles.wind()
             local wx3, wy3, wz3 = particles.wind3d()
             assert(wx == 0 and wy == 0 and wx3 == 0 and wy3 == 0 and wz3 == 0, "wind reads back")
+            -- 风场剖面（维度无关）：写零值再读回，局部风源清空一次。
+            assert(particles.set_wind_profile(0, 0, 0), "zero wind profile accepted")
+            local shear, gust, gust_hz = particles.wind_profile()
+            assert(shear == 0 and gust == 0 and gust_hz == 0, "wind profile reads back")
+            if particles.set_wind_source then
+                -- 3D 包才有局部风源：0 号槽放一个零强度源，再统一清空。
+                local ok, why = particles.set_wind_source(0, 0, 0, 0, 4, 0.5, 0, 0)
+                assert(ok, "zero wind source accepted: " .. tostring(why))
+            end
+            particles.clear_wind_sources()
             particles.burst3d(0, 0, 0, 0, { speed_z = 1, gravity_z = -1 })
         end,
         run = function()

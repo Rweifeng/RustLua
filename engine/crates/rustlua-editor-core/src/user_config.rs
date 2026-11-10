@@ -13,8 +13,9 @@
 //! 文件：
 //!
 //! * `editor.json` —— 非密钥设置。顶层是对象，按段分放 `version`、`assistant`、`appearance`
-//!   （主题）、`shortcuts`（改键）、`plugins`（插件开关）、`panels`（插件面板可见性），
-//!   未知顶层键（以及各段内的未知键）原样保留，新版本写的设置不会被旧版本抹掉；
+//!   （主题）、`shortcuts`（改键）、`plugins`（插件开关）、`panels`（插件面板可见性）、
+//!   `android_toolchain`（机器本地构建工具路径）；未知顶层键（以及各段内的未知键）原样保留，
+//!   新版本写的设置不会被旧版本抹掉；
 //! * `assistant.key` —— API Key 密文。Windows 用 DPAPI（`CryptProtectData`）绑定当前
 //!   用户账户：拷到别的账户/机器解不开。非 Windows 平台退回 0600 权限的明文文件。
 //!
@@ -34,6 +35,16 @@ pub const HOME_ENV: &str = "RUSTLUA_HOME";
 pub const CONFIG_VERSION: u32 = 1;
 const CONFIG_FILE: &str = "editor.json";
 const KEY_FILE: &str = "assistant.key";
+
+/// Machine-local Android build tool locations stored in the user's editor settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AndroidToolchainConfig {
+    pub install_root: String,
+    pub sdk_root: String,
+    pub ndk_root: String,
+    pub jdk_home: String,
+    pub gradle_executable: String,
+}
 
 /// `<用户主目录>/.rustlua` 的读写入口。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,6 +129,38 @@ impl UserConfigStore {
         self.save_section(
             "appearance",
             &[("theme", serde_json::json!(settings.theme))],
+        )
+    }
+
+    /// Read Android SDK/NDK/JDK/Gradle paths from the machine-local section.
+    #[must_use]
+    pub fn load_android_toolchain(&self) -> Option<AndroidToolchainConfig> {
+        let text = fs::read_to_string(self.config_path()).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let object = value.get("android_toolchain")?.as_object()?;
+        Some(AndroidToolchainConfig {
+            install_root: string_field(object, "install_root"),
+            sdk_root: string_field(object, "sdk_root"),
+            ndk_root: string_field(object, "ndk_root"),
+            jdk_home: string_field(object, "jdk_home"),
+            gradle_executable: string_field(object, "gradle_executable"),
+        })
+    }
+
+    /// Persist Android tool paths without removing unknown settings.
+    pub fn save_android_toolchain(&self, settings: &AndroidToolchainConfig) -> io::Result<()> {
+        self.save_section(
+            "android_toolchain",
+            &[
+                ("install_root", serde_json::json!(settings.install_root)),
+                ("sdk_root", serde_json::json!(settings.sdk_root)),
+                ("ndk_root", serde_json::json!(settings.ndk_root)),
+                ("jdk_home", serde_json::json!(settings.jdk_home)),
+                (
+                    "gradle_executable",
+                    serde_json::json!(settings.gradle_executable),
+                ),
+            ],
         )
     }
 
@@ -270,6 +313,14 @@ impl UserConfigStore {
         let protected = secrets::protect(key.as_bytes())?;
         write_atomic(&path, &protected, true)
     }
+}
+
+fn string_field(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> String {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// 宽松解析 `assistant` 段：单个字段类型不符只丢那个字段。
@@ -721,6 +772,32 @@ mod tests {
             "dark",
             "未知主题名必须回落到深色"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn android_toolchain_round_trips_and_preserves_other_sections() {
+        let root = temp_root("android-toolchain");
+        let store = UserConfigStore::at(&root);
+        fs::write(
+            store.config_path(),
+            r#"{"future_pref":7,"assistant":{"provider":"ollama"},"android_toolchain":{"future":"keep"}}"#,
+        )
+        .unwrap();
+        let settings = AndroidToolchainConfig {
+            install_root: "C:\\tools\\android".to_owned(),
+            sdk_root: "C:\\tools\\android\\sdk".to_owned(),
+            ndk_root: "C:\\tools\\android\\sdk\\ndk\\27.2.12479018".to_owned(),
+            jdk_home: "C:\\tools\\android\\jdk".to_owned(),
+            gradle_executable: "C:\\tools\\android\\gradle\\bin\\gradle.bat".to_owned(),
+        };
+        store.save_android_toolchain(&settings).unwrap();
+        assert_eq!(store.load_android_toolchain(), Some(settings.clone()));
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.config_path()).unwrap()).unwrap();
+        assert_eq!(value["future_pref"], 7);
+        assert_eq!(value["assistant"]["provider"], "ollama");
+        assert_eq!(value["android_toolchain"]["future"], "keep");
         let _ = fs::remove_dir_all(root);
     }
 }

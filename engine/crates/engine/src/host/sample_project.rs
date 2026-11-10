@@ -81,6 +81,86 @@ fn scene_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// M81 批 3：2D 构建（无 `3d` feature）下，静态引用了**本构建面外 API** 的演示场景
+/// 整场跳过并打印原因；全量构建零跳过（行为与从前逐字节一致）。
+///
+/// 判据与覆盖率门同一口径：剥掉注释/字符串后，`表.函数(` / `表.函数,` / `表.函数)`
+/// 三种真实调用形状才算引用（提示文案里的名字不算）。函数级对照是必须的——
+/// `camera`/`particles`/`render` 是混合表，整表缺席判据会漏掉 `camera.set_clip_plane`
+/// 这类只裁掉个别函数的引用。场景↔脚本的对应取 `demos.lua` 的 `module` 字段，
+/// 共享脚本（api_demo/lab/router 等）不算——它们被所有场景 require，算进去会全场连坐。
+#[cfg(not(feature = "3d"))]
+fn out_of_surface_skip(root: &Path, name: &str) -> Option<String> {
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    let surface = runtime
+        .eval_json(LUA_API_PROBE)
+        .expect("导出运行时 API 面失败");
+    let present: BTreeSet<String> = surface["tables"]
+        .as_array()
+        .expect("tables")
+        .iter()
+        .flat_map(|table| {
+            let name = table["name"].as_str().expect("table name").to_owned();
+            table["funcs"]
+                .as_array()
+                .expect("funcs")
+                .iter()
+                .map(move |func| format!("{name}.{}", func.as_str().expect("func name")))
+        })
+        .collect();
+    let full: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json"
+    ))
+    .expect("全量 API 面基线");
+    let absent: Vec<String> = full["tables"]
+        .as_array()
+        .expect("tables")
+        .iter()
+        .flat_map(|table| {
+            let name = table["name"].as_str().expect("table name").to_owned();
+            table["funcs"]
+                .as_array()
+                .expect("funcs")
+                .iter()
+                .map(move |func| format!("{name}.{}", func.as_str().expect("func name")))
+        })
+        .filter(|key| !present.contains(key))
+        .collect();
+
+    let manifest = fs::read_to_string(root.join("scripts").join("demos.lua"))
+        .expect("读取 scripts/demos.lua 失败");
+    let mut module = None;
+    let mut in_scene = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("scene =") {
+            in_scene = rest.contains(&format!("\"{name}\""));
+        } else if in_scene && let Some(rest) = line.strip_prefix("module =") {
+            module = rest.split('"').nth(1).map(|value| value.to_owned());
+            break;
+        }
+    }
+    let module = module?;
+    let path = root.join("scripts").join(format!("{module}.lua"));
+    let source = fs::read_to_string(&path).ok()?;
+    let code = strip_lua_noise(&source);
+    let hit = absent.iter().find(|key| {
+        ["(", ",", ")"]
+            .iter()
+            .any(|suffix| code.contains(&format!("{key}{suffix}")))
+    })?;
+    Some(format!(
+        "跳过 {name}：{module}.lua 引用了本构建面外的 {hit}（2D 构建无 3d feature）"
+    ))
+}
+
+/// 全量构建下跳过规则不存在（零行为变化）；调用点用同名函数保持两维同形。
+#[cfg(feature = "3d")]
+fn out_of_surface_skip(_root: &Path, _name: &str) -> Option<String> {
+    None
+}
+
 /// `scripts/demos.lua` 里登记的演示场景名（清单是唯一真源）。
 fn registered_scenes(root: &Path) -> BTreeSet<String> {
     let text = fs::read_to_string(root.join("scripts").join("demos.lua"))
@@ -308,6 +388,10 @@ fn sample_project_runs_every_scene_headless() {
     let mut stepped = 0;
     for path in scene_files(&root) {
         let name = scene_name(&path);
+        if let Some(reason) = out_of_surface_skip(&root, &name) {
+            println!("{reason}");
+            continue;
+        }
         let scene = Scene::load(&path).unwrap_or_else(|error| panic!("加载 {name} 失败：{error}"));
         let mut runtime = RuntimeScene::from_scene(Some(&root), scene)
             .unwrap_or_else(|error| panic!("实例化 {name} 失败：{error}"));
@@ -332,10 +416,16 @@ fn sample_project_runs_every_scene_headless() {
 fn sample_project_demos_self_test() {
     let root = project_root();
     let mut checked = 0;
+    let mut skipped = 0;
     for path in scene_files(&root) {
         let name = scene_name(&path);
         // 入口菜单不是演示；两个夹具由渲染 golden 钉住，没有步骤。
         if name == "index" || name == "demo3d" || name == "mixed" {
+            continue;
+        }
+        if let Some(reason) = out_of_surface_skip(&root, &name) {
+            println!("{reason}");
+            skipped += 1;
             continue;
         }
         let scene = Scene::load(&path).unwrap_or_else(|error| panic!("加载 {name} 失败：{error}"));
@@ -373,9 +463,12 @@ fn sample_project_demos_self_test() {
         );
         checked += 1;
     }
+    // 跳过是静态判定的（面外引用），全量构建 skipped 恒 0、门槛与从前一致；
+    // 2D 构建按实际参与数下限，防"跳过规则吞掉一切"的空洞通过。
+    let floor = if skipped == 0 { 13 } else { 9 };
     assert!(
-        checked >= 13,
-        "参与行为自检的演示太少（{checked}），门没有实际意义"
+        checked >= floor,
+        "参与行为自检的演示太少（{checked}，跳过 {skipped}），门没有实际意义"
     );
 }
 
@@ -651,6 +744,10 @@ fn sample_project_index_click_opens_the_demo() {
     // **每轮都重新实例化入口场景**：点击后 `active` 模块会变成目标场景的演示模块，
     // 而"点击菜单卡片"这件事只有入口场景的模块负责。
     for name in &registered {
+        if let Some(reason) = out_of_surface_skip(&root, name) {
+            println!("{reason}");
+            continue;
+        }
         let scene = Scene::load(root.join("scenes").join("index.scene")).expect("加载入口场景");
         let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("实例化入口场景");
         runtime
@@ -693,6 +790,10 @@ fn sample_project_index_cards_are_clickable() {
     let viewport = [1280.0, 720.0];
 
     for name in &registered {
+        if let Some(reason) = out_of_surface_skip(&root, name) {
+            println!("{reason}");
+            continue;
+        }
         let scene = Scene::load(root.join("scenes").join("index.scene")).expect("加载入口场景");
         let card = scene
             .entities

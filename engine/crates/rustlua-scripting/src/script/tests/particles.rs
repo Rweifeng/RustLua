@@ -318,3 +318,83 @@ fn gpu_burst_take_and_flush_are_exclusive() {
     assert_eq!(runtime.with_particles(|particles| particles.len()), 5);
     let _ = fs::remove_file(path);
 }
+
+/// P3-R233：网格体积风场的 Lua 面端到端——建场/配系数/注入/采样/清除，越界与无场都拒绝，
+/// 且注入的均匀速度真的加速 CPU 粒子（不是只写状态不进积分）。
+#[cfg(feature = "3d")]
+#[test]
+fn particles_wind_grid_lua_surface_and_accelerates_cpu_pool() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let path = script(
+        "assert(particles.wind_grid_sample(0, 0, 0) == 0, 'no field samples zero')\n\
+         assert(particles.wind_grid_add_velocity(0, 0, 0, 1, 0, 0) == false, 'inject without field rejected')\n\
+         local ok, reason = particles.set_wind_grid(2, 2, 2, 0, 0, 0, 1)\n\
+         assert(ok, reason)\n\
+         assert(particles.set_wind_grid(1, 2, 2, 0, 0, 0, 1) == false, 'axis < 2 rejected')\n\
+         assert(particles.set_wind_grid(33, 2, 2, 0, 0, 0, 1) == false, 'axis > 32 rejected')\n\
+         assert(particles.set_wind_grid(2, 2, 2, 0, 0, 0, 0) == false, 'cell <= 0 rejected')\n\
+         local pok, preason = particles.wind_grid_params(0, 0, 0, 0, 1)\n\
+         assert(pok, preason)\n\
+         assert(particles.wind_grid_params(0.2, 0, 0, 0, 1) == false, 'diffusion range')\n\
+         assert(particles.wind_grid_params(0.1, 0, 0, 0, 9) == false, 'iterations range')\n\
+         for x=0,1 do for y=0,1 do for z=0,1 do\n\
+           local vok, vreason = particles.wind_grid_add_velocity(x, y, z, 4, 0, 2)\n\
+           assert(vok, vreason)\n\
+         end end end\n\
+         assert(particles.wind_grid_add_velocity(2, 0, 0, 1, 0, 0) == false, 'cell oob rejected')\n\
+         local ax, ay, az = particles.wind_grid_sample(0.5, 0.5, 0.5)\n\
+         assert(math.abs(ax - 4) < 1e-5 and ay == 0 and math.abs(az - 2) < 1e-5, 'uniform field sample')\n\
+         particles.burst3d(0.5, 0.5, 0.5, 1, {speed=0, life=4})\n\
+         function update() return 'ok' end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(runtime.call_update().unwrap(), "ok");
+    runtime.step_particles(0.5);
+    let (vx, vz) =
+        runtime.with_particles(|particles| (particles[0].velocity.x, particles[0].velocity_z));
+    assert!((vx - 2.0).abs() < 1e-4, "vx = 4*0.5, got {vx}");
+    assert!((vz - 1.0).abs() < 1e-4, "vz = 2*0.5, got {vz}");
+    let _ = fs::remove_file(path);
+}
+
+/// P3-R235：世界坐标注入面（`wind_grid_heat` / `wind_grid_push` / `wind_grid_info`）。
+///
+/// 钉三件事：① 域外一律拒绝（不静默落到边缘节点造出假热源）；② 世界点落到**最近节点**
+/// （半格内归到较近的那一个），采样读回的是插值后的值；③ 读回的几何与建场时给的一致。
+#[cfg(feature = "3d")]
+#[test]
+fn particles_wind_grid_world_space_injection_maps_to_nearest_node() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let path = script(
+        "assert(particles.wind_grid_info() == nil, 'no field has no info')\n\
+         assert(particles.wind_grid_heat(0, 0, 0, 1) == false, 'heat without field rejected')\n\
+         assert(particles.wind_grid_push(0, 0, 0, 0, 1, 0) == false, 'push without field rejected')\n\
+         local ok, reason = particles.set_wind_grid(4, 4, 4, 0, 0, 0, 2)\n\
+         assert(ok, reason)\n\
+         local info = particles.wind_grid_info()\n\
+         assert(info.nx == 4 and info.ny == 4 and info.nz == 4, 'dims round trip')\n\
+         assert(math.abs(info.cell - 2) < 1e-6, 'cell round trip')\n\
+         local pok, preason = particles.wind_grid_params(0, 0, 0, 3, 1)\n\
+         assert(pok, preason)\n\
+         -- x=1 正好在节点 0(0) 与节点 1(2) 中间 ⇒ 归到较近的节点 1。\n\
+         local hok, hreason = particles.wind_grid_heat(1, 0, 0, 2)\n\
+         assert(hok, hreason)\n\
+         local ax, ay, az = particles.wind_grid_sample(2, 0, 0)\n\
+         assert(ax == 0 and az == 0, 'heat must not push sideways')\n\
+         assert(math.abs(ay - 6) < 1e-4, 'node 1 temperature 2 x buoyancy 3 = 6, got ' .. ay)\n\
+         local _, ay0, _ = particles.wind_grid_sample(0, 0, 0)\n\
+         assert(math.abs(ay0) < 1e-4, 'node 0 stays cold, got ' .. ay0)\n\
+         local vok, vreason = particles.wind_grid_push(2, 0, 0, 0, 5, 0)\n\
+         assert(vok, vreason)\n\
+         local _, ay2, _ = particles.wind_grid_sample(2, 0, 0)\n\
+         assert(math.abs(ay2 - 11) < 1e-4, 'push adds to the sampled acceleration, got ' .. ay2)\n\
+         -- 域外拒绝：格距 2、4 格 ⇒ 采样域 x ∈ [0, 6]。\n\
+         assert(particles.wind_grid_heat(7, 0, 0, 1) == false, 'outside domain rejected')\n\
+         assert(particles.wind_grid_heat(-1, 0, 0, 1) == false, 'outside domain rejected')\n\
+         assert(particles.wind_grid_push(0, 7, 0, 0, 1, 0) == false, 'outside domain rejected')\n\
+         function update() return 'ok' end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(runtime.call_update().unwrap(), "ok");
+    let _ = fs::remove_file(path);
+}

@@ -1,7 +1,7 @@
 //! Lua API 参考（**本文件与 `src/lua_api/doc/*.md` 由脚本生成，勿手改**）。
 //!
 //! - 事实源：运行期 `_G` 探针导出的 API 面基线（`rustlua-scripting` 的 api_surface_snapshot 快照门，
-//!   `lua_api_surface.json`，47 个模块表 / 373 个函数）；
+//!   `lua_api_surface.json`，49 个模块表 / 417 个函数）；
 //! - 再生成：`node scripts/docgen/gen-lua-api-docs.js`；说明文字写在各模块的 markdown 里
 //!   （`src/lua_api/doc/<模块>.md`），Lua 侧签名从绑定源码推断；
 //! - 门：`node scripts/docgen/gen-lua-api-docs.js --check`——再生成必须是 no-op、待补桩数不得
@@ -45,6 +45,10 @@ pub mod camera2d {
 
 pub mod camera3d {
     #![doc = include_str!("lua_api/doc/camera3d.md")]
+}
+
+pub mod cells3d {
+    #![doc = include_str!("lua_api/doc/cells3d.md")]
 }
 
 pub mod clock {
@@ -137,6 +141,10 @@ pub mod prefab {
 
 pub mod quad {
     #![doc = include_str!("lua_api/doc/quad.md")]
+}
+
+pub mod render {
+    #![doc = include_str!("lua_api/doc/render.md")]
 }
 
 pub mod rollback {

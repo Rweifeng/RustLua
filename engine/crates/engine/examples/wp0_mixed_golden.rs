@@ -42,8 +42,7 @@ fn main() {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(&root), scene).expect("instantiate mixed scene");
     // 世界 Sprite 深度通道：这就是"混合 2D/3D"要打开的那个开关。
-    // 视口剔除保持默认开启：世界通道在有 3D 内容时不得再按 2D 相机裁剪，这条 golden 正是
-    // 抓出那次误丢的地方（见 `world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content`）。
+    // 视口剔除保持默认开启：混合世界按实际 3D 主视图裁剪，而不是误用 2D 相机 bounds。
     runtime.set_world_sprite_depth(true);
 
     let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");

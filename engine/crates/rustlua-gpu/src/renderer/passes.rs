@@ -7,12 +7,15 @@
 
 use rustlua_camera::camera::{ClearPolicy, DEFAULT_3D_CLEAR, RenderView};
 use rustlua_infra::logging::{EngineError, LogModule};
+use rustlua_math::geom3d::Frustum;
+use rustlua_math::math3d::{Aabb3, Vec3};
 use rustlua_render::frame::{Scene3d, Scene3dDrawable, SceneMesh};
 use rustlua_render::layer::{RenderLayer, layer_indices};
 use rustlua_render::mesh3d::MaterialAlphaMode;
 use rustlua_render::post_process::PostProcess;
 use rustlua_render::render_plan::{FrameFacts, RenderPass, RenderPlan};
 use rustlua_render::render_settings::{IblMode, SceneColorFormat, hdr_activation};
+use rustlua_render::terrain::TerrainSpec;
 use rustlua_render::water::WaterSpec;
 // M73-00 WP5：时钟必须走 `web-time` 而不是 `std::time`。`wasm32-unknown-unknown` 的 std
 // 落在 `sys/pal/unsupported` 上，`Instant::now()` 会**直接 panic**（"time not implemented on
@@ -24,12 +27,39 @@ use wgpu::SurfaceError;
 
 use super::world_sprite::SpritePassFilter;
 
-use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
+use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};
+use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
 use super::{
-    DepthPass, POINT_SHADOW_LIGHTS, RenderFrameMetrics, RenderOutcome, Renderer,
-    apply_declared_viewport, count_layer_draws, hash_bytes, record_dropped_draw,
-    record_indexed_draw, record_set_pass, record_triangle_draw, record_vertex_draw,
+    DepthPass, RenderFrameMetrics, RenderOutcome, Renderer, apply_declared_viewport,
+    count_layer_draws, hash_bytes, point_shadow_far, point_shadow_light_indices,
+    point_shadow_view_projections, record_dropped_draw, record_indexed_draw, record_set_pass,
+    record_triangle_draw, record_vertex_draw, shadow_view_projections,
 };
+
+/// 程序化天空的太阳项强度。Tonemap 的 `params[57]` 与 SSR 天空回退的 `params.sky.w` 共用
+/// 同一个数：两处各写一份会让反射里的太阳和天上的太阳亮度对不上，而这个值不来自
+/// `RenderSettings`，只有一个真值。
+const SKY_SUN_INTENSITY: f32 = 2.4;
+
+/// P3-R189/R191：组包围盒是否与视锥相交（包围球保守判定）。阴影级联与平面反射共用。
+fn frustum_may_contain(frustum: Frustum, bounds: &Aabb3) -> bool {
+    let center = (bounds.min + bounds.max) * 0.5;
+    let half = (bounds.max - bounds.min) * 0.5;
+    let radius = (half.x * half.x + half.y * half.y + half.z * half.z).sqrt();
+    frustum.contains_sphere(center, radius)
+}
+fn point_to_aabb_distance_sq(bounds: &Aabb3, point: Vec3) -> f32 {
+    let dx = (bounds.min.x - point.x)
+        .max(point.x - bounds.max.x)
+        .max(0.0);
+    let dy = (bounds.min.y - point.y)
+        .max(point.y - bounds.max.y)
+        .max(0.0);
+    let dz = (bounds.min.z - point.z)
+        .max(point.z - bounds.max.z)
+        .max(0.0);
+    dx * dx + dy * dy + dz * dz
+}
 
 pub(crate) fn water_plane_from_drawables(drawables: &[Scene3dDrawable]) -> Option<[f32; 4]> {
     for drawable in drawables {
@@ -127,6 +157,7 @@ impl Renderer {
         fxaa: bool,
         ssao: bool,
         ssr: bool,
+        planar_reflection: bool,
         contact_shadows: bool,
         fog: bool,
         fog_density: f32,
@@ -136,13 +167,15 @@ impl Renderer {
         dof_focus: f32,
         dof_range: f32,
         dof_strength: f32,
+        motion_blur: f32,
         scene: Option<&Scene3d>,
         target_size: (u32, u32),
     ) -> u64 {
-        // 240B：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 指向光的方向 + 雾 + 景深 + 天空。
+        // 384B：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 指向光的方向 + 雾 + 景深 + 天空
+        // + 水面反射 + 云层 + 剖面裁剪平面 + 世界→局部 + 地形范围（P3-R166）。
         // SSR/contact shadows/fog/天空用后几者把深度重建到世界空间；没有相机时保持全零，
         // shader 直接跳过。
-        let mut params = [0.0_f32; 72];
+        let mut params = [0.0_f32; super::TONEMAP_UNIFORM_FLOATS];
         params[0] = settings.exposure_ev + self.exposure_offset;
         params[1] = settings.tonemap.code();
         params[2] = settings.bloom;
@@ -159,9 +192,12 @@ impl Renderer {
         params[69] = self.flash_intensity.clamp(0.0, 1.0);
         params[70] = self.vignette.clamp(0.0, 1.0);
         params[71] = self.grain.clamp(0.0, 1.0);
+        // P3-R174：本帧视图投影要留到下一帧当「上一帧」，运动模糊按它重投影。
+        let mut current_view_projection = None;
         if let Some(scene) = scene
             && let Ok(view_projection) = scene.camera.view_projection_matrix(scene.view.viewport)
         {
+            current_view_projection = Some(view_projection);
             params[8..24].copy_from_slice(&view_projection.columns.concat());
             if let Ok(inverse) = view_projection.inverse() {
                 params[24..40].copy_from_slice(&inverse.columns.concat());
@@ -202,22 +238,120 @@ impl Renderer {
         // 天空只在“有场景相机”的 HDR 帧启用；与雾共用开关。
         if fog && scene.is_some() {
             params[56] = 1.0;
-            params[57] = 2.4;
+            params[57] = SKY_SUN_INTENSITY;
             params[58] = 0.55;
         }
         // P3-R52：取第一块 `__water__` 的世界平面（level/半宽/中心）+ 时钟，
         // 让 Tonemap 能对水面像素做屏幕空间物体反射。没有水面时 enable=0。
-        if let Some(plane) = scene
-            .and_then(|scene| water_plane_from_drawables(&scene.drawables))
-        {
+        if let Some(plane) = scene.and_then(|scene| water_plane_from_drawables(&scene.drawables)) {
             params[60] = plane[0];
             params[61] = plane[1];
             params[62] = plane[2];
             params[63] = plane[3];
             params[64] = 1.0;
-            params[65] = self.clock.elapsed().as_secs_f32();
+            params[65] = self.clock_secs();
             params[66] = 0.55;
+            // P3-R171：逐通道消光系数（线性 RGB，每米）+ 强度。红光衰减最快、
+            // 蓝光最慢，所以浅滩透亮、深水收向青蓝；没有水面时 w=0，着色器整段跳过。
+            params[100] = 0.55;
+            params[101] = 0.20;
+            params[102] = 0.14;
+            params[103] = 1.0;
+            // P3-R172：水体散射色（线性 RGB）+ 强度。吸收把河床乘暗，散射把深水拉回
+            // 水体自身的颜色；权重是 1 − T，浅滩几乎不受影响。
+            params[104] = 0.004;
+            params[105] = 0.030;
+            params[106] = 0.040;
+            params[107] = 1.0;
+            // P3-R173：相机在水面矩形内且低于水位 ⇒ 整帧隔着水，光程取相机到该像素
+            // 世界点的距离（与 P3-R171 的河床深度不同）。上限 40 m 防止天空像素被
+            // 反投影到远点后把整帧压成纯水体色。
+            let underwater = params[41] < plane[0]
+                && (params[40] - plane[2]).abs() <= plane[1]
+                && (params[42] - plane[3]).abs() <= plane[1];
+            params[108] = if underwater { 1.0 } else { 0.0 };
+            params[109] = 40.0;
+            // P3-R207：深度加权折射档。关闭时 z=0 ⇒ 着色器仍用旧常数 0.0035（默认像素逐字节不变）；
+            // 开档后基准沿用同一个常数，只叠加「光程 × 掠射角」那一项，保证两档差异只来自深度。
+            if self.water_refraction_gain > 0.0 {
+                params[110] = 0.0035;
+                params[111] = self.water_refraction_gain;
+            }
+            // P3-R208：水下视角的界面档。只有相机入水（上面那个开关）且档位 > 0 才写，
+            // 默认四个槽恒零 ⇒ 着色器走回 P3-R173 的原式，像素逐字节不变。
+            // y = 水 → 空气的折射率比（1/1.333 ⇒ 临界角约 48.6°），
+            // z = 界面替换强度，w = 临界角的过渡带宽（按余弦，0.06 ≈ ±10°）。
+            if underwater && self.submerged_view_gain > 0.0 {
+                params[132] = 1.0;
+                params[133] = 1.0 / 1.333;
+                params[134] = self.submerged_view_gain;
+                params[135] = 0.06;
+            }
+            // P3-R241：水面折射的屏幕空间 Snell 步进。只在档位 > 0 时写；默认四槽恒零 ⇒
+            // 着色器走 R207 的偏移近似，像素逐字节不变。y = 空气 → 水的折射率比，
+            // z = 首步步长（米，水柱里步长按 1 + 0.35·i 递增），w = 命中过冲的厚度容差（米）。
+            if self.water_refract_steps > 0 {
+                params[136] = self.water_refract_steps as f32;
+                params[137] = 1.0 / 1.333;
+                params[138] = 0.35;
+                params[139] = 1.0;
+            }
         }
+        // P3-R170：平面反射图可用时，着色器优先按投影 uv 采样它（真实镜像场景），
+        // 未命中再回退到 `water_reflection` 的屏幕空间步进。
+        if planar_reflection {
+            params[96] = 1.0;
+            params[97] = 0.55;
+        }
+        // P3-R166：`sect=1` 地形 + 相机裁剪平面 ⇒ Tonemap 把切口封成实体土壤剖面。
+        // 只在两者同时存在时启用；高度图随网格缓存（按资源身份取），这里只克隆视图句柄。
+        let mut section_view: Option<wgpu::TextureView> = None;
+        if let Some(scene) = scene {
+            let clip = scene.camera.clip_plane;
+            if clip[0] * clip[0] + clip[1] * clip[1] + clip[2] * clip[2] > 1e-8 {
+                for drawable in &scene.drawables {
+                    if !TerrainSpec::is_terrain_path(&drawable.mesh_path) {
+                        continue;
+                    }
+                    let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path)
+                    else {
+                        continue;
+                    };
+                    let Some(map) = cached.section_height.as_ref() else {
+                        continue;
+                    };
+                    let Ok(mut world_to_local) = drawable.model.inverse() else {
+                        continue;
+                    };
+                    // 分块地形的高度图烘的是整张地形：把块心补回平移列后，
+                    // 世界点才落在 `h=height_map(u=x/size+0.5)` 的同一套局部坐标里。
+                    world_to_local.columns[3][0] += map.origin[0];
+                    world_to_local.columns[3][2] += map.origin[1];
+                    params[72..76].copy_from_slice(&clip);
+                    params[76..92].copy_from_slice(&world_to_local.columns.concat());
+                    params[92] = map.min_y;
+                    params[93] = map.span;
+                    params[94] = map.half;
+                    params[95] = 1.0;
+                    section_view = Some(map.view.clone());
+                    break;
+                }
+            }
+        }
+        // P3-R174：相机运动模糊。上一帧的视图投影把当前像素的世界点投回屏幕，与当前 uv
+        // 的差就是这一像素一帧内扫过的屏幕距离。没有上一帧（首帧/刚打开）或强度 0 时
+        // 整段不写，着色器跳过 —— 相机静止时重投影回同一点，帧逐字节不变。
+        // x = 强度，y = 屏幕速度上限（uv，防止大位移抽到画面另一侧），w = 开关。
+        if motion_blur > 0.0
+            && let Some(previous) = self.tonemap_prev_view_projection
+        {
+            params[112..128].copy_from_slice(&previous.columns.concat());
+            params[128] = motion_blur.clamp(0.0, 1.0);
+            params[129] = 0.02;
+            params[131] = 1.0;
+        }
+        self.tonemap_prev_view_projection = current_view_projection;
+        let section_height_view = section_view.as_ref().unwrap_or(&self.section_height_white);
         self.queue
             .write_buffer(&self.tonemap_params, 0, bytemuck::cast_slice(&params));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -256,6 +390,18 @@ impl Renderer {
                     binding: 7,
                     resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(section_height_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(&self.planar_reflection_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -289,6 +435,8 @@ impl Renderer {
             tracing::warn!(target: "game", "[render] render() requires a window surface; use render_into_texture");
             return RenderOutcome::Skipped;
         };
+        // P3-R180：acquire 单列计时。它是宿主 `submit` 阶段的第一段。
+        let acquire_started = Instant::now();
         let output = match surface.get_current_texture() {
             Ok(output) => output,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
@@ -317,6 +465,7 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rustlua-clear-encoder"),
             });
+        let acquire_us = acquire_started.elapsed().as_micros() as u64;
         let started = Instant::now();
         let completed_gpu_us = self.poll_gpu_timestamp();
         let timestamp_slot = self.acquire_timestamp_slot();
@@ -325,6 +474,7 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
+        let record_started = Instant::now();
         let (mut metrics, timestamp_layout) = self.render_passes(
             &mut encoder,
             mesh,
@@ -333,17 +483,25 @@ impl Renderer {
             (self.config.width, self.config.height),
             true,
         );
+        metrics.cpu_record_us = record_started.elapsed().as_micros() as u64;
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
+        let submit_started = Instant::now();
         let submission = self.queue.submit([encoder.finish()]);
+        metrics.cpu_submit_us = submit_started.elapsed().as_micros() as u64;
         if let Some(slot) = timestamp_slot {
             self.arm_timestamp_slot(slot, submission, timestamp_layout);
         }
+        // `cpu_frame_us` 保持历史口径（acquire + 录制 + submit，不含 present）：改它会让
+        // docs/53 与既有基准的读数失去可比性。present 单列在 `cpu_present_us`。
         metrics.cpu_frame_us = started.elapsed().as_micros() as u64;
         metrics.gpu_frame_us = completed_gpu_us;
+        metrics.cpu_acquire_us = acquire_us;
         self.last_frame_metrics = metrics;
+        let present_started = Instant::now();
         output.present();
+        self.last_frame_metrics.cpu_present_us = present_started.elapsed().as_micros() as u64;
         RenderOutcome::Presented
     }
 
@@ -431,12 +589,31 @@ impl Renderer {
             return false;
         };
         self.ensure_ssr_target(target.0, target.1);
-        let mut params = [0.0_f32; 36];
+        let mut params = [0.0_f32; 44];
         params[0..16].copy_from_slice(&inverse.columns.concat());
         params[16..32].copy_from_slice(&view_projection.columns.concat());
         params[32] = scene.camera.position.x;
         params[33] = scene.camera.position.y;
         params[34] = scene.camera.position.z;
+        // P3-R176：天空回退的方向源。指向光的单位向量与 Tonemap 的 `params[44..47]` 同一口径；
+        // 太阳强度同时是开关——天空关掉时写 0，未命中的反射保持「零 = 黑」的旧行为。
+        if self.render_settings.fog {
+            let direction = scene.light.direction;
+            let length =
+                (direction.x * direction.x + direction.y * direction.y + direction.z * direction.z)
+                    .sqrt()
+                    .max(1e-6);
+            params[36] = -direction.x / length;
+            params[37] = -direction.y / length;
+            params[38] = -direction.z / length;
+            params[39] = SKY_SUN_INTENSITY;
+            // P3-R178：云量/云速/时间/云底，与 Tonemap 体积云读的四个值同源
+            // （`params[59]/[67]/[65]/[68]`），反射的天空才有同一片云。
+            params[40] = self.cloud_coverage.clamp(0.0, 1.0);
+            params[41] = self.cloud_speed.clamp(0.0, 4.0);
+            params[42] = self.clock_secs();
+            params[43] = self.cloud_base.clamp(40.0, 200.0);
+        }
         self.queue
             .write_buffer(&self.ssr_params, 0, bytemuck::cast_slice(&params));
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -675,6 +852,7 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
+        let record_started = Instant::now();
         let (mut metrics, timestamp_layout) = self.render_passes(
             &mut encoder,
             mesh,
@@ -683,6 +861,7 @@ impl Renderer {
             (width, height),
             include_ui,
         );
+        metrics.cpu_record_us = record_started.elapsed().as_micros() as u64;
         if self.render_settings.ssr {
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -707,7 +886,9 @@ impl Renderer {
         if let Some(slot) = timestamp_slot {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
+        let submit_started = Instant::now();
         let submission = self.queue.submit([encoder.finish()]);
+        metrics.cpu_submit_us = submit_started.elapsed().as_micros() as u64;
         if let Some(slot) = timestamp_slot {
             self.arm_timestamp_slot(slot, submission, timestamp_layout);
         }
@@ -761,6 +942,28 @@ impl Renderer {
             .main
             .and_then(RenderView::matrix)
             .or_else(|| scene3d.and_then(|scene| scene.view.matrix()));
+        // P3-R255：烘焙用的主视图视锥只在这里打包一次（与网格吃同一份 `main_matrix`）；
+        // 关档时恒 `None`，arena 侧连视锥参数都不传。
+        self.bake_frustum = if self.gpu_motion_frustum_cull {
+            main_matrix.map(|matrix| {
+                let mut packed = [[0.0_f32; 4]; 6];
+                for (slot, plane) in Frustum::from_view_projection(matrix)
+                    .planes()
+                    .iter()
+                    .enumerate()
+                {
+                    packed[slot] = [
+                        plane.normal.x,
+                        plane.normal.y,
+                        plane.normal.z,
+                        plane.distance,
+                    ];
+                }
+                packed
+            })
+        } else {
+            None
+        };
         // 3D 网格/阴影两条路不再看设备能力：没有存储缓冲时（WebGL2）实例模型矩阵改走
         // `@binding(2)` 的 64 字节 uniform，`frame_3d_draws` 因实例化关闭本来就一条 draw
         // 一个模型（见 `construct.rs` 的 `InstanceMode`）。
@@ -768,6 +971,8 @@ impl Renderer {
             self.update_3d_uniforms(scene, main_matrix);
             self.frame_3d_draws(scene)
         } else {
+            // P3-R245：纯 2D 帧没有 3D 提取可认领暂存批次——直接丢弃，不跨帧残留。
+            self.staged_motion.clear();
             Vec::new()
         };
         // P3-R02：着色轴由本帧设置决定。`set_render_settings` 已经负责在首次开启 PBR 时
@@ -787,13 +992,23 @@ impl Renderer {
         } else {
             IblMode::Off
         };
-        let mut metrics = RenderFrameMetrics::default();
+        // P3-R183：剔除计数来自刚结束的 `frame_3d_draws`（纯 2D 帧两者皆 0）。
+        let mut metrics = RenderFrameMetrics {
+            cull_candidates: self.frame_cull_candidates,
+            cull_frustum: self.frame_cull_frustum,
+            ..RenderFrameMetrics::default()
+        };
+        // P3-R256：阴影投射者的距离预算（只掐阴影链，0 = 关档）。参考点与逐实例距离
+        // 剔除一致：本帧相机世界位置（`update_3d_uniforms` 写入）。
+        let shadow_caster_budget = self.shadow_caster_max_distance;
+        let shadow_caster_budget_sq = shadow_caster_budget * shadow_caster_budget;
+        let shadow_caster_camera = self.camera_world_position;
         for draw in &frame_draws {
             record_indexed_draw(
                 &mut metrics,
                 draw.geometry.index_count,
                 draw.geometry.vertex_count,
-                draw.models.len(),
+                draw.instance_count(),
                 2,
             );
         }
@@ -891,8 +1106,18 @@ impl Renderer {
         } else {
             ColorTarget::Ldr
         };
+        // P3-R211：封口要不要把单面网格也切成双面变体——只有本帧真挂了会话裁剪平面才算。
+        // 判据和 `mesh3d_pbr.wgsl` 的裁剪分支同一口径（法线模长平方 > 1e-8），否则会出现
+        // 「换了管线却没有切面」的空付背面。Legacy 着色下选键会自己把双面轴归零（P3-R02-4），
+        // 所以 pbr=off 时这条档也是空操作。
+        let cutaway_both_sides = self.clip_cap_both_sides
+            && scene3d.is_some_and(|scene| {
+                let clip = scene.camera.clip_plane;
+                let normal_sq = clip[0] * clip[0] + clip[1] * clip[1] + clip[2] * clip[2];
+                normal_sq > 1e-8
+            });
         // P3-R02-4 / P3-R03-2：只为本帧真正出现的 alpha/双面/IBL 组合补编译管线（每个组合一次）。
-        self.ensure_frame_pipelines(&frame_draws, shading, color_target, ibl);
+        self.ensure_frame_pipelines(&frame_draws, shading, color_target, ibl, cutaway_both_sides);
         self.write_environment_uniform(ibl);
         // docs/54 §4.3：打开后处理后场景先画进**离屏**附件，那张附件上没有"上一帧留下的内容"
         // 可叠；HDR 目标同理（未覆盖区域会是上一帧的残留）。这里显式改成历史默认清屏色并告警
@@ -937,11 +1162,20 @@ impl Renderer {
         } else {
             SceneColorFormat::Rgba8Unorm
         };
+        // P3-R170：平面反射只在 HDR + PBR + SSR + 水面 + 有网格时出现；水的平面直接取
+        // 第一块 `__water__`（与 Tonemap 用的是同一份数据，两处不能各自解析）。
+        let water_plane = scene3d.and_then(|scene| water_plane_from_drawables(&scene.drawables));
+        let planar_reflection = matches!(shading, Shading::Pbr)
+            && hdr_active
+            && self.render_settings.ssr
+            && water_plane.is_some()
+            && !frame_draws.is_empty();
         // docs/54 §4.3：本帧跑哪些通道由**计划**决定，而不是散在下面的 `if` 里。
         // 计划是纯函数（`RenderPlan::for_frame`）⇒ 顺序与取舍可以在不启动 GPU 的单测里断言。
         let plan = RenderPlan::for_frame(FrameFacts {
             clear: clear.is_some(),
             has_3d_draws: !frame_draws.is_empty(),
+            planar_reflection,
             world_sprites: mesh.world_sprites.len(),
             world_sprite_opaque_segment: mesh
                 .world_sprite_draws
@@ -1015,9 +1249,12 @@ impl Renderer {
         // 环形缓冲先复位再填。此前是"每 Draw Call 每 Pass"分配 GPU buffer + bind group。
         // P3-R02：法线矩阵只在 PBR 网格通道需要；旧路径不写这份数据、不占顶点槽。
         let want_normals = shading == Shading::Pbr && plan.contains(RenderPass::DepthOpaque);
-        let (material_binds, normal_slices): (
+        // P3-R251：第三条并列表是"压缩档的 indirect 参数缓冲"（`Some` = 该 draw 的实例
+        // 已压进前缀，按参数里的存活数绘制；`None` = 沿用 `draw.instance_count()`）。
+        let (material_binds, normal_slices, indirect_args): (
             Vec<wgpu::BindGroup>,
             Vec<Option<super::arena::NormalMatrixSlice>>,
+            Vec<Option<wgpu::Buffer>>,
         ) = if !frame_draws.is_empty()
             && (plan.contains(RenderPass::Shadow) || plan.contains(RenderPass::DepthOpaque))
         {
@@ -1025,27 +1262,39 @@ impl Renderer {
             self.instance_arena_used = 0;
             self.material_bind_created = 0;
             self.material_bind_reused = 0;
-            let binds = frame_draws
-                .iter()
-                .enumerate()
-                .map(|(index, draw)| {
-                    self.material_bind_group(
-                        index,
-                        draw.material,
-                        &draw.palette,
-                        &draw.models,
-                        want_normals,
-                    )
-                })
-                .unzip();
+            let mut material_binds = Vec::with_capacity(frame_draws.len());
+            let mut normal_slices = Vec::with_capacity(frame_draws.len());
+            let mut indirect_args = Vec::with_capacity(frame_draws.len());
+            for (index, draw) in frame_draws.iter().enumerate() {
+                let (bind, slice, args) =
+                    self.material_bind_group_for_draw(index, draw, want_normals);
+                material_binds.push(bind);
+                normal_slices.push(slice);
+                indirect_args.push(args);
+            }
             self.note_material_bind_frame(frame_draws.len() as u64);
-            binds
+            (material_binds, normal_slices, indirect_args)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
         if plan.contains(RenderPass::Shadow) {
             pass_timestamps.begin(encoder);
-            for cascade in 0..4 {
+            // P3-R180：阴影链是 pass 数的最大乘数（4 级联 + 4 ESM + 最多 8×6 点光面，每面把
+            // 全部 drawable 重画一遍）。先把它的录制 CPU 单列，再决定砍哪一刀。
+            let shadow_started = Instant::now();
+            // P3-R189：方向光逐级联剔除。级联盒 = 阴影相机的裁剪体，盒外几何 GPU 本来
+            // 也会按 z/xy 裁掉 ⇒ 按组包围球提前跳过整组，像素不变。矩阵与 uniform 同源。
+            let cascade_frusta = scene3d.map(|scene| {
+                let distance = (scene.camera.position - scene.camera.target).length();
+                shadow_view_projections(
+                    scene.light,
+                    scene.camera.target,
+                    distance,
+                    self.shadow_resolution,
+                )
+                .map(Frustum::from_view_projection)
+            });
+            for cascade in 0..self.shadow_cascade_limit as usize {
                 let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("rustlua-shadow-pass"),
                     color_attachments: &[],
@@ -1062,6 +1311,7 @@ impl Renderer {
                 });
                 shadow_pass.set_bind_group(0, &self.shadow_pass_bind_groups[cascade], &[]);
                 record_set_pass(&mut metrics);
+                metrics.shadow_passes_recorded += 1;
                 let mut bound_shadow_pipeline = None;
                 for (index, draw) in frame_draws.iter().enumerate() {
                     // blend 材质不投影；mask 走带 alpha 剔除的阴影变体，双面走独立剔除状态。
@@ -1083,6 +1333,33 @@ impl Renderer {
                     if skip {
                         continue;
                     }
+                    if let Some(frusta) = cascade_frusta
+                        && !frustum_may_contain(frusta[cascade], &draw.bounds)
+                    {
+                        metrics.shadow_cascade_draws_culled += 1;
+                        continue;
+                    }
+                    // P3-R248：分类排除档只掐阴影链（主视图/平面反射照旧）。放在视锥剔除
+                    // **之后**：只有"本来会提交"的那几条才计入 skipped，于是
+                    // `提交 + 剔除 + 排除 = drawable × 级联` 仍然可对账。单独计数——
+                    // 这是观感取舍，不混进"视锥剔除只省不丢"的分子。
+                    if !draw.cast_shadow {
+                        metrics.shadow_draws_skipped += 1;
+                        continue;
+                    }
+                    // P3-R256：距离预算档——按包围盒到相机的**最近**距离判（与
+                    // `max_draw_distance` 同形），远处 caster 不进阴影链，主视图/planar 照旧。
+                    // 放在分类排除之后：两档可叠加，计数分开，守恒式仍按"本应提交"计。
+                    if shadow_caster_budget > 0.0
+                        && point_to_aabb_distance_sq(&draw.bounds, shadow_caster_camera)
+                            > shadow_caster_budget_sq
+                    {
+                        metrics.shadow_distance_skipped += 1;
+                        continue;
+                    }
+                    // P3-R247：只有真录进去的才算提交——与上面的剔除计数同帧可对账。
+                    metrics.shadow_draws_drawn += 1;
+                    metrics.shadow_instances_drawn += draw.instance_count() as u64;
                     if bound_shadow_pipeline != Some(key) {
                         let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
                             panic!("阴影管线变体未在构造期预编译：{}", key.label())
@@ -1096,16 +1373,19 @@ impl Renderer {
                         draw.geometry.index_buffer.slice(..),
                         wgpu::IndexFormat::Uint32,
                     );
-                    shadow_pass.draw_indexed(
-                        0..draw.geometry.index_count,
-                        0,
-                        0..draw.models.len() as u32,
-                    );
+                    match &indirect_args[index] {
+                        Some(args) => shadow_pass.draw_indexed_indirect(args, 0),
+                        None => shadow_pass.draw_indexed(
+                            0..draw.geometry.index_count,
+                            0,
+                            0..draw.instance_count() as u32,
+                        ),
+                    }
                 }
                 drop(shadow_pass);
             }
             if self.render_settings.filtered_shadows {
-                for cascade in 0..4 {
+                for cascade in 0..self.shadow_cascade_limit as usize {
                     let mut esm_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("rustlua-esm-shadow-pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1123,23 +1403,47 @@ impl Renderer {
                     });
                     esm_pass.set_pipeline(&self.esm_pipeline);
                     esm_pass.set_bind_group(0, &self.esm_bind_groups[cascade], &[]);
+                    metrics.shadow_passes_recorded += 1;
                     esm_pass.draw(0..3, 0..1);
                 }
                 metrics.filtered_shadows_active = true;
             }
+            metrics.record_shadow_us += shadow_started.elapsed().as_micros() as u64;
+            let point_shadow_started = Instant::now();
             // 前八盏（最多 8 盏）点光：每盏 6 个立方体面各一次深度 pass；主着色器按光源位置找槽位、
             // 主着色器按 cube array 方向交给硬件跨面过滤。
-            let point_shadow_lights = if self.render_settings.point_shadows {
+            // P3-R202：盏数预算——只在预算内给最近的 N 盏点光录阴影；选择结果与
+            // write_light_uniforms 同源（同函数、同排序键），槽位与 uniform 一一对应。
+            let point_shadow_selection: Vec<usize> = if self.render_settings.point_shadows {
                 scene3d
-                    .map(|scene| scene.point_lights.len().min(POINT_SHADOW_LIGHTS))
-                    .unwrap_or(0)
+                    .map(|scene| {
+                        point_shadow_light_indices(scene, self.point_shadow_light_budget as usize)
+                    })
+                    .unwrap_or_default()
             } else {
-                0
+                Vec::new()
             };
-            let point_shadow_active = point_shadow_lights > 0;
+            let point_shadow_active = !point_shadow_selection.is_empty();
             metrics.point_shadows_active = point_shadow_active;
             if point_shadow_active {
-                for layer in 0..point_shadow_lights * 6 {
+                let point_lights = scene3d
+                    .map(|scene| scene.point_lights.as_slice())
+                    .unwrap_or(&[]);
+                // P3-R194：每盏灯六个面的视锥一次建好——面视锥 = 该面相机的裁剪体，
+                // 盒外几何 GPU 本来也会裁掉 ⇒ 逐面剔除像素不变。
+                let face_frusta: Vec<[Frustum; 6]> = point_shadow_selection
+                    .iter()
+                    .map(|&index| {
+                        let light = &point_lights[index];
+                        point_shadow_view_projections(light.position, point_shadow_far(light.range))
+                            .map(Frustum::from_view_projection)
+                    })
+                    .collect();
+                for layer in 0..point_shadow_selection.len() * 6 {
+                    // P3-R188：range 外的投射者不可能遮挡 range 内的接收者（比它更近的
+                    // 遮挡体也必在 range 内）⇒ 按组包围盒到灯的距离整组剔除，像素不变。
+                    let light = &point_lights[point_shadow_selection[layer / 6]];
+                    let range_sq = light.range.max(1e-4) * light.range.max(1e-4);
                     let mut point_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("rustlua-point-shadow-pass"),
                         color_attachments: &[],
@@ -1156,6 +1460,7 @@ impl Renderer {
                     });
                     point_pass.set_bind_group(0, &self.point_shadow_bind_groups[layer], &[]);
                     record_set_pass(&mut metrics);
+                    metrics.point_shadow_passes_recorded += 1;
                     let mut bound_shadow_pipeline = None;
                     for (index, draw) in frame_draws.iter().enumerate() {
                         let (key, skip) = if shading == Shading::Pbr {
@@ -1176,6 +1481,33 @@ impl Renderer {
                         if skip {
                             continue;
                         }
+                        if point_to_aabb_distance_sq(&draw.bounds, light.position) >= range_sq {
+                            metrics.point_shadow_draws_culled += 1;
+                            continue;
+                        }
+                        if self.point_face_cull_enabled
+                            && !frustum_may_contain(face_frusta[layer / 6][layer % 6], &draw.bounds)
+                        {
+                            metrics.point_shadow_face_draws_culled += 1;
+                            continue;
+                        }
+                        // P3-R249：分类排除档同样掐点光链（主视图/planar 照旧）。位置在
+                        // range 与面剔除之后 ⇒ 只有"本来会提交"的那几条计入；单独计数，
+                        // 不与方向光的 `shadow_draws_skipped` 混账。
+                        // P3-R265：改读点光专用位——`shadow_caster_skip` 两链一起掐，
+                        // `point_shadow_caster_skip` 只清这一位、CSM 的 crowd 阴影保留。
+                        if !draw.cast_point_shadow {
+                            metrics.point_shadow_draws_skipped += 1;
+                            continue;
+                        }
+                        // P3-R256：距离预算同样掐点光链（跨灯 × 面累计）。
+                        if shadow_caster_budget > 0.0
+                            && point_to_aabb_distance_sq(&draw.bounds, shadow_caster_camera)
+                                > shadow_caster_budget_sq
+                        {
+                            metrics.point_shadow_distance_skipped += 1;
+                            continue;
+                        }
                         if bound_shadow_pipeline != Some(key) {
                             let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
                                 panic!("阴影管线变体未在构造期预编译：{}", key.label())
@@ -1189,17 +1521,157 @@ impl Renderer {
                             draw.geometry.index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
-                        point_pass.draw_indexed(
-                            0..draw.geometry.index_count,
-                            0,
-                            0..draw.models.len() as u32,
-                        );
+                        // P3-R261：点光链的提交也要进读数——§21.540 的「预算砍了 CSM 实例、
+                        // shadow 时间不动」就是因为这条链从来不记 draw/实例。
+                        metrics.point_shadow_draws_drawn += 1;
+                        metrics.point_shadow_instances_drawn += draw.instance_count() as u64;
+                        match &indirect_args[index] {
+                            Some(args) => point_pass.draw_indexed_indirect(args, 0),
+                            None => point_pass.draw_indexed(
+                                0..draw.geometry.index_count,
+                                0,
+                                0..draw.instance_count() as u32,
+                            ),
+                        }
                     }
                     drop(point_pass);
                 }
             }
+            metrics.record_point_shadow_us += point_shadow_started.elapsed().as_micros() as u64;
             pass_timestamps.end(encoder, RenderPass::Shadow);
             executed.push(RenderPass::Shadow);
+        }
+        // P3-R170：水面平面反射。镜像相机把不透明网格再画一遍到半分辨率色图，Tonemap
+        // 在水面像素上按投影 uv 采样。水面本身与 Blend 材质跳过（前者是镜面，后者会
+        // 在镜像里留下半透明残影）。
+        //
+        // 两条与主通道不同的规则：
+        // ① **双面管线**：镜像是保长反射（det = -1），同一三角形的屏幕绕序与主通道相反，
+        //    单面管线会把它整片剔除（实测覆盖 0；双面 244 像素）。主通道的 alpha/skin/IBL
+        //    档不变，只在构造期多预热一份双面变体。
+        // ② **水面高度裁剪面**：`y >= level` 之外（水下的河床、埋在水里的几何）不属于
+        //    反射内容，交给着色器的世界裁剪分支丢弃；否则它们会被镜像到水面之上。
+        if plan.contains(RenderPass::PlanarReflection)
+            && let (Some(scene), Some(plane)) = (scene3d, water_plane)
+            && let Some(matrix) = main_matrix.or_else(|| scene.view.matrix())
+        {
+            self.ensure_planar_reflection_target(target.0, target.1);
+            let reflected = super::planar_reflection_view_projection(&matrix, plane[0]);
+            let mirrored_position = Vec3::new(
+                scene.camera.position.x,
+                2.0 * plane[0] - scene.camera.position.y,
+                scene.camera.position.z,
+            );
+            let uniform = super::camera_uniform(
+                &reflected,
+                mirrored_position,
+                self.clock_secs(),
+                // 反射内容只在水平面之上；这条裁剪面同时替宿主省掉水下几何的填充。
+                [0.0, 1.0, 0.0, -plane[0]],
+                self.cloud_coverage,
+                self.cloud_speed,
+                self.cloud_base,
+                self.cloud_shadow_strength,
+                self.water_tint,
+                self.surface_cover,
+                [0.0, 0.0],
+                [0.0; 4],
+                // P3-R209：反射 pass 的这条裁剪面是**水位**，不是会话剖面。封口深度写死 0
+                // ⇒ 水下几何照旧只是被丢弃，不会被当成实体土壤反射出来。
+                0.0,
+            );
+            self.queue.write_buffer(
+                &self.planar_camera_buffer,
+                0,
+                bytemuck::cast_slice(&uniform),
+            );
+            pass_timestamps.begin(encoder);
+            let mut planar_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rustlua-planar-reflection-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.planar_reflection_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // 没被任何网格覆盖的像素保持全透明 = "这里没有反射"，Tonemap
+                        // 用 alpha 掩码回退到屏幕空间反射。
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.planar_reflection_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            planar_pass.set_bind_group(0, &self.planar_camera_bind_group, &[]);
+            if shading == Shading::Pbr {
+                planar_pass.set_bind_group(2, &self.environment_bind_group, &[]);
+            }
+            record_set_pass(&mut metrics);
+            let mut bound_pipeline = None;
+            // P3-R191：镜像相机视锥外的几何不进反射图（镜像图只由这些像素组成），
+            // 逐组剔除零视觉变化——与阴影级联同一套保守判定。
+            let planar_frustum = Frustum::from_view_projection(reflected);
+            for (index, draw) in frame_draws.iter().enumerate() {
+                if draw.water || draw.material.alpha_mode == MaterialAlphaMode::Blend {
+                    continue;
+                }
+                if self.planar_cull_enabled && !frustum_may_contain(planar_frustum, &draw.bounds) {
+                    metrics.planar_draws_culled += 1;
+                    continue;
+                }
+                let key = ShaderVariantKey::mesh_with_alpha(
+                    shading,
+                    SkinMode::from(draw.material.skinned),
+                    ColorTarget::Hdr,
+                    draw.material.alpha_mode,
+                    true,
+                )
+                .with_ibl(ibl);
+                if bound_pipeline != Some(key) {
+                    let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
+                        panic!("平面反射管线变体未在构造期预编译：{}", key.label())
+                    });
+                    planar_pass.set_pipeline(pipeline.as_ref());
+                    bound_pipeline = Some(key);
+                }
+                planar_pass.set_bind_group(1, &material_binds[index], &[]);
+                planar_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                if shading == Shading::Pbr
+                    && let Some(normals) = normal_slices[index].as_ref()
+                {
+                    planar_pass.set_vertex_buffer(
+                        1,
+                        normals
+                            .buffer
+                            .slice(normals.offset..normals.offset + normals.size),
+                    );
+                }
+                planar_pass.set_index_buffer(
+                    draw.geometry.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                match &indirect_args[index] {
+                    Some(args) => planar_pass.draw_indexed_indirect(args, 0),
+                    None => planar_pass.draw_indexed(
+                        0..draw.geometry.index_count,
+                        0,
+                        0..draw.instance_count() as u32,
+                    ),
+                }
+                metrics.planar_reflection_draws += 1;
+            }
+            drop(planar_pass);
+            pass_timestamps.end(encoder, RenderPass::PlanarReflection);
+            metrics.planar_reflection_active = true;
+            executed.push(RenderPass::PlanarReflection);
         }
         if plan.contains(RenderPass::DepthOpaque) {
             self.ssao_depth_view = self.depth_view.clone();
@@ -1242,12 +1714,14 @@ impl Renderer {
             apply_declared_viewport(&mut pass, main_viewport, target);
             let mut bound_mesh_pipeline = None;
             for (index, draw) in frame_draws.iter().enumerate() {
+                // P3-R211：主通道的双面轴必须和 `ensure_frame_pipelines` 的选键同式
+                // （材质自身 || 本帧封口强制），少一边就会撞上未预编译的 panic。
                 let key = ShaderVariantKey::mesh_with_alpha(
                     shading,
                     SkinMode::from(draw.material.skinned),
                     color_target,
                     draw.material.alpha_mode,
-                    draw.material.double_sided,
+                    draw.material.double_sided || cutaway_both_sides,
                 )
                 .with_ibl(ibl);
                 if bound_mesh_pipeline != Some(key) {
@@ -1274,7 +1748,14 @@ impl Renderer {
                     draw.geometry.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
-                pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
+                match &indirect_args[index] {
+                    Some(args) => pass.draw_indexed_indirect(args, 0),
+                    None => pass.draw_indexed(
+                        0..draw.geometry.index_count,
+                        0,
+                        0..draw.instance_count() as u32,
+                    ),
+                }
             }
             drop(pass);
             pass_timestamps.end(encoder, RenderPass::DepthOpaque);
@@ -1366,6 +1847,7 @@ impl Renderer {
                 self.render_settings.fxaa,
                 self.render_settings.ssao,
                 self.render_settings.ssr,
+                planar_reflection,
                 self.render_settings.contact_shadows,
                 self.render_settings.fog,
                 self.render_settings.fog_density,
@@ -1375,6 +1857,7 @@ impl Renderer {
                 self.render_settings.dof_focus,
                 self.render_settings.dof_range,
                 self.render_settings.dof_strength,
+                self.render_settings.motion_blur,
                 scene3d,
                 target,
             );

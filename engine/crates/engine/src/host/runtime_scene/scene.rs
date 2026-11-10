@@ -19,6 +19,7 @@ use rustlua_infra::par::Parallelism;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_render::font::FontAtlas;
 use rustlua_render::frame::{HintedAtlasMap, OverlayVertex, SceneDraw, VectorFontHandle};
+use rustlua_render::instance_batch::InstanceBatch3D;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite_batch::SpriteBatch;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -85,13 +86,37 @@ impl RuntimeScene {
         self.script.quit_requested()
     }
 
-    /// 取走并清零"上次取走以来 Lua `update()` 的累计耗时"（微秒）。
+    /// 取走并清零"上次取走以来 Lua 回调（`update()` + `on_frame()`）的累计耗时"（微秒）。
     ///
     /// 宿主每次跑完固定步后调用一次，喂给 `PerformanceStats::lua_ms`。用"取走即清零"
     /// 而不是查询，是为了让 0 步帧（帧率高于逻辑步时）自然得到 0，不会把上一帧的
     /// Lua 耗时重复计入。
     pub fn take_script_micros(&mut self) -> u64 {
         std::mem::take(&mut self.script_micros)
+    }
+
+    /// P3-R246：开关"实例位姿交给渲染器现场求值"（宿主 opt-in，默认关）。
+    ///
+    /// 开档后 3D 提取**不再**对带运动的批次调用 `matrices_at`（省掉每帧 N 份矩阵与
+    /// 3.8 MB/6 万的克隆），改为把批次登记到暂存表；宿主在 `render` 前用
+    /// [`Self::take_staged_motion_batches`] 取走并推进 `Renderer::stage_motion_batch`。
+    /// 渲染器侧还要 `set_gpu_motion_batches(true)` 才生效——两层开关都开才走 GPU。
+    pub fn set_gpu_motion_batches(&mut self, enabled: bool) {
+        self.gpu_motion_batches = enabled;
+    }
+
+    /// P3-R246：GPU 位姿批次档是否开着（关档 = 提取路径逐字节不变）。
+    #[must_use]
+    pub fn gpu_motion_batches(&self) -> bool {
+        self.gpu_motion_batches
+    }
+
+    /// P3-R246：取走本帧提取登记的运动批次 `(实体, 批次, 场景时刻)`；**取走即清空**。
+    ///
+    /// 与 `take_script_micros` 同语义：没调用 `scene_3d` 的帧自然得到空表，不会把上一帧
+    /// 的批次重复推给渲染器。
+    pub fn take_staged_motion_batches(&self) -> Vec<(u64, InstanceBatch3D, f32)> {
+        std::mem::take(&mut *self.staged_motion.borrow_mut())
     }
 
     /// docs/54 §4.4：当前登记在身份表里的运行时资源（按句柄排序）。
@@ -768,13 +793,15 @@ impl RuntimeScene {
             system_parallelism: Parallelism::detected(),
             spatial_index: false,
             spatial_grid: None,
-            spatial_index_fingerprint: None,
+            spatial_index_revision: None,
             spatial_index_cell_size: 256.0,
             collider_debug_draw: false,
             collider_debug_draw_3d: false,
             view_world_mask: rustlua_render::visibility::ALL_LAYERS,
             view_overlay_mask: rustlua_render::visibility::ALL_LAYERS,
             view_filtered: std::cell::Cell::new(0),
+            gpu_motion_batches: false,
+            staged_motion: std::cell::RefCell::new(Vec::new()),
             tilemap_culling: true,
             sprite_culling: true,
             camera,
@@ -853,6 +880,7 @@ impl RuntimeScene {
             spatial_inheritance: spatial_mode.inherits(),
             spatial_mode,
             spatial_fingerprint: None,
+            spatial_world_revision: None,
             spatial_skip_unchanged: true,
             spatial_skipped_frames: 0,
             spatial_incremental: rustlua_ecs::hierarchy::SpatialIncremental::default(),

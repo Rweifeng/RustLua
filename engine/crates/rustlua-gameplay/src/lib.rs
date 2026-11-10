@@ -48,3 +48,14 @@ pub mod save_store;
 pub mod settings;
 pub mod world_data_lua;
 pub mod world_data_state;
+
+pub(crate) fn new_lua_api_registry() -> rustlua_lua_api::Registry {
+    #[cfg(feature = "3d")]
+    {
+        rustlua_lua_api::Registry::for_surface(rustlua_lua_api::ApiSurface::ThreeD)
+    }
+    #[cfg(not(feature = "3d"))]
+    {
+        rustlua_lua_api::Registry::for_surface(rustlua_lua_api::ApiSurface::TwoD)
+    }
+}

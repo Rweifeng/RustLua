@@ -9,6 +9,7 @@ pub mod entity_state;
 pub mod events;
 pub mod hierarchy;
 pub mod particle;
+pub mod particle_wind_grid;
 pub mod property_path;
 pub mod scheduler;
 pub mod spatial_transform;

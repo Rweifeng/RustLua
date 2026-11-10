@@ -57,6 +57,21 @@ local env_id = nil
 local sun_id = nil
 local warrior_id = nil
 
+-- 网格体积风/温度场的演示读数（`enter` 负责填，`check` 只读）。
+local grid_state = "none"
+local grid_info = nil
+local grid_info_after = nil
+local grid_ok = false
+local grid_params_ok = false
+local grid_heat_ok = false
+local grid_push_ok = false
+local grid_cell_temp_ok = false
+local grid_cell_vel_ok = false
+local grid_outside_ok = false
+local grid_ax, grid_ay, grid_az = 0, 0, 0
+local grid_cx, grid_cy, grid_cz = 0, 0, 0
+local grid_ax2, grid_ay2, grid_az2 = 0, 0, 0
+
 -- 导航网格与"在 XZ 平面上跟着路径走"的运行期实体。
 local nav_id = nil
 local nav_info = nil
@@ -72,6 +87,13 @@ local function live(name)
         return id
     end
     return nil
+end
+
+local function dash(value)
+    if value == nil then
+        return "-"
+    end
+    return tostring(value)
 end
 
 --- 运行期实体只在模块活着时存在；重复进入步骤时复用同一个，避免每次 enter 都造一个。
@@ -94,6 +116,50 @@ local function ensure_nav_runner()
         transform3d.attach(nav_runner)
     end
     return nav_runner
+end
+
+-- 高度场演示体：放在 (60, -1, 60) 的场外角落，向下射线能从 6 单位外打中；
+-- 离 Ground/球/探针足够远，不会改变同一场景里的其它射线/重叠读数。
+local HEIGHTFIELD_NAME = "HeightfieldProbe"
+local heightfield_entity = nil
+local heightfield_added = false
+
+local function ensure_heightfield()
+    if heightfield_entity and entity.is_alive(heightfield_entity) then
+        return heightfield_entity
+    end
+    heightfield_entity = entity.spawn(HEIGHTFIELD_NAME)
+    if heightfield_entity then
+        transform3d.attach(heightfield_entity)
+    end
+    return heightfield_entity
+end
+
+--- 逐格碰撞体演示体：区域从 (80, 0, 80) 起、**沿 x 只有 1 格厚**（1×3×3，格边 1）。
+--- 厚度只有 1 是判据的前提：横向射线（沿 +x）穿过的那一列里只有一格，挖掉它射线才过得去；
+--- 若沿射线方向有几格厚，前面那格照样挡住，就测不出「挖」在物理侧生效。
+--- 位置离 Ground/球/高度场（占 60..64）足够远，不会改变同一场景里的其它射线读数。
+local CELLS_PROBE_NAME = "CellsProbe"
+local cells_probe_entity = nil
+local cells_probe_boxes = 0
+
+local function ensure_cells_probe()
+    if cells_probe_entity and entity.is_alive(cells_probe_entity) then
+        return cells_probe_entity
+    end
+    cells_probe_entity = entity.spawn(CELLS_PROBE_NAME)
+    if cells_probe_entity then
+        transform3d.attach(cells_probe_entity)
+    end
+    return cells_probe_entity
+end
+
+--- 与 `cells3d.build` 同一张 opts：渲染与物理吃同一份位图。
+local function cells_opts(solids)
+    return {
+        cell = 1.0, x = 80.0, y = 0.0, z = 80.0, w = 1, h = 3, d = 3,
+        solids = solids,
+    }
 end
 
 --- 建网格、加墙、留门，然后一次算齐格子路径（含两端）与世界路径。
@@ -192,6 +258,93 @@ local steps = {
             t:ok(env_id ~= nil and entity.is_alive(env_id), "StudioEnvironment exists")
             t:ok(sun_id ~= nil and entity.is_alive(sun_id), "Sun light exists")
             t:ok(warrior_id ~= nil and entity.is_alive(warrior_id), "skinned warrior exists")
+        end,
+    },
+    {
+        id = "render_tuning",
+        title = "Render tuning",
+        claim = "雾/云/水/曝光/后处理是运行期标量：合法值回 (true, '')，越界回 (false, reason)",
+        api = {
+            "render.set_fog",
+            "render.set_fog_color",
+            "render.set_cloud_coverage",
+            "render.set_cloud_speed",
+            "render.set_cloud_base",
+            "render.set_cloud_shadow_strength",
+            "render.set_flash",
+            "render.set_water_tint",
+            "render.set_surface_cover",
+            "render.set_exposure",
+            "render.set_ripple",
+            "render.set_post_fx",
+            "render.set_clip_cap",
+            "render.set_clip_cap_both_sides",
+        },
+        code = "ok, why = render.set_fog(0.01); render.set_exposure(1); render.set_post_fx(0.2, 0.1)",
+        enter = function()
+            reset_world()
+        end,
+        run = function()
+            if not render.set_fog then
+                lab.note("2D 构建：3D 环境调参不注册")
+                return
+            end
+            -- 每个接口都在这里真调一次；退出步骤时把会持续生效的项调回中性值。
+            local _, fog_why = render.set_fog(0.01)
+            local _, cloud_why = render.set_cloud_coverage(0.5)
+            local _, water_why = render.set_water_tint(0.3, 0.4, 0.45, 0.1)
+            local _, fx_why = render.set_post_fx(0.2, 0.1)
+            lab.note(string.format(
+                "fog=%s cloud=%s water=%s post=%s",
+                dash(fog_why),
+                dash(cloud_why),
+                dash(water_why),
+                dash(fx_why)
+            ))
+        end,
+        read = function()
+            if not render.set_fog then
+                return { tuning = "2d build" }
+            end
+            return { tuning = "active" }
+        end,
+        check = function(t)
+            if not render.set_fog then
+                t:ok(true, "2D build: 3D render tuning is not registered")
+                return
+            end
+            local checks = {
+                { "set_fog", render.set_fog, { 0.01 }, { 0.5 } },
+                { "set_fog_color", render.set_fog_color, { 0.5, 0.6, 0.7 }, { 2.0, 0.0, 0.0 } },
+                { "set_cloud_coverage", render.set_cloud_coverage, { 0.5 }, { 1.5 } },
+                { "set_cloud_speed", render.set_cloud_speed, { 0.5 }, { 9.0 } },
+                { "set_cloud_base", render.set_cloud_base, { 120.0 }, { 10.0 } },
+                { "set_cloud_shadow_strength", render.set_cloud_shadow_strength, { 0.2 }, { 1.5 } },
+                { "set_flash", render.set_flash, { 0.2 }, { 1.5 } },
+                { "set_water_tint", render.set_water_tint, { 0.3, 0.4, 0.45, 0.1 }, { 2.0, 0.0, 0.0, 0.0 } },
+                { "set_surface_cover", render.set_surface_cover, { 0.1, 0.2 }, { 1.5, 0.0 } },
+                { "set_exposure", render.set_exposure, { 1.0 }, { 9.0 } },
+                { "set_ripple", render.set_ripple, { 0.0, 0.0 }, { 0.0 / 0.0, 0.0 } },
+                { "set_post_fx", render.set_post_fx, { 0.2, 0.1 }, { 1.5, 0.0 } },
+                { "set_clip_cap", render.set_clip_cap, { 0.4 }, { 999.0 } },
+                { "set_clip_cap_both_sides", render.set_clip_cap_both_sides, { true }, { 1 } },
+            }
+            for _, row in ipairs(checks) do
+                local name, fn, good, bad = row[1], row[2], row[3], row[4]
+                t:ok(fn(table.unpack(good)), name .. " accepts valid values")
+                local ok, reason = fn(table.unpack(bad))
+                t:ok(not ok and type(reason) == "string" and #reason > 0,
+                    name .. " rejects out-of-range with a reason")
+            end
+            -- 会持续生效的项回到中性值：雾/闪光/曝光/涟漪/覆盖/后处理/剖面封口关，云留在演示值。
+            render.set_fog(0.0)
+            render.set_flash(0.0)
+            render.set_exposure(0.0)
+            render.set_ripple(0.0, 0.0)
+            render.set_surface_cover(0.0, 0.0)
+            render.set_post_fx(0.0, 0.0)
+            render.set_clip_cap(0.0)
+            render.set_clip_cap_both_sides(false)
         end,
     },
     {
@@ -600,16 +753,32 @@ local steps = {
     {
         id = "physics_queries",
         title = "Ray / overlap",
-        claim = "raycast 命中最近的碰撞体；overlap 问附近有谁；events 取走即清空；B 开关线框",
-        api = { "physics3d.raycast", "physics3d.overlap", "physics3d.events", "physics3d.debug_draw" },
-        code = "physics3d.raycast(x+1,y,z,0,-1,0,12); physics3d.overlap(x,y,z,3.2)",
+        claim = "raycast 命中最近的碰撞体；overlap 问附近有谁；events 取走即清空；B 开关线框；高度场是固定体、能被射线打中；逐格位图并块后同样挡得住射线",
+        api = { "physics3d.raycast", "physics3d.overlap", "physics3d.events", "physics3d.debug_draw", "physics3d.add_heightfield", "physics3d.add_cells" },
+        code = "physics3d.raycast(x+1,y,z,0,-1,0,12); physics3d.overlap(x,y,z,3.2); physics3d.add_heightfield(hf,60,-1,60,3,3,4,1,4,heights); physics3d.add_cells(cells, opts)",
         enter = function()
             reset_world()
+            local hf = ensure_heightfield()
+            if hf and not heightfield_added then
+                -- 行主序 3×3 全零高度：一块平整的静态地形体。
+                physics3d.add_heightfield(hf, 60, -1, 60, 3, 3, 4, 1, 4,
+                    { 0, 0, 0, 0, 0, 0, 0, 0, 0 })
+                heightfield_added = true
+            end
             local ball = live(BALL)
             if ball then
                 -- 球心在高处：向下的射线必定先撞到地面。
                 physics3d.set_position(ball, BALL_HOME.x, BALL_HOME.y, BALL_HOME.z)
                 physics3d.set_velocity(ball, 0, 0, 0)
+            end
+            -- 一整堵 1×3×3 的逐格位图交给物理：并块后应该只剩 1 个长方体。
+            local cp = ensure_cells_probe()
+            if cp then
+                local full = {}
+                for index = 0, 8 do
+                    full[index + 1] = index
+                end
+                cells_probe_boxes = physics3d.add_cells(cp, cells_opts(full))
             end
         end,
         run = function()
@@ -674,6 +843,45 @@ local steps = {
             local ids = capsule and lab.try(physics3d.overlap, p.x, p.y, p.z, 3.2) or nil
             t:ok(type(ids) == "table" and #ids >= 1, "overlap finds bodies around the ball")
             t:eq(lab.try(physics3d.debug_draw, false), false, "debug_draw returns the flag it registered")
+            local hf = heightfield_entity
+            t:ok(hf ~= nil and entity.is_alive(hf), "heightfield probe exists")
+            if hf then
+                t:eq(
+                    lab.try(physics3d.raycast, 60.0, 5.0, 60.0, 0, -1, 0, 12),
+                    hf,
+                    "downward raycast hits the heightfield"
+                )
+            end
+            local cp = cells_probe_entity
+            t:ok(cp ~= nil and entity.is_alive(cp), "cells probe exists")
+            if cp then
+                t:eq(cells_probe_boxes, 1, "整堵 1×3×3 并成 1 个碰撞体")
+                t:eq(
+                    lab.try(physics3d.raycast, 78.0, 1.5, 81.5, 1.0, 0.0, 0.0, 20.0),
+                    cp,
+                    "横向射线打到逐格墙"
+                )
+                -- 挖掉正中那一格（局部 x=0,y=1,z=1 ⇒ 平铺下标 4）后重建同一实体。
+                -- 语义是替换：不删旧碰撞体的话这条射线还是会打在整块上，断言就不会红。
+                local dug = {}
+                for index = 0, 8 do
+                    if index ~= 4 then
+                        dug[#dug + 1] = index
+                    end
+                end
+                cells_probe_boxes = physics3d.add_cells(cp, cells_opts(dug))
+                t:ok(cells_probe_boxes > 1, "挖开后并块数应涨，实测 " .. tostring(cells_probe_boxes))
+                t:eq(
+                    lab.try(physics3d.raycast, 78.0, 1.5, 81.5, 1.0, 0.0, 0.0, 20.0),
+                    nil,
+                    "挖穿的那一格让射线过去"
+                )
+                t:eq(
+                    lab.try(physics3d.raycast, 78.0, 0.5, 81.5, 1.0, 0.0, 0.0, 20.0),
+                    cp,
+                    "相邻的格还得挡住"
+                )
+            end
         end,
     },
     {
@@ -778,6 +986,134 @@ local steps = {
             end
         end,
     },
+    {
+        id = "wind_grid",
+        title = "Wind grid",
+        claim = "网格体积风/温度场：世界坐标面（wind_grid_heat/push）由引擎映射到最近节点，格坐标面（wind_grid_add_velocity/set_temperature）直接写格",
+        api = {
+            "particles.set_wind_grid",
+            "particles.wind_grid_params",
+            "particles.wind_grid_info",
+            "particles.wind_grid_heat",
+            "particles.wind_grid_push",
+            "particles.wind_grid_add_velocity",
+            "particles.wind_grid_set_temperature",
+            "particles.wind_grid_sample",
+            "particles.clear_wind_grid",
+        },
+        code = "particles.set_wind_grid(8,4,8,-4,0,-4,1); particles.wind_grid_heat(0,0.5,0,3)",
+        enter = function()
+            reset_world()
+            grid_state = "none"
+            grid_info = nil
+            grid_info_after = nil
+            grid_ok = false
+            grid_params_ok = false
+            grid_heat_ok = false
+            grid_push_ok = false
+            grid_cell_temp_ok = false
+            grid_cell_vel_ok = false
+            grid_outside_ok = false
+            grid_ax, grid_ay, grid_az = 0, 0, 0
+            grid_cx, grid_cy, grid_cz = 0, 0, 0
+            grid_ax2, grid_ay2, grid_az2 = 0, 0, 0
+            if not particles.set_wind_grid then
+                grid_state = "2d build"
+                return
+            end
+            -- 场：8×4×8 格、格距 1、原点 (-4,0,-4) ⇒ x/z 覆盖 [-4,4]、y 覆盖 [0,4]。
+            local ok, why = particles.set_wind_grid(8, 4, 8, -4, 0, -4, 1)
+            if not ok then
+                grid_state = "set failed: " .. tostring(why)
+                return
+            end
+            grid_ok = true
+            -- 系数：扩散 0、衰减 0（不改动读数）、浮力 2、迭代 1。
+            local params_ok = particles.wind_grid_params(0.0, 0.0, 0.0, 2.0, 1)
+            grid_params_ok = params_ok
+            grid_info = particles.wind_grid_info()
+            -- 世界点 (0,0.5,0) → 最近节点 (4,1,4)（半格断向上）。
+            grid_heat_ok = particles.wind_grid_heat(0.0, 0.5, 0.0, 3.0)
+            grid_push_ok = particles.wind_grid_push(0.0, 0.5, 0.0, 0.0, 1.0, 0.0)
+            -- 格坐标面：直接写格 (0,0,0)（域内最靠原点的那格）。
+            grid_cell_temp_ok = particles.wind_grid_set_temperature(0, 0, 0, 5.0)
+            grid_cell_vel_ok = particles.wind_grid_add_velocity(0, 0, 0, 1.0, 0.0, 0.0)
+            -- 域外的世界点必须被拒（不静默落到边缘节点造出假热源）。
+            local outside_ok = particles.wind_grid_heat(100.0, 0.0, 100.0, 1.0)
+            grid_outside_ok = (outside_ok == false)
+            -- 三线性采样：世界点 (0,0.5,0) 命中节点 (4,1,4) 的一半 ⇒ 温度 3×0.5=1.5、
+            -- 速度 (0,1,0)×0.5 ⇒ 加速度 (0, 0.5 + 2×1.5, 0) = (0, 3.5, 0)。
+            grid_ax, grid_ay, grid_az = particles.wind_grid_sample(0.0, 0.5, 0.0)
+            -- 格原点 (-4,0,-4) 正好压在节点 (0,0,0) 上：温度 5、速度 (1,0,0) ⇒ (1, 2×5, 0)。
+            grid_cx, grid_cy, grid_cz = particles.wind_grid_sample(-4.0, 0.0, -4.0)
+            -- 清场：无场后 info 为 nil、采样回零向量。
+            particles.clear_wind_grid()
+            grid_info_after = particles.wind_grid_info()
+            grid_ax2, grid_ay2, grid_az2 = particles.wind_grid_sample(0.0, 0.5, 0.0)
+            grid_state = "cleared"
+        end,
+        run = function()
+            if grid_state == "2d build" then
+                lab.note("2D 构建：网格体积风场不注册")
+                return
+            end
+            lab.note(string.format(
+                "wind grid %s accel=(%.2f,%.2f,%.2f) cell accel=(%.2f,%.2f,%.2f) after clear=(%.1f,%.1f,%.1f)",
+                grid_info and string.format("%dx%dx%d", grid_info.nx, grid_info.ny, grid_info.nz) or "-",
+                grid_ax,
+                grid_ay,
+                grid_az,
+                grid_cx,
+                grid_cy,
+                grid_cz,
+                grid_ax2,
+                grid_ay2,
+                grid_az2
+            ))
+        end,
+        read = function()
+            return {
+                state = grid_state,
+                dims = grid_info and string.format("%dx%dx%d", grid_info.nx, grid_info.ny, grid_info.nz) or "-",
+                world_accel = string.format("%.2f,%.2f,%.2f", grid_ax, grid_ay, grid_az),
+                cell_accel = string.format("%.2f,%.2f,%.2f", grid_cx, grid_cy, grid_cz),
+                after_clear = string.format("%.1f,%.1f,%.1f", grid_ax2, grid_ay2, grid_az2),
+            }
+        end,
+        check = function(t)
+            if grid_state == "2d build" then
+                t:ok(true, "2D build: the wind grid is not registered")
+                return
+            end
+            t:ok(grid_ok, "set_wind_grid accepts an 8x4x8 field")
+            t:ok(grid_params_ok, "wind_grid_params accepts zero diffusion with buoyancy 2")
+            t:ok(grid_info ~= nil, "wind_grid_info reads the field geometry back")
+            if grid_info then
+                t:eq(grid_info.nx, 8, "field has 8 cells along x")
+                t:eq(grid_info.ny, 4, "field has 4 cells along y")
+                t:eq(grid_info.nz, 8, "field has 8 cells along z")
+                t:near(grid_info.ox, -4.0, 1e-6, "field origin x is -4")
+                t:near(grid_info.oy, 0.0, 1e-6, "field origin y is 0")
+                t:near(grid_info.oz, -4.0, 1e-6, "field origin z is -4")
+                t:near(grid_info.cell, 1.0, 1e-6, "cell size is 1 world unit")
+            end
+            t:ok(grid_heat_ok, "wind_grid_heat maps a world point onto the nearest node")
+            t:ok(grid_push_ok, "wind_grid_push injects velocity at a world point")
+            t:ok(grid_cell_temp_ok, "wind_grid_set_temperature writes a grid cell")
+            t:ok(grid_cell_vel_ok, "wind_grid_add_velocity writes a grid cell")
+            t:ok(grid_outside_ok, "a world point outside the field is rejected")
+            t:near(grid_ax, 0.0, 1e-3, "world sample has no x acceleration")
+            t:near(grid_ay, 3.5, 1e-3, "world sample reads back velocity + buoyancy")
+            t:near(grid_az, 0.0, 1e-3, "world sample has no z acceleration")
+            t:near(grid_cx, 1.0, 1e-3, "cell sample reads the injected x velocity")
+            t:near(grid_cy, 10.0, 1e-3, "cell sample reads buoyancy times temperature")
+            t:near(grid_cz, 0.0, 1e-3, "cell sample has no z acceleration")
+            t:ok(grid_info_after == nil, "clear_wind_grid removes the field")
+            t:near(grid_ax2, 0.0, 1e-6, "sampling without a field returns zero")
+            t:near(grid_ay2, 0.0, 1e-6, "sampling without a field returns zero")
+            t:near(grid_az2, 0.0, 1e-6, "sampling without a field returns zero")
+        end,
+    },
 }
 
 -- 程序化地形/水面的采样面：与 `MeshRenderer.mesh` 用同一个 spec 串，保证
@@ -800,6 +1136,28 @@ local function probe_procedural_surfaces()
     assert(math.abs(grass + moss + litter + bare - 1) < 1e-4, "terrain splat is normalized")
     assert(raised_height - height > 1.2, "terrain raise edits the height field")
     assert(hit and #hit == 7, "terrain raycast hits the ground")
+    -- 逐格网格：规格串是唯一状态，挖一格拿到的是新串而不是原地改；面数随表面积走。
+    local all_cells = {}
+    for index = 0, 26 do
+        all_cells[index + 1] = index
+    end
+    local cells = cells3d.build({ cell = 1.0, x = 0, y = 0, z = 0, w = 3, h = 3, d = 3, solids = all_cells })
+    local cells_solid, cells_faces = cells3d.count(cells)
+    local dug = cells3d.dig(cells, 13)
+    local dug_solid, dug_faces = cells3d.count(dug)
+    assert(cells_solid == 27 and cells_faces == 54, "full 3x3x3 answers 27 cells / 54 faces")
+    assert(dug_solid == 26 and dug_faces == 60, "digging the centre opens six inner faces")
+    assert(dug ~= cells, "dig returns a new spec path instead of mutating in place")
+    assert(cells3d.fill(dug, 13) == cells, "fill restores the original path byte for byte")
+    assert(cells3d.solid_at(dug, 1, 1, 1) == false, "the dug cell is no longer solid")
+    assert(cells3d.index(cells, 1, 1, 1) == 13, "index maps cell coords to the flat index")
+    assert(cells3d.index(cells, 3, 0, 0) == nil, "index answers nil outside the region")
+    local bx0, by0, bz0, bx1, by1, bz1 = cells3d.bounds(cells)
+    assert(bx0 == 0 and bx1 == 3 and by1 == 3 and bz1 == 3, "bounds cover the whole region")
+    local ok = pcall(function()
+        return cells3d.dig(cells, 27)
+    end)
+    assert(not ok, "out-of-range cell index is an error, not a clamp")
     local level = water3d.level(WATER_SPEC)
     local surface = water3d.height_at(WATER_SPEC, 0, 0)
     local depth = water3d.depth_at(WATER_SPEC, TERRAIN_SPEC, 0, 0)
@@ -815,6 +1173,9 @@ local function probe_procedural_surfaces()
 end
 
 function M.on_create()
+    -- 场景重载后实体 id 会变：高度场演示体重建、重加一次。
+    heightfield_entity = nil
+    heightfield_added = false
     load_clips()
     probe_procedural_surfaces()
     lab.start({

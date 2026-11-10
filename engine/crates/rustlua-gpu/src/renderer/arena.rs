@@ -5,7 +5,11 @@
 
 use rustlua_math::math3d::Mat4;
 
-use super::{GpuMaterial, Renderer, joint_palette_data, next_2d_vertex_capacity};
+use super::batch_motion_gpu::BATCH_MOTION_MATRIX_BYTES;
+use super::{
+    FrameDraw, GpuMaterial, MATERIAL_UNIFORM_ROWS, Renderer, joint_palette_data,
+    next_2d_vertex_capacity,
+};
 
 /// 无存储缓冲时材质布局 binding 2 的 64 字节：一条 draw 只有一个模型矩阵（列主序）。
 ///
@@ -100,31 +104,33 @@ impl Renderer {
         (self.material_arena.clone(), offset, size)
     }
 
-    /// P0-①：实例模型矩阵帧级环形缓冲的写入端，语义与 [`Self::push_frame_uniform`] 相同。
-    fn push_frame_storage(&mut self, contents: &[u8]) -> (wgpu::Buffer, u64, u64) {
+    /// P3-R245：只**预留**一块实例环形成员（64 B 对齐），返回（缓冲, 偏移, 字节数），
+    /// 不写任何数据。给"compute 自己往这块区域写"的路径用（矩阵与法线各预留一段）。
+    fn reserve_frame_storage(&mut self, size: u64) -> (wgpu::Buffer, u64, u64) {
         let mask = self.storage_align - 1;
-        let size = contents.len() as u64;
         let mut offset = self.instance_arena_used.wrapping_add(mask) & !mask;
         if offset + size > self.instance_arena.size() {
             let grown = (self.instance_arena.size() * 2).max(offset + size);
             self.instance_arena = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rustlua-instance-models-frame-arena"),
                 size: grown,
-                // 与构造期同一条规则：没有存储缓冲的设备上就不带 STORAGE 用法
-                // （这条路径只在能力足够时才会被走到，但规则只该有一处）。
                 usage: self.storage_usage()
                     | wgpu::BufferUsages::VERTEX
                     | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            // 与 material arena 同一条纪律：句柄换了，缓存键的代次必须跟上。
             self.instance_arena_epoch += 1;
             offset = 0;
         }
-        self.queue
-            .write_buffer(&self.instance_arena, offset, contents);
         self.instance_arena_used = offset + size;
         (self.instance_arena.clone(), offset, size)
+    }
+
+    /// P0-①：实例模型矩阵帧级环形缓冲的写入端，语义与 [`Self::push_frame_uniform`] 相同。
+    fn push_frame_storage(&mut self, contents: &[u8]) -> (wgpu::Buffer, u64, u64) {
+        let (buffer, offset, size) = self.reserve_frame_storage(contents.len() as u64);
+        self.queue.write_buffer(&buffer, offset, contents);
+        (buffer, offset, size)
     }
 
     /// Creates a material bind group carrying one primitive's file material,
@@ -139,6 +145,51 @@ impl Renderer {
         models: &[Mat4],
         normals: bool,
     ) -> (wgpu::BindGroup, Option<NormalMatrixSlice>) {
+        // 没有存储缓冲的设备（WebGL2）：binding 2 是 64 字节 uniform，每条 draw 只装一个
+        // 模型矩阵。实例化合批在构造期已按能力关掉，`frame_3d_draws` 因此不会产出多条
+        // 实例合批（每条 draw 的 `models.len()` 恒为 1）——这里取首个模型就是全部。
+        let instance = if self.storage_capable {
+            let mut instance_data = Vec::with_capacity(models.len() * 4);
+            for model in models {
+                instance_data.extend_from_slice(&model.columns);
+            }
+            self.push_frame_storage(bytemuck::cast_slice(&instance_data))
+        } else {
+            debug_assert_eq!(models.len(), 1, "无存储缓冲时每条 3D draw 只该有一个模型");
+            self.push_frame_uniform(&single_instance_uniform(models))
+        };
+        // P3-R02：法线矩阵必须按每个实例各算一份（非均匀缩放下模型矩阵的 3x3 不能直接当
+        // 法线变换用）。只在 PBR 路径写入；旧路径一个字节都不多写，`pbr=off` 的旧 golden
+        // 因此仍逐字节一致。走顶点缓冲而不是新增存储绑定：多一个布局条目会明显拉长启动期
+        // 管线编译。
+        let normal_slice = if normals {
+            let mut normal_data = Vec::with_capacity(models.len() * 16);
+            for model in models {
+                normal_data.extend_from_slice(&super::pbr::normal_matrix(*model).columns);
+            }
+            let (buffer, offset, size) =
+                self.push_frame_storage(bytemuck::cast_slice(&normal_data));
+            Some(NormalMatrixSlice {
+                buffer,
+                offset,
+                size,
+            })
+        } else {
+            None
+        };
+        self.material_bind_group_with_slices(index, material, palette, instance, normal_slice)
+    }
+
+    /// P3-R245：绑定组创建的两条来源之一——实例数据**已经**在 arena 里（CPU 上传，或
+    /// compute 刚写好的 GPU 位姿），只差材质/调色板与绑定组本身。
+    fn material_bind_group_with_slices(
+        &mut self,
+        index: usize,
+        material: GpuMaterial,
+        palette: &[Mat4],
+        instance: (wgpu::Buffer, u64, u64),
+        normal_slice: Option<NormalMatrixSlice>,
+    ) -> (wgpu::BindGroup, Option<NormalMatrixSlice>) {
         // 第 6 个 vec4 是程序化表面开关：-1 内建水面，-2 内建地形。
         // 负 normal_scale 不会进入法线采样（两种内建表面都没有法线贴图）。
         let animated = if material.normal_scale < -1.5 {
@@ -148,7 +199,11 @@ impl Renderer {
         } else {
             0.0
         };
-        let material_data: [[f32; 4]; 6] = [
+        // P3-R197：水面廉价光照档——材质声明或宿主全局覆盖（A/B）任一为真即开启。
+        let water_cheap = material.water_cheap || self.water_cheap_override;
+        // P3-R203：地形廉价细节档，同上。
+        let terrain_cheap = material.terrain_cheap || self.terrain_cheap_override;
+        let material_data: [[f32; 4]; MATERIAL_UNIFORM_ROWS] = [
             material.base_color,
             [
                 material.metallic,
@@ -188,8 +243,38 @@ impl Renderer {
                 } else {
                     0.0
                 },
-                0.0,
-                0.0,
+                // P3-R197：z = 1 表示水面廉价光照档（仅 animated=1 的水面读取）。
+                if water_cheap && animated > 0.5 {
+                    1.0
+                } else {
+                    0.0
+                },
+                // P3-R203：w = 1 表示地形廉价细节档（仅 animated=2 的地形读取）。
+                if terrain_cheap && animated > 1.5 {
+                    1.0
+                } else {
+                    0.0
+                },
+            ],
+            // P3-R162：清漆层（factor, roughness）。旧着色器不读第 7..10 个 vec4，
+            // 全 0 时新瓣在 shader 里精确退化为旧路径（golden 逐字节一致）。
+            [material.clearcoat, material.clearcoat_roughness, 0.0, 0.0],
+            // P3-R163：SSS 近似（strength, wrap/thickness）。
+            [material.sss_strength, material.sss_thickness, 0.0, 0.0],
+            // P3-R164：薄膜虹彩（factor, ior, thickness_min, thickness_max）。
+            [
+                material.iridescence,
+                material.iridescence_ior,
+                material.iridescence_thickness_min,
+                material.iridescence_thickness_max,
+            ],
+            // P3-R165：绒毛瓣（sheen rgb, roughness）。颜色全 0 时该项精确为 0
+            // 且基层衰减为 1 ⇒ 与旧路径逐字节相同。
+            [
+                material.sheen_color[0],
+                material.sheen_color[1],
+                material.sheen_color[2],
+                material.sheen_roughness,
             ],
         ];
         let (material_buffer, material_offset, material_size) =
@@ -202,37 +287,7 @@ impl Renderer {
                 (self.identity_palette.clone(), 0, size)
             };
         // 没有存储缓冲的设备（WebGL2）：binding 2 是 64 字节 uniform，每条 draw 只装一个
-        // 模型矩阵。实例化合批在构造期已按能力关掉，`frame_3d_draws` 因此不会产出多条
-        // 实例合批（每条 draw 的 `models.len()` 恒为 1）——这里取首个模型就是全部。
-        let (instance_buffer, instance_offset, instance_size) = if self.storage_capable {
-            let mut instance_data = Vec::with_capacity(models.len() * 4);
-            for model in models {
-                instance_data.extend_from_slice(&model.columns);
-            }
-            self.push_frame_storage(bytemuck::cast_slice(&instance_data))
-        } else {
-            debug_assert_eq!(models.len(), 1, "无存储缓冲时每条 3D draw 只该有一个模型");
-            self.push_frame_uniform(&single_instance_uniform(models))
-        };
-        // P3-R02：法线矩阵必须按每个实例各算一份（非均匀缩放下模型矩阵的 3x3 不能直接当
-        // 法线变换用）。只在 PBR 路径写入；旧路径一个字节都不多写，`pbr=off` 的旧 golden
-        // 因此仍逐字节一致。走顶点缓冲而不是新增存储绑定：多一个布局条目会明显拉长启动期
-        // 管线编译。
-        let normal_slice = if normals {
-            let mut normal_data = Vec::with_capacity(models.len() * 16);
-            for model in models {
-                normal_data.extend_from_slice(&super::pbr::normal_matrix(*model).columns);
-            }
-            let (buffer, offset, size) =
-                self.push_frame_storage(bytemuck::cast_slice(&normal_data));
-            Some(NormalMatrixSlice {
-                buffer,
-                offset,
-                size,
-            })
-        } else {
-            None
-        };
+        let (instance_buffer, instance_offset, instance_size) = instance;
         // P4-①：稳态复用。环形缓冲每帧按同一顺序分配 ⇒ 键相同就意味着"绑定组语义完全等价"，
         // 直接返回上一帧那个（wgpu 资源是 Arc，clone 只加一次引用计数）。
         let key = MaterialBindKey {
@@ -336,7 +391,7 @@ impl Renderer {
             },
         ];
         if let Some(normal) = &normal_slice {
-            debug_assert_eq!(normal.size, models.len() as u64 * 64);
+            debug_assert_eq!(normal.size, instance_size);
         }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rustlua-material3d-frame-bind-group"),
@@ -361,6 +416,147 @@ impl Renderer {
             self.material_bind_cache.push(entry);
         }
         (bind_group, normal_slice)
+    }
+
+    /// P3-R245：按 `FrameDraw` 建绑定组——带 `gpu_motion` 的 draw 先让 compute 把位姿写进
+    /// 实例 arena（PBR 时连同法线矩阵），再按同一份切片建绑定组；烘焙失败/无 compute 能力
+    /// 时回退到 CPU `models`（画面与开档前一致，不静默丢 draw）。
+    pub(super) fn material_bind_group_for_draw(
+        &mut self,
+        index: usize,
+        draw: &FrameDraw,
+        normals: bool,
+    ) -> (
+        wgpu::BindGroup,
+        Option<NormalMatrixSlice>,
+        Option<wgpu::Buffer>,
+    ) {
+        if let Some(motion) = draw.gpu_motion.as_ref() {
+            // P3-R246：画调用按 `draw.instance_count()`（= 批次数）取实例，烘焙也按同一口径写；
+            // `draw.models` 只可能是空的（宿主跳过 CPU 求值），非空时仍按它兜底 CPU 路径。
+            let count = motion.batch.instances.len() as u64;
+            let size = count * BATCH_MOTION_MATRIX_BYTES;
+            // 先预留再烘焙：预留可能让 arena 扩容换缓冲，烘焙必须写进换代后的那一块。
+            let instance = self.reserve_frame_storage(size);
+            let normal_slice = if normals {
+                let (buffer, offset, size) = self.reserve_frame_storage(size);
+                Some(NormalMatrixSlice {
+                    buffer,
+                    offset,
+                    size,
+                })
+            } else {
+                None
+            };
+            // P3-R250：距离剔除档（默认 0 = 关）——球心是当帧相机位置，超出半径的实例
+            // 由 compute 写零矩阵；烘焙失败回退 CPU 时不补剔除（回退路径本来就是诊断路径）。
+            let cull = (self.gpu_motion_cull_distance > 0.0)
+                .then_some((self.camera_world_position, self.gpu_motion_cull_distance));
+            // P3-R255：逐实例视锥档（当帧由 `render_passes` 打包）。它单独开也要走压缩
+            // 通道——零矩阵档只让三角形退化，实例底价照付。
+            let frustum = self.bake_frustum;
+            // P3-R266：远程密度档与距离剔除共用相机原点；单开 thin 也要走压缩烘焙
+            // （留下/走掉的实例数必须由 indirect 参数带出去，退化零矩阵省不了顶点底价）。
+            let thin = self
+                .gpu_motion_thin
+                .map(|(meters, stride)| (self.camera_world_position, meters, stride));
+            // P3-R267：第二远带只在第一带已开且确实更远时生效（半径写反就丢弃）。
+            let thin_far = match (self.gpu_motion_thin, self.gpu_motion_thin_far) {
+                (Some((near_meters, _)), Some((far_meters, stride)))
+                    if far_meters > near_meters =>
+                {
+                    Some((self.camera_world_position, far_meters, stride))
+                }
+                _ => None,
+            };
+            let normal_slices = normal_slice
+                .as_ref()
+                .map(|slice| (&slice.buffer, slice.offset));
+            // P3-R251：剔除档开时走**压缩**烘焙——存活实例写前缀、indirect 参数带真实
+            // instance_count；零矩阵档的顶点底价不再随批次全量支付。两档都关走原路径。
+            let baked = match (cull, frustum, thin, thin_far) {
+                (None, None, None, None) => self
+                    .bake_batch_motion_with_normals_and_cull(
+                        &motion.batch,
+                        motion.time,
+                        &instance.0,
+                        instance.1,
+                        normal_slices,
+                        motion.model_scale,
+                        None,
+                    )
+                    .map(|written| (u64::from(written), None)),
+                (cull, frustum, thin, thin_far) => self
+                    .bake_batch_motion_compact(
+                        &motion.batch,
+                        motion.time,
+                        &instance.0,
+                        instance.1,
+                        normal_slices,
+                        motion.model_scale,
+                        cull,
+                        draw.geometry.index_count,
+                        frustum,
+                        draw.gpu_motion_local_radius,
+                        thin,
+                        thin_far,
+                    )
+                    .map(|args| (count, args)),
+            };
+            match baked {
+                Ok((written, args)) if written == count => {
+                    let (bind, normal_slice) = self.material_bind_group_with_slices(
+                        index,
+                        draw.material,
+                        &draw.palette,
+                        instance,
+                        normal_slice,
+                    );
+                    return (bind, normal_slice, args);
+                }
+                Ok((written, _)) => {
+                    tracing::warn!(
+                        target: "render",
+                        written,
+                        count,
+                        "[render] GPU 位姿烘焙只写了部分实例，回退 CPU 矩阵"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "render",
+                        %error,
+                        "[render] GPU 位姿烘焙失败，回退 CPU 矩阵"
+                    );
+                }
+            }
+            // 回退也要按 `count` 给出矩阵：`draw.models` 为空时现场求值一次（O(N)，只在
+            // 设备没有 compute 能力或输入非法时走到）。非法实例给零矩阵（退化、不画），
+            // 保证实例数与 `instance_count()` 一致——多一个少一个都会读进邻居的矩阵。
+            let models: Vec<Mat4> = if draw.models.is_empty() {
+                // 与 CPU 档同口径：`matrices_at` 自己处理"没有运动/路径非法 ⇒ 静态表"。
+                // 非法实例在 `matrices_at` 里被跳过，补零矩阵把数量对齐回 `count`（零矩阵退化，
+                // 不画；不能少给，否则多出来的那一段会读进邻居的矩阵）。
+                let mut models: Vec<Mat4> = motion
+                    .batch
+                    .matrices_at(motion.time)
+                    .into_iter()
+                    .map(|model| super::scaled_model(model, motion.model_scale))
+                    .collect();
+                models.resize_with(count as usize, || Mat4 {
+                    columns: [[0.0; 4]; 4],
+                });
+                models
+            } else {
+                draw.models.clone()
+            };
+            let (bind, normal_slice) =
+                self.material_bind_group(index, draw.material, &draw.palette, &models, normals);
+            return (bind, normal_slice, None);
+        }
+        let (bind, normal_slice) =
+            self.material_bind_group(index, draw.material, &draw.palette, &draw.models, normals);
+        (bind, normal_slice, None)
     }
 
     /// 打一行**每台渲染器只打一次**的缓存读数：第 5 个有 3D draw 的帧，或首次全命中时。

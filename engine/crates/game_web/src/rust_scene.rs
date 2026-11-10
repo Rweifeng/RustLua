@@ -316,8 +316,9 @@ impl RustScene {
             self.input.finish_frame();
         }
         self.steps += u64::from(steps);
-        // Lua `update` 净耗时（引擎在 `lua_update` 系统里记的微秒数）。`take_script_micros`
-        // 是**取走即清空**，所以必须每一步取一次——攒着取会把几帧的量算到最后那一帧头上。
+        // Lua 回调净耗时（引擎在 `lua_update`/`lua_frame` 系统里记的微秒数）。
+        // `take_script_micros` 是**取走即清空**，所以必须每一帧取一次——攒着取会把
+        // 几帧的量算到最后那一帧头上。
         self.sum_lua_us += self.scene.take_script_micros();
         self.lua_frames += 1;
         // 逐系统耗时：引擎每帧都算好了（`last_schedule_report`），这里累加**只取成功帧**——

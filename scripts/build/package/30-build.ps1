@@ -123,6 +123,9 @@
             # 的 webgl 段），而 GPU 路径目前只在页面 URL 带 `?rustlua-gpu=1` 时才启用。
             $wasmFeatures = @()
             if ($Gpu2d) { $wasmFeatures = @("--features", "gpu2d") }
+            # M81 批 3：api = "2d" 时关掉默认 feature（3d）；gpu2d 是渲染宿主开关，与维度无关，
+            # 显式 --features 不会重开默认 feature，两条可叠加。
+            if ($ApiDimension -eq "2d") { $wasmFeatures = @("--no-default-features") + $wasmFeatures }
             cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown @wasmFeatures -q 2>&1 | Out-Null
         }
         finally {
@@ -162,7 +165,14 @@ WASM build failed ($Platform)。
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            cargo build -p assetc -p game --release -q 2>&1 | Out-Null
+            # M81 批 3：api = "2d" 时 game 关掉默认 feature（3d）；assetc 与维度无关，单独构建。
+            if ($ApiDimension -eq "2d") {
+                cargo build -p assetc --release -q 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Release build failed (pc: assetc)." }
+                cargo build -p game --release --no-default-features -q 2>&1 | Out-Null
+            } else {
+                cargo build -p assetc -p game --release -q 2>&1 | Out-Null
+            }
         }
         finally {
             $ErrorActionPreference = $savedEap

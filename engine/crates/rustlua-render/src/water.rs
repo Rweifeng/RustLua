@@ -57,6 +57,10 @@ pub struct WaterSpec {
     pub foam: f32,
     /// P3-R125：结冰标记；真时材质把 `alpha_cutoff` 写成 2.0 作为冰面标记。
     pub ice: bool,
+    /// P3-R197：水面廉价光照档。`true` 时 PBR shader 对这块水跳过 SH9 漫反射、
+    /// 点光循环与四级联阴影采样（保留直射阳光、镜面 IBL 与天空反射）。默认 `false`，
+    /// 缺省路径逐字节不变；由 `cheap=1` 打开，或宿主用 `--water-cheap` 全局临时开启。
+    pub cheap_lighting: bool,
     /// Flow speed along the surface's local +x axis, `-4..=4`; `0` = still.
     ///
     /// This is a **visual advection** of the procedural ripple/foam phase, not a
@@ -91,6 +95,7 @@ impl Default for WaterSpec {
             seed: 3,
             foam: 0.6,
             ice: false,
+            cheap_lighting: false,
             flow: 0.0,
             bed: None,
             bed_origin: [0.0, 0.0],
@@ -120,6 +125,15 @@ impl WaterSpec {
                 "amp" => spec.amplitude = number(raw, key)?,
                 "seed" => spec.seed = integer(raw, key)?,
                 "foam" => spec.foam = number(raw, key)?,
+                "cheap" => {
+                    spec.cheap_lighting = match integer(raw, key)? {
+                        0 => false,
+                        1 => true,
+                        _ => {
+                            return Err(WaterSpecError::MalformedField(format!("cheap={raw}")));
+                        }
+                    };
+                }
                 "ice" => {
                     spec.ice = match integer(raw, key)? {
                         0 => false,
@@ -164,6 +178,9 @@ impl WaterSpec {
         );
         if self.foam != 0.6 {
             path.push_str(&format!("&foam={}", self.foam));
+        }
+        if self.cheap_lighting {
+            path.push_str("&cheap=1");
         }
         if self.ice {
             path.push_str("&ice=1");
@@ -667,5 +684,25 @@ mod tests {
         assert_eq!(mesh.materials[0].alpha_mode, MaterialAlphaMode::Blend);
         // 负 normal_scale 是顶点动画开关；水面没有法线贴图，不会采样它。
         assert_eq!(mesh.materials[0].normal_scale, -1.0);
+    }
+}
+
+#[cfg(test)]
+mod cheap_lighting_tests {
+    use super::WaterSpec;
+
+    /// P3-R197：`cheap=1` 解析进 spec、并随 `mesh_path()` 往返；非法值报错。
+    #[test]
+    fn cheap_lighting_flag_parses_and_round_trips() {
+        let spec = WaterSpec::parse("__water__?size=10&res=8&y=0.06&amp=0.02&seed=3&cheap=1")
+            .expect("cheap=1 parses");
+        assert!(spec.cheap_lighting);
+        let round_trip = WaterSpec::parse(&spec.mesh_path()).expect("round trip");
+        assert!(round_trip.cheap_lighting, "mesh_path 必须回写 cheap=1");
+        assert!(
+            WaterSpec::parse("__water__?cheap=2").is_err(),
+            "cheap=2 必须报错"
+        );
+        assert!(!WaterSpec::default().cheap_lighting, "缺省必须关闭");
     }
 }

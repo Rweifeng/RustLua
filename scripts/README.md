@@ -21,6 +21,8 @@
 | 脚本 | 作用 |
 |---|---|
 | `package.ps1` | 组装自包含发布包（PC / WebGL / 微信小游戏），`-SelfTest` 做目录隔离自测；**入口只留参数与编排**，各阶段在 [package/](package/) 下 |
+| `package-android.ps1` | 使用 `plugins/android/` 模板构建 `arm64-v8a` NativeActivity APK，并原子发布到工程 `builds/android/` |
+| `install-android-toolchain.ps1` | 下载并校验 JDK 17、Gradle 8.9、Android SDK/NDK，安装 Rust Android target 与 `cargo-ndk` |
 | `package-engine.ps1` | 引擎绿色版/发布包组装 |
 | `release-atomic.ps1` | 发布目录的临时 staging、原子替换与失败回滚（被 `package.ps1`、`test-release-atomic.ps1` 点源） |
 | `package-branding.ps1` | 把启动品牌图（icon/splash）落到发布根的 `branding/` |
@@ -182,6 +184,9 @@ powershell -NoProfile -File scripts/verify/verify.ps1
 
 # 发布（PC / WebGL / 微信小游戏）
 powershell -NoProfile -File scripts/build/package.ps1 -Project examples/game_api -Platform pc
+
+# Android 侧载 APK（需要 Android SDK/NDK、JDK、Gradle 与 cargo-ndk）
+powershell -NoProfile -File scripts/build/package-android.ps1 -ProjectRoot examples/game_api -ApplicationId com.rustlua.game
 
 # 本地试玩 WebGL 发布包
 powershell -NoProfile -File scripts/test/test-bundle.ps1 -Platform webgl

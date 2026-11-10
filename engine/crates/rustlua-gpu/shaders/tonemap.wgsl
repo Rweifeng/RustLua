@@ -22,6 +22,31 @@ struct Params {
     water_params: vec4<f32>,
     // x = cloud base height (world y); yzw reserved
     cloud: vec4<f32>,
+    // P3-R166：相机裁剪平面（世界空间，xyz 法线 + w 偏移）
+    section_plane: vec4<f32>,
+    // 世界 → 地形局部（x/z 是网格本地坐标，剖面高度图按它索引）
+    world_to_local: mat4x4<f32>,
+    // x = 高度图最小 y，y = 高度跨度，z = 地形半宽，w = 开关（0 = 关）
+    section_terrain: vec4<f32>,
+    // P3-R170：x = 平面反射开关，y = 强度，zw 预留
+    planar: vec4<f32>,
+    // P3-R171：xyz = 水体每米消光系数（线性 RGB），w = 强度（0 = 关）
+    water_abs: vec4<f32>,
+    // P3-R172：xyz = 水体散射色（线性 RGB），w = 强度（0 = 关）
+    water_scatter: vec4<f32>,
+    // P3-R173：x = 相机入水开关，y = 光程上限（米）；
+    // P3-R207：z = 折射基准强度（0 = 用旧常数 0.0035），w = 深度增益（uv / 米 / 掠射）
+    water_under: vec4<f32>,
+    // P3-R174：上一帧的视图投影（把当前世界点投回上一帧屏幕）
+    previous_view_projection: mat4x4<f32>,
+    // x = 强度（0 = 关），y = 屏幕速度上限（uv），zw 预留；w = 开关
+    motion: vec4<f32>,
+    // P3-R208：x = 水下界面开关（相机入水且档位 > 0），y = 水 → 空气的折射率比（1/1.333），
+    // z = 界面替换强度（0 = 关），w = 临界角过渡带宽（余弦值）
+    submersion: vec4<f32>,
+    // P3-R241：x = 水下屏幕空间步进次数（0 = 关 = R207 的偏移近似），y = 空气 → 水的折射率比
+    // （1/1.333 ≈ 0.7519），z = 首步步长（米），w = 命中过冲的厚度容差（米）
+    water_refract: vec4<f32>,
 };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
@@ -31,6 +56,11 @@ struct Params {
 @group(0) @binding(5) var ao_sampler: sampler;
 @group(0) @binding(6) var ssr_map: texture_2d<f32>;
 @group(0) @binding(7) var ssr_sampler: sampler;
+// P3-R166：`sect=1` 地形的高度图（RG 两个字节 = 16 位定点）。
+@group(0) @binding(8) var section_height: texture_2d<f32>;
+// P3-R170：水面平面反射的离屏色图（半分辨率，alpha = 该像素是否有镜像几何）。
+@group(0) @binding(9) var planar_map: texture_2d<f32>;
+@group(0) @binding(10) var planar_sampler: sampler;
 
 struct Out {
     @builtin(position) position: vec4<f32>,
@@ -165,6 +195,100 @@ fn world_from_depth(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     return homogeneous.xyz / max(homogeneous.w, 1e-6);
 }
 
+// 高度图双线性解码：R = 高 8 位、G = 低 8 位，合成 16 位定点再映射回 [min_y, min_y+span]。
+fn section_height_texel(coord: vec2<i32>) -> f32 {
+    let last = vec2<i32>(textureDimensions(section_height)) - vec2<i32>(1);
+    let texel = textureLoad(section_height, clamp(coord, vec2<i32>(0), last), 0);
+    let fixed = texel.r * 255.0 * 256.0 + texel.g * 255.0;
+    return params.section_terrain.x + (fixed / 65535.0) * params.section_terrain.y;
+}
+
+fn section_height_at(local: vec2<f32>) -> f32 {
+    let size = max(params.section_terrain.z * 2.0, 1e-3);
+    let uv = local / size + vec2<f32>(0.5);
+    let coord = uv * vec2<f32>(textureDimensions(section_height)) - vec2<f32>(0.5);
+    let base = vec2<i32>(floor(coord));
+    let f = coord - floor(coord);
+    let h00 = section_height_texel(base);
+    let h10 = section_height_texel(base + vec2<i32>(1, 0));
+    let h01 = section_height_texel(base + vec2<i32>(0, 1));
+    let h11 = section_height_texel(base + vec2<i32>(1, 1));
+    return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+// P3-R166：裁剪平面处的实体土壤剖面。相机级裁剪把近侧地形整块丢弃后，
+// 屏幕上留下一个能看见地下空洞的缺口；这里用像素射线与裁剪平面求交，
+// 再查高度图判断交点是否落在土块内部，是则画程序化层理封口。
+// 与视角无关：环绕时只改平面参数，不需要重建任何几何。
+fn section_cut(uv: vec2<f32>) -> vec4<f32> {
+    if params.section_terrain.w < 0.5 {
+        return vec4<f32>(0.0);
+    }
+    let plane_len = length(params.section_plane.xyz);
+    if plane_len < 1e-6 {
+        return vec4<f32>(0.0);
+    }
+    let normal = params.section_plane.xyz / plane_len;
+    let offset = params.section_plane.w / plane_len;
+    let origin = params.camera_position.xyz;
+    let far = world_from_depth(uv, 1.0);
+    let direction = normalize(far - origin);
+    let denominator = dot(normal, direction);
+    if abs(denominator) < 1e-5 {
+        return vec4<f32>(0.0);
+    }
+    let t = -(dot(normal, origin) + offset) / denominator;
+    if t <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let world = origin + direction * t;
+    // 交点必须比场景几何更近：被道具或远侧地形挡住的像素不画剖面。
+    let clip = params.view_projection * vec4<f32>(world, 1.0);
+    if clip.w <= 1e-4 {
+        return vec4<f32>(0.0);
+    }
+    let ndc = clip.xyz / clip.w;
+    if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 {
+        return vec4<f32>(0.0);
+    }
+    let scene = depth_at(uv);
+    if scene < 0.9999 && ndc.z >= scene - 0.0005 {
+        return vec4<f32>(0.0);
+    }
+    let local = (params.world_to_local * vec4<f32>(world, 1.0)).xyz;
+    let half_extent = params.section_terrain.z;
+    if abs(local.x) > half_extent || abs(local.z) > half_extent {
+        return vec4<f32>(0.0);
+    }
+    let ground = section_height_at(local.xz);
+    // 只丢水面以上的交点；交点低于地形最低点也要继续填——土块是实心的，
+    // 否则切面会在 `min_y` 处被截成一条窄带，下面重新露出天空。
+    if world.y > ground {
+        return vec4<f32>(0.0);
+    }
+    let depth_below = ground - world.y;
+    // 层理按世界 y 分层：地质层是水平的，切面离镜头很近时 depth_below 动辄几十单位，
+    // 按深度分层会全部饱和成一片纯色；用低频噪声让层线随地形轻微起伏。
+    let wobble = tonemap_value_noise3(vec3<f32>(local.x * 0.09, local.z * 0.09, 3.7)) * 1.7;
+    let strata = sin((world.y + wobble) * 2.1) * 0.5 + 0.5;
+    var soil = mix(vec3<f32>(0.21, 0.15, 0.09), vec3<f32>(0.37, 0.27, 0.16), strata);
+    // 钙积层：更浅、更灰的一层，和上下黏土拉开对比。
+    soil = mix(soil, vec3<f32>(0.34, 0.30, 0.24), smoothstep(0.72, 0.98, strata) * 0.7);
+    let grit = tonemap_value_noise3(world * 1.7) * 0.10
+        + tonemap_value_noise3(world * vec3<f32>(4.1, 2.3, 4.7)) * 0.05;
+    soil = soil + vec3<f32>(grit * 0.35, grit * 0.30, grit * 0.24);
+    // 顶端压一条草皮色：剖面与地表接缝处不出现突兀的亮边。
+    soil = mix(vec3<f32>(0.07, 0.13, 0.045), soil, smoothstep(0.02, 0.25, depth_below));
+    var shade = 0.55;
+    let sun = params.light_direction.xyz;
+    if dot(sun, sun) > 1e-8 {
+        shade = 0.55 + 0.45 * clamp(dot(normal, normalize(sun)), 0.0, 1.0);
+    }
+    // 越往深部环境光越弱（低成本 AO），剖面自然变暗。
+    shade = shade * mix(1.0, 0.55, clamp(depth_below / max(params.section_terrain.y, 1e-3), 0.0, 1.0));
+    return vec4<f32>(soil * shade * 1.35, 1.0);
+}
+
 fn tonemap_hash31(p_in: vec3<f32>) -> f32 {
     var p = fract(p_in * 0.1031);
     p = p + dot(p, p.yzx + vec3<f32>(33.33));
@@ -272,6 +396,12 @@ fn tonemap_volumetric_clouds(ray: vec3<f32>, to_sun: vec3<f32>, time: f32, uv: v
 fn sky_color(uv: vec2<f32>) -> vec3<f32> {
     let far = world_from_depth(uv, 1.0);
     let ray = normalize(far - params.camera_position.xyz);
+    return sky_along(ray, uv);
+}
+
+// P3-R208：天空按**方向**取色。水下视角要把折射出射的方向送进来，
+// 所以从 `sky_color` 里拆出这一段；`sky_color` 只剩「由 uv 重建射线」的外壳。
+fn sky_along(ray: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     let height = clamp(ray.y, 0.0, 1.0);
     let zenith = vec3<f32>(0.055, 0.14, 0.34);
     let horizon = vec3<f32>(0.55, 0.68, 0.80);
@@ -292,15 +422,92 @@ fn sky_color(uv: vec2<f32>) -> vec3<f32> {
     return color;
 }
 
-fn water_refraction(uv: vec2<f32>, time: f32) -> vec3<f32> {
+// P3-R241：从水面像素出发，沿**Snell 折射方向**在水下做屏幕空间步进，找射线真正钻到
+// 几何背面的那一点（返回 `(uv, 命中)`；未命中返回调用方给的偏移落点，保证不会采到黑）。
+//
+// 口径：射线从相机 → 河床点就是该像素的视线，水面交点由 `y = level` 解析求交得到；
+// 入射方向过 `refract(I, N, eta)`（空气 → 水，eta = n_air / n_water）得到水下方向。
+// 每步都投影回屏幕、与深度图反投影出的场景点比**到相机的距离**：射线点比场景点远
+// 就是已经钻到背面；过冲超过 `water_refract.w` 视为穿过薄物/缝隙，直接放弃（回退）。
+// 不做法线空间细化——步长够细时误差落在一个像素内，代价只有 N 次深度取样。
+fn refraction_step_uv(bed: vec3<f32>, slope: vec2<f32>, fallback: vec2<f32>) -> vec3<f32> {
+    let origin = params.camera_position.xyz;
+    let direction = normalize(bed - origin);
+    if abs(direction.y) < 1e-4 {
+        return vec3<f32>(fallback, 0.0);
+    }
+    let t_plane = (params.water.x - origin.y) / direction.y;
+    if t_plane <= 0.0 {
+        return vec3<f32>(fallback, 0.0);
+    }
+    let hit = origin + direction * t_plane;
+    // 与 `water_surface` / 反射同一条波法线口径（-slope × 0.16, 1, -slope × 0.16）。
+    let normal = normalize(vec3<f32>(-slope.x * 0.16, 1.0, -slope.y * 0.16));
+    let refracted = refract(direction, normal, params.water_refract.y);
+    let steps = i32(clamp(params.water_refract.x, 1.0, 32.0));
+    let step = max(params.water_refract.z, 0.05);
+    let thickness = max(params.water_refract.w, 0.02);
+    var march = hit + refracted * step;
+    for (var i: i32 = 0; i < steps; i = i + 1) {
+        let clip = params.view_projection * vec4<f32>(march, 1.0);
+        if clip.w <= 0.0 {
+            break;
+        }
+        let ndc = clip.xyz / clip.w;
+        if abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0 {
+            break;
+        }
+        let sample_uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+        let sample_depth = depth_at(sample_uv);
+        if sample_depth < 0.9999 {
+            let scene = world_from_depth(sample_uv, sample_depth);
+            let scene_distance = length(scene - origin);
+            let march_distance = length(march - origin);
+            if scene_distance < march_distance {
+                if march_distance - scene_distance <= thickness {
+                    return vec3<f32>(sample_uv, 1.0);
+                }
+                break;
+            }
+        }
+        march = march + refracted * (step * (1.0 + f32(i) * 0.35));
+    }
+    return vec3<f32>(fallback, 0.0);
+}
+
+fn water_refraction(uv: vec2<f32>, time: f32, optical_depth: f32, grazing: f32) -> vec3<f32> {
     let surface_depth = depth_at(uv);
     let world = world_from_depth(uv, surface_depth);
     let slope = tonemap_water_slope(world.xz, time);
-    let offset = vec2<f32>(slope.x, slope.y) * 0.0035;
-    // 轻微色散：R/B 比 G 多/少一点偏移，水面边缘有很细的彩边。
-    let r = textureSample(source, source_sampler, clamp(uv + offset * 1.08, vec2<f32>(0.001), vec2<f32>(0.999))).r;
-    let g = textureSample(source, source_sampler, clamp(uv + offset, vec2<f32>(0.001), vec2<f32>(0.999))).g;
-    let b = textureSample(source, source_sampler, clamp(uv + offset * 0.92, vec2<f32>(0.001), vec2<f32>(0.999))).b;
+    // P3-R207：折射偏移的强度。`water_under.z`（基准）为 0 = 旧行为，用下面的常数；
+    // 开档后基准由宿主给出，再按「逐像素光程 × 掠射角」放大——水越深、视角越平，
+    // 视差位移越大。P3-R241 起它退化为**回退落点**：步进命中的像素改采命中点，
+    // 步数档为 0（默认）时一个字节都不变。
+    let strength = select(
+        0.0035,
+        params.water_under.z + params.water_under.w * optical_depth * grazing,
+        params.water_under.z > 0.0,
+    );
+    let offset = vec2<f32>(slope.x, slope.y) * strength;
+    // P3-R241：开档后先走 Snell 步进；`stepped.z` 是命中掩码。没命中就保留偏移落点
+    // （深水/掠射/出屏时步进找不到交点，此时退回近似采样而不是采黑）。
+    var hit_uv = uv + offset;
+    var hit = false;
+    if params.water_refract.x >= 0.5 && surface_depth < 0.9999 {
+        let stepped = refraction_step_uv(world, slope, hit_uv);
+        if stepped.z > 0.5 {
+            hit_uv = stepped.xy;
+            hit = true;
+        }
+    }
+    // 轻微色散：R/B 比 G 多/少一点偏移，水面边缘有很细的彩边。步进命中时三个通道采
+    // 同一个命中点（真实折射的色散量远小于一个像素，不在这里伪造彩边）。
+    let r_uv = select(uv + offset * 1.08, hit_uv, hit);
+    let g_uv = select(uv + offset, hit_uv, hit);
+    let b_uv = select(uv + offset * 0.92, hit_uv, hit);
+    let r = textureSample(source, source_sampler, clamp(r_uv, vec2<f32>(0.001), vec2<f32>(0.999))).r;
+    let g = textureSample(source, source_sampler, clamp(g_uv, vec2<f32>(0.001), vec2<f32>(0.999))).g;
+    let b = textureSample(source, source_sampler, clamp(b_uv, vec2<f32>(0.001), vec2<f32>(0.999))).b;
     return vec3<f32>(r, g, b);
 }
 
@@ -319,15 +526,30 @@ fn tonemap_water_slope(p: vec2<f32>, time: f32) -> vec2<f32> {
     );
 }
 
-// 屏幕空间水面反射（P3-R52）：用解析水面求交定位水像素，再以屏幕空间步进找
-// 水面之上的场景颜色。只在水面像素且反射命中时返回非零，避免影响 UI/地形。
-fn water_reflection(uv: vec2<f32>) -> vec3<f32> {
+struct WaterSurface {
+    hit: vec3<f32>,
+    // 该像素深度反投影出的世界点：水面是 blend、不写深度，所以水像素上它就是河床。
+    bed: vec3<f32>,
+    // 相机 → 该像素的方向（反射步进与菲涅尔都要用）。
+    direction: vec3<f32>,
+    valid: bool,
+};
+
+// 水像素判定（P3-R171 起三处共用）：射线打到 `y = level` 平面、落点在水面矩形内，
+// 且该像素的深度在水面之下。天空（depth = 1）与岸上像素一律为 false —— 它们没有河床，
+// 拿它们的深度算光程会把整屏压黑。
+fn water_surface(uv: vec2<f32>) -> WaterSurface {
+    var surface: WaterSurface;
+    surface.hit = vec3<f32>(0.0);
+    surface.bed = vec3<f32>(0.0);
+    surface.direction = vec3<f32>(0.0, -1.0, 0.0);
+    surface.valid = false;
     if params.water_params.x < 0.5 {
-        return vec3<f32>(0.0);
+        return surface;
     }
     let surface_depth = depth_at(uv);
     if surface_depth >= 0.9999 {
-        return vec3<f32>(0.0);
+        return surface;
     }
     let level = params.water.x;
     let half = params.water.y;
@@ -335,23 +557,145 @@ fn water_reflection(uv: vec2<f32>) -> vec3<f32> {
     let far = world_from_depth(uv, 1.0);
     let direction = normalize(far - params.camera_position.xyz);
     if abs(direction.y) < 1e-4 {
-        return vec3<f32>(0.0);
+        return surface;
     }
     let t = (level - params.camera_position.y) / direction.y;
     if t <= 0.0 {
-        return vec3<f32>(0.0);
+        return surface;
     }
     let hit = params.camera_position.xyz + direction * t;
     if abs(hit.x - center.x) > half || abs(hit.z - center.y) > half {
-        return vec3<f32>(0.0);
+        return surface;
     }
     let bed = world_from_depth(uv, surface_depth);
     if bed.y > level - 0.01 {
-        return vec3<f32>(0.0);
+        return surface;
+    }
+    surface.hit = hit;
+    surface.bed = bed;
+    surface.direction = direction;
+    surface.valid = true;
+    return surface;
+}
+
+// 屏幕空间水面反射（P3-R52）：用解析水面求交定位水像素，再以屏幕空间步进找
+// 水面之上的场景颜色。只在水面像素且反射命中时返回非零，避免影响 UI/地形。
+// P3-R173：相机在水下时的体积吸收。与 P3-R171 的区别是光程取「相机 → 该像素世界点」
+// 的距离（整帧都隔着水），而不是水像素的河床深度；因此只在相机入水时开。天空像素
+// depth = 1 反投影到远点，distance 被 `water_under.y` 截断，不会把整帧压成纯水体色。
+fn underwater_transmittance(uv: vec2<f32>) -> vec3<f32> {
+    let point = world_from_depth(uv, depth_at(uv));
+    let distance = clamp(length(point - params.camera_position.xyz), 0.0, params.water_under.y);
+    return exp(-params.water_abs.rgb * distance * params.water_abs.w);
+}
+
+struct SubmergedInterface {
+    // 相机 → 界面命中点的光程（米）。界面像素的光程是它，不是几何体的距离。
+    path: f32,
+    // 折射窗口权重：1 = 透过界面看到界外的天空，0 = 临界角外（全反射看水下）。
+    window: f32,
+    // 临界环亮度：窗口边缘处入射角最接近临界角，那里聚光最亮。
+    ring: f32,
+    // 出射方向（折射后）；WGSL 的 `refract` 在全反射时退化成 `reflect`，正好给镜像方向。
+    direction: vec3<f32>,
+    // 该像素是否真的穿过水-气界面：射线朝上、落点在水面矩形内、且几何体没挡在界面之前。
+    through: bool,
+};
+
+// P3-R208：从水下看水-气界面。相机在水位以下时，向上看的像素原本只会跟着
+// P3-R173 的整帧吸收一起变暗 —— 但真实水下视角的招牌形状是「Snell 窗口」：
+// 临界角（水 → 空气约 48.6°）以内能看到折射出去的天空，角外是全反射的银面。
+// 这里按解析平面求交复用 P3-R171 那份水面矩形，不新增几何。
+fn submerged_interface(uv: vec2<f32>) -> SubmergedInterface {
+    var view: SubmergedInterface;
+    view.path = 0.0;
+    view.window = 0.0;
+    view.ring = 0.0;
+    view.direction = vec3<f32>(0.0, 1.0, 0.0);
+    view.through = false;
+    if params.submersion.x < 0.5 {
+        return view;
+    }
+    let origin = params.camera_position.xyz;
+    let far = world_from_depth(uv, 1.0);
+    let incident = normalize(far - origin);
+    // 朝下看的像素永远打不到界面（看到的是河床、道具、落水的蚁）⇒ 原样不动。
+    if incident.y <= 1e-4 {
+        return view;
+    }
+    let t = (params.water.x - origin.y) / incident.y;
+    if t <= 0.0 {
+        return view;
+    }
+    let hit = origin + incident * t;
+    let half = params.water.y;
+    let center = vec2<f32>(params.water.z, params.water.w);
+    if abs(hit.x - center.x) > half || abs(hit.z - center.y) > half {
+        return view;
+    }
+    // 界面之前有几何体 ⇒ 这个像素看的不是界面。水面是 blend、不写深度，所以
+    // 只有真正画了东西的像素才有深度；天空（depth = 1）总是穿过界面。
+    let surface_depth = depth_at(uv);
+    if surface_depth < 0.9999 {
+        let geometry = world_from_depth(uv, surface_depth);
+        if length(geometry - origin) <= t {
+            return view;
+        }
     }
     let slope = tonemap_water_slope(hit.xz, params.water_params.y);
+    // 水面向上的法线（与 P3-R52 屏幕空间反射同一份波斜率与振幅口径）。
     let normal = normalize(vec3<f32>(-slope.x * 0.16, 1.0, -slope.y * 0.16));
-    let reflected = reflect(direction, normal);
+    let eta = params.submersion.y;
+    let cosine = dot(incident, normal);
+    // 临界角的余弦：cos θc = sqrt(1 − η²)，η = 1/1.333 ⇒ θc ≈ 48.6°。
+    let critical = sqrt(max(1.0 - eta * eta, 0.0));
+    let band = max(params.submersion.w, 1e-3);
+    view.path = t;
+    view.window = smoothstep(critical - band, critical + band, cosine);
+    view.ring = exp(-pow((cosine - critical) / band, 2.0));
+    view.direction = refract(incident, -normal, eta);
+    view.through = true;
+    return view;
+}
+
+// 界面像素的辐射：窗口内取折射出射方向上的天空（含体积云），窗口外是全反射回
+// 水下的暗银面 + 临界环聚光。两者都还要再过一次「相机 → 界面」的水体吸收。
+fn submerged_surface_color(view: SubmergedInterface, uv: vec2<f32>) -> vec3<f32> {
+    let above = sky_along(view.direction, uv);
+    let body = params.water_scatter.rgb * params.water_scatter.w;
+    // 全反射侧看不到界外：给一层比纯水色亮的水下镜像 + 临界环，
+    // 这就是水下照片里那一圈围着窗口的银亮边。
+    let mirror = body * 1.8 + vec3<f32>(0.055, 0.075, 0.095) * view.ring;
+    return mix(mirror, above, view.window);
+}
+
+// P3-R208：水下像素的最终辐射。穿过界面的像素换成窗口/全反射镜像，光程改成
+// 「相机 → 界面」；其余像素维持 P3-R173 的原式。开关为 0（默认）时恒走原式
+// ⇒ 已有的水下画面逐字节不变。
+fn underwater_radiance(uv: vec2<f32>, linear: vec3<f32>) -> vec3<f32> {
+    let body = params.water_scatter.rgb * params.water_scatter.w;
+    if params.submersion.x > 0.5 {
+        let view = submerged_interface(uv);
+        if view.through {
+            let path = min(view.path, params.water_under.y);
+            let transmittance = exp(-params.water_abs.rgb * path * params.water_abs.w);
+            let surface = submerged_surface_color(view, uv);
+            return mix(linear, surface, params.submersion.z) * transmittance
+                + body * (1.0 - transmittance);
+        }
+    }
+    let transmittance = underwater_transmittance(uv);
+    return linear * transmittance + body * (1.0 - transmittance);
+}
+
+fn water_reflection(uv: vec2<f32>, surface: WaterSurface) -> vec3<f32> {
+    if !surface.valid {
+        return vec3<f32>(0.0);
+    }
+    let hit = surface.hit;
+    let slope = tonemap_water_slope(hit.xz, params.water_params.y);
+    let normal = normalize(vec3<f32>(-slope.x * 0.16, 1.0, -slope.y * 0.16));
+    let reflected = reflect(surface.direction, normal);
     if reflected.y <= 0.0 {
         return vec3<f32>(0.0);
     }
@@ -369,11 +713,11 @@ fn water_reflection(uv: vec2<f32>) -> vec3<f32> {
             break;
         }
         let sample_uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-        let surface = depth_at(sample_uv);
-        if surface >= 0.9999 {
+        let sample_depth = depth_at(sample_uv);
+        if sample_depth >= 0.9999 {
             continue;
         }
-        let scene = world_from_depth(sample_uv, surface);
+        let scene = world_from_depth(sample_uv, sample_depth);
         let difference = point.y - scene.y;
         if difference < 0.0 && difference > -3.5 {
             // 水面反射不是镜子：沿法线做一点 UV 扰动，再取 3 抽头柔化。
@@ -398,6 +742,47 @@ fn water_reflection(uv: vec2<f32>) -> vec3<f32> {
     let view = normalize(params.camera_position.xyz - hit);
     let fresnel = pow(1.0 - clamp(dot(normal, view), 0.0, 1.0), 5.0);
     return color * (0.20 + fresnel * 0.60) * params.water_params.z;
+}
+
+// P3-R170：水面平面反射。镜像相机把水面之上的不透明场景画进 `planar_map`。
+// 镜像矩阵是 `VP·R`（没有裁剪空间 x 取反），镜像图已经是屏幕朝向：水面点关于
+// `y = level` 镜像后仍在同一屏幕位置，因此当前像素的 uv 就是反射图的采样坐标。
+// 只在水面像素（解析求交 + 河床深度守卫）采样；alpha 是"该像素有没有镜像几何"的掩码，
+// 没有就返回零，由调用方回退到屏幕空间反射。
+fn planar_reflection(uv: vec2<f32>, surface: WaterSurface) -> vec3<f32> {
+    if params.planar.x < 0.5 {
+        return vec3<f32>(0.0);
+    }
+    if !surface.valid {
+        return vec3<f32>(0.0);
+    }
+    let hit = surface.hit;
+    let slope = tonemap_water_slope(hit.xz, params.water_params.y);
+    let normal = normalize(vec3<f32>(-slope.x * 0.16, 1.0, -slope.y * 0.16));
+    let texel = 1.0 / vec2<f32>(textureDimensions(planar_map));
+    let base = clamp(
+        uv + normal.xz * 0.004,
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    // 5 抽头：中心权重最高，四周柔化半分辨率反射图的锯齿。
+    let c0 = textureSampleLevel(planar_map, planar_sampler, base, 0.0);
+    let c1 = textureSampleLevel(planar_map, planar_sampler, base + texel * vec2<f32>(2.0, 0.0), 0.0);
+    let c2 = textureSampleLevel(planar_map, planar_sampler, base - texel * vec2<f32>(2.0, 0.0), 0.0);
+    let c3 = textureSampleLevel(planar_map, planar_sampler, base + texel * vec2<f32>(0.0, 2.0), 0.0);
+    let c4 = textureSampleLevel(planar_map, planar_sampler, base - texel * vec2<f32>(0.0, 2.0), 0.0);
+    let weight = c0.a * 0.40 + c1.a * 0.15 + c2.a * 0.15 + c3.a * 0.15 + c4.a * 0.15;
+    if weight < 0.01 {
+        return vec3<f32>(0.0);
+    }
+    let color = (c0.rgb * c0.a * 0.40
+        + c1.rgb * c1.a * 0.15
+        + c2.rgb * c2.a * 0.15
+        + c3.rgb * c3.a * 0.15
+        + c4.rgb * c4.a * 0.15) / weight;
+    let view = normalize(params.camera_position.xyz - hit);
+    let fresnel = pow(1.0 - clamp(dot(normal, view), 0.0, 1.0), 5.0);
+    return color * (0.25 + fresnel * 0.65) * params.planar.y;
 }
 
 // 距离雾/空气透视：按相机到重建世界点的距离做指数衰减，天空像素不参与。
@@ -514,10 +899,63 @@ fn output_dither(uv: vec2<f32>) -> f32 {
     return (h - 0.5) / 255.0;
 }
 
+// P3-R175：运动模糊的单个抽头。源图里天空像素只有清屏色，最终颜色是后面 `sky_color` 现算的；
+// 抽头必须走同一条替换，否则地面像素会把清屏色混进来，在地平线压出一条本来不存在的暗边
+// （P3-R174 的已知代价，本版修掉）。
+fn motion_tap(uv: vec2<f32>, gain: f32) -> vec3<f32> {
+    if depth_at(uv) >= 0.9999 && params.sky.x > 0.5 {
+        return sky_color(uv);
+    }
+    return textureSampleLevel(source, source_sampler, uv, 0.0).rgb * gain;
+}
+
+// P3-R174：相机运动模糊。把当前像素的世界点用上一帧的视图投影投回屏幕，
+// 与当前 uv 的差就是这一像素一帧内扫过的屏幕距离；沿这个方向取 4 个抽头。
+// 相机静止 ⇒ 重投影回同一个 uv ⇒ 速度为零 ⇒ 原样返回（帧逐字节不变）。
+// 天空像素没有可信深度，跳过。抽头按当前深度边界直接采，不做邻域深度剔除：
+// 动态物体的拖影边缘会带一点鬼影，属于这一档 "lite" 的已知代价。
+fn motion_blur_at(uv: vec2<f32>, center: vec3<f32>, gain: f32) -> vec3<f32> {
+    if params.motion.w < 0.5 || params.motion.x <= 0.0 {
+        return center;
+    }
+    let depth = depth_at(uv);
+    if depth >= 0.9999 {
+        return center;
+    }
+    let point = world_from_depth(uv, depth);
+    let homogeneous = params.previous_view_projection * vec4<f32>(point, 1.0);
+    if homogeneous.w <= 1e-6 {
+        return center;
+    }
+    let ndc = homogeneous.xy / homogeneous.w;
+    let previous_uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let velocity = (uv - previous_uv) * params.motion.x;
+    if dot(velocity, velocity) < 1e-12 {
+        return center;
+    }
+    // 上限挡住"相机瞬移后整屏抽到另一侧"的情形（重投影在遮挡边界会给出巨大位移）。
+    let limit = max(params.motion.y, 1e-4);
+    let offset = clamp(velocity, vec2<f32>(-limit), vec2<f32>(limit));
+    var accumulation = center;
+    var weight = 1.0;
+    for (var i = 1; i <= 4; i = i + 1) {
+        let t = f32(i) * 0.25;
+        let tap_weight = 1.0 - t * 0.5;
+        let forward = clamp(uv + offset * t, vec2<f32>(0.0), vec2<f32>(1.0));
+        let backward = clamp(uv - offset * t, vec2<f32>(0.0), vec2<f32>(1.0));
+        accumulation += motion_tap(forward, gain) * tap_weight;
+        accumulation += motion_tap(backward, gain) * tap_weight;
+        weight += tap_weight * 2.0;
+    }
+    return accumulation / weight;
+}
+
 @fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let sampled = textureSample(source, source_sampler, uv);
     let gain = exp2(params.exposure_ev);
     var linear = max(sampled.rgb * gain, vec3<f32>(0.0));
+    // P3-R174：在泛光之前做，拖影不参与 HDR 泛光的扩散（避免整屏泛白）。
+    linear = motion_blur_at(uv, linear, gain);
     if params.bloom > 0.0 {
         linear = linear + bloom_glow(uv) * params.bloom * 2.0;
     }
@@ -545,16 +983,45 @@ fn output_dither(uv: vec2<f32>) -> f32 {
         linear = linear + reflected * 0.45;
     }
     if params.water_params.x > 0.5 {
-        // P3-R87：屏幕空间折射——用波斜率扰动场景颜色，河床/水下物体随水面晃动。
-        let refracted = water_refraction(uv, params.camera_position.w);
-        linear = mix(linear, refracted, 0.30);
-        linear = linear + water_reflection(uv) * 0.65;
+        // P3-R171：只有水像素才合成折射/吸收/反射。天空与岸上像素的深度不是河床，
+        // 用它们算光程会把整屏压黑（折射过去是整屏生效的，这里一并收进水掩码）。
+        let surface = water_surface(uv);
+        if surface.valid {
+            // P3-R87：屏幕空间折射——用波斜率扰动场景颜色，河床/水下物体随水面晃动。
+            // P3-R171：光学吸收。水面是 blend、不写深度，`surface.bed` 就是河床，
+            // 光程 = 水位 − 河床 y；Beer–Lambert 逐通道透射让浅滩透亮、深水收暗。
+            // 折射混合之后整体乘一次透射（只乘一次：折射色和水面自身合成色共用同一段光程）。
+            let optical_depth = clamp(params.water.x - surface.bed.y, 0.0, 32.0);
+            let transmittance = exp(-params.water_abs.rgb * optical_depth * params.water_abs.w);
+            let grazing = clamp(1.0 - abs(surface.direction.y), 0.0, 1.0);
+            let refracted = water_refraction(uv, params.camera_position.w, optical_depth, grazing);
+            // P3-R172：散射项。只有吸收时河床的辐射会被乘到接近 0，深水在画面上收成死黑；
+            // 真实水体自己散射出一层水体色 `body`，权重是 `1 − T`，所以越深越接近它、
+            // 浅滩几乎不受影响（`T ≈ 1`）。
+            let body = params.water_scatter.rgb * params.water_scatter.w;
+            linear = mix(linear, refracted, 0.30) * transmittance + body * (1.0 - transmittance);
+            // P3-R170：平面反射有真实镜像几何，优先；未命中回退屏幕空间反射。
+            let planar = planar_reflection(uv, surface);
+            let screen = water_reflection(uv, surface);
+            linear = linear + select(screen, planar, length(planar) > 0.001) * 0.65;
+        }
     }
     if params.sky.x > 0.5 && depth_at(uv) >= 0.9999 {
         linear = sky_color(uv);
     }
     linear = linear + god_rays_at(uv);
     linear = mix(linear, params.fog.yzw, fog_at(uv));
+    // P3-R166：裁剪平面后的实体土壤剖面（只处理 `sect=1` 地形 + 裁剪同时存在的帧）。
+    let cut = section_cut(uv);
+    if (cut.a > 0.5) {
+        linear = cut.rgb;
+    }
+    // P3-R173：相机入水后的整帧体积吸收 + 散射。放在剖面封口之后、闪白之前，
+    // 保证水下的土壤剖面与 UI 之前的整个 3D 画面都过同一段光程。
+    // P3-R208：同一分支里再分岔 —— 向上打到水-气界面的像素换成 Snell 窗口。
+    if params.water_under.x > 0.5 {
+        linear = underwater_radiance(uv, linear);
+    }
     // P3-R86：暴雨闪电的屏幕闪光，Tonemap 前叠加，避免被曝光压掉。
     linear = linear + vec3<f32>(0.72, 0.80, 1.0) * params.cloud.y * 0.55;
     var mapped = tonemap_rgb(linear);

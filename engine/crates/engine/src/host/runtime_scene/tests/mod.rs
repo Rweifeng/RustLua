@@ -92,6 +92,7 @@ mod frame_extraction;
 mod frame_ledger;
 mod frame_view;
 mod gamepad_input;
+mod gpu_motion;
 mod import_settings;
 mod particle_streams;
 mod render_channels;

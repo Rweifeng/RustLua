@@ -271,10 +271,15 @@ impl RuntimeScene {
             |scene: &mut RuntimeScene, _| {
                 // Apply a pending scene.load so level switches happen between
                 // steps.
-                scene
-                    .script
-                    .process_scene_transition()
-                    .map_err(|error| SystemError::new(error.to_string()))
+                match scene.script.process_scene_transition_if_pending() {
+                    Ok(true) => scene.invalidate_spatial_caches(),
+                    Ok(false) => {}
+                    Err(error) => {
+                        scene.invalidate_spatial_caches();
+                        return Err(SystemError::new(error.to_string()));
+                    }
+                }
+                Ok(())
             },
         ));
         // 换图会把世界连同场景声明的 `Camera` 一起重建，宿主必须**紧跟其后**重新读一次
@@ -448,6 +453,27 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
+        // 表现层脚本回调（工程级 `on_frame(dt)`）：每个渲染帧一次，排在**所有**模拟/
+        // 动画推进之后、`Render` 这一帧内最后一格。宿主提取紧接在 `run_script_steps`
+        // 返回后发生，因此脚本写下的顶点/相机就是本帧真正被画出来的那一份。
+        //
+        // 为什么不做成 step 系统：表现层只依赖"最终状态"，一渲染帧同步一次即可；按固定步
+        // 跑会把同一份画面重复算 N 遍（追帧时 N 可达 2~3），帧率越低浪费越大。
+        self.add_builtin_frame_system(System::new(
+            "lua_frame",
+            ScheduleStage::Render,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                scene
+                    .script
+                    .call_frame(delta_seconds)
+                    .map_err(|error| SystemError::new(error.to_string()))?;
+                scene.script_micros = scene
+                    .script_micros
+                    .saturating_add(scene.script.last_frame_micros());
+                Ok(())
+            },
+        ));
     }
 
     /// Advances the runtime by `steps` fixed steps through the shared frame
@@ -517,6 +543,13 @@ impl RuntimeScene {
             // 放在传播世界变换之前：回调可以移动实体，渲染必须看到同一帧的结果。
             self.script.dispatch_collision_contacts()?;
         }
+        // P3-R238：推进**场景时钟**（秒）。程序化实例运动（实例批次的路径流）由引擎按它
+        // 求值，所以时钟必须跟着**模拟步**走：0 步帧不推进（那一帧没有模拟发生），
+        // 固定步档下逐帧确定（帧号 ⇒ 时刻一一对应）。
+        self.script.renderable_state().with(|state| {
+            let next = state.scene_time() + delta_seconds * steps as f32;
+            state.set_scene_time(next);
+        });
         self.pending_step_input = None;
         // WP2：本帧脚本/物理都改完局部变换后，统一传播一次世界变换——渲染与 Lua 的世界位置
         // 因此都来自同一次传播（3D 提取是 `&self`，不能自己触发传播，所以必须在这里做）。

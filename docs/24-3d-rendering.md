@@ -31,7 +31,7 @@
 
 `mesh=<项目相对路径 .glb/.gltf>`
 
-- 只接受项目相对路径，扩展名必须为 `.glb`/`.gltf`；特殊值 `__ground_plane__` 由渲染器合成地面接收平面。
+- 只接受项目相对路径，扩展名必须为 `.glb`/`.gltf`；特殊值 `__ground_plane__` 由渲染器合成地面接收平面，`__terrain__` / `__water__` / `__cells__` 分别由地形、水面、逐格网格生成器按**串里的数字**合成（串就是全部输入，所以没有第二份高度/位图状态）。
 - 网格来自 [gltf_asset.rs](../engine/crates/rustlua-assets/src/gltf_asset.rs) 的 CPU 侧 glTF 2.0/GLB 导入器（`IMPORTER_VERSION = "gltf-m8-07"`）：支持多 primitive、材质（`base_color_factor` / `base_color_texture`）、skins（JOINTS_0/WEIGHTS_0）、animations、图片。
 
 ### Camera3D
@@ -175,9 +175,16 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
      没有存储缓冲的设备（WebGL2）把 binding 2 换成 **64 字节 uniform**，`instance_model` 每条 draw 一个，
      实例化合批在构造期按能力关掉（`InstanceMode::{Storage,Uniform}`，`construct.rs`）。两条路都真画网格与阴影，
      不再有"能力不足就把 3D 通道整个占位"的分支。
-   - 材质 uniform（P3-R02 起 5×`vec4`）：`base_color`、`surface`（`x=metallic`、`y=roughness`、`z=skinned`）、
+   - 材质 uniform（P3-R165 起 **10×`vec4` = 160 字节**）：`base_color`、`surface`（`x=metallic`、`y=roughness`、`z=skinned`、`w=detail_scale`）、
      `emissive`（已乘强度）、`params`（`x=有 MR 贴图`、`y=有 emissive 贴图`、`z=有 normal 贴图`、`w=normal_scale`）、
-     `flags`（`x=有 occlusion 贴图`、`y=occlusion_strength`、`z=alpha_mode`（0=opaque/1=mask/2=blend）、`w=alpha_cutoff`）。旧 `mesh3d.wgsl` 只读前两个 `vec4`，缓冲区扩大不影响旧像素。
+     `flags`（`x=有 occlusion 贴图`、`y=occlusion_strength`、`z=alpha_mode`（0=opaque/1=mask/2=blend）、`w=alpha_cutoff`）、
+     `animation`（`x=动画模式`），外加 P3-R162–165 的四行 `clearcoat`（`x=factor`、`y=清漆粗糙度`）、
+     `sss`（`x=strength`、`y=wrap/厚度`）、`iridescence`（`x=factor`、`y=ior`、`z/w=厚度区间 nm`）、
+     `sheen`（`xyz=绒毛颜色`、`w=绒毛粗糙度`），见 §3.16。
+     旧 `mesh3d.wgsl` 只读前两个 `vec4`，缓冲区扩大不影响旧像素；打包点只有 `renderer/arena.rs` 一处，
+     `construct.rs` 的 `min_binding_size` 与之同为 160（两者共用常量 `MATERIAL_UNIFORM_ROWS`，
+     离线用例 `material_uniform_rows_match_the_wgsl_struct` 再把它与 WGSL `struct Material` 的
+     行数对账——三处单独漂移不会编译失败，只会在画面上表现成"某一瓣静默不生效"）。
    - 光照：方向光（`light.direction` 取反做漫反射）、`specular = pow(max(dot(reflect(-l,n), view),0), 2/(roughness^2))`、金属度混合镜面与漫反射；阴影按级联层采样 `textureSampleCompare`（`texture_depth_2d_array`），带 `0.002` 深度偏移。
    - 骨骼蒙皮：按 draw 的 `skinned` 选 `SKIN` 变体；开启时用 `joint_palette`（128 骨骼调色板）做 GPU 蒙皮，关闭时顶点着色器不含权重求和。
    - 环境基础光 `0.15`，最终 `brightness = (0.15 + (diffuse*(1-metallic) + specular*mix(0.04,1,metallic)) * shadow) * intensity`。
@@ -306,6 +313,19 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
   splat 权重混合四层高度，P3-R58 单步偏移、P3-R59 升级为固定点迭代 2 次的多步视差；
   再用中心/四邻高度曲率做 crevice AO（负曲率压暗叶片/石缝）。俯视偏移小，
   近景/低角度可见贴图起伏；强度 0.035。P3-R60 把多步视差/AO 限定在 `lod < 1`，远景不再多采 ~24 次高度。
+- **逐格巢体网格（P3-R213）**：`__cells__?cell=<米>&ox=&oy=&oz=&w=&h=&d=[&ds=1]&bits=<base64url>`
+  在 [cellmesh.rs](../engine/crates/rustlua-render/src/cellmesh.rs) 里按位图逐格生成实心立方体的**外露面**：
+  相邻实心格之间的共用面直接不出 ⇒ 面数随表面积而非体积走（3×3×3 满格 54 面；挖掉中心那格变 60 面，
+  因为六个邻居各多出一块内壁；挖掉一个角格仍是 54 面——少三块外壁、多三块内壁，但轮廓改了）。
+  规格串就是网格的唯一状态：Lua `cells3d.dig/fill` 返回**新的规范化路径**，由调用方交给 `MeshRenderer.mesh`
+  赋值，于是 GPU 侧那张按路径键的 `mesh_cache` 天然不需要脏标记或版本号（与 `terrain3d.raise` 返回新 spec 同形）。
+  默认 `ds=0` 单面。限制：单轴 ≤64 格、总格数 ≤32 768、`cell` ∈ 0.05..=64 米；下标越界、位图长度不符、
+  尾位非零都**报错而不是夹取**（夹取会挖到邻居）。位图用 base64url（`A-Za-z0-9-_`）手写编解码，不引新依赖。
+  这条是给「可挖巢体/巢内深度」用的引擎前置：Myrmex 侧 sim 格子 → `cells3d.build` → `mesh.set` 那半步未接。
+  契约门：`shared_faces_are_culled`、`dug_cell_reveals_its_six_inner_faces`、`spec_path_round_trips`、
+  `malformed_specs_are_rejected`（rustlua-render）；像素门：
+  `cells_sentinel_renders_and_digging_a_corner_changes_pixels`、
+  `cells_double_sided_bit_reaches_the_material_only_where_back_faces_are_seen`（rustlua-gpu）。
 - **降级留痕**：能力不足时 `hdr_active=false`、告警一次并给出 `hdr_unavailable_reason()`；`RenderFrameMetrics` 暴露 `hdr_active/scene_format/tonemap`，本轮起再暴露 `bloom_active/fxaa_active/soft_shadows_active/filtered_shadows_active/ssao_active/ssr_active/contact_shadows_active/fog_active/sky_active/god_rays_active/dof_active`，性能面板与「复制报告」可查。
 - **验收**：`cargo test -p engine hdr`；HDR golden 报告 `pre_tonemap_max>1`、`post_tonemap_max≤1`、`ui_delta≤1`（见 `baselines/p3/hdr`）。
 
@@ -357,7 +377,8 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
 
 - **单一资产类型**：glTF 材质与 `.material` 都落到 `rustlua_assets::mat_asset::MaterialAsset`
   （base color / metallic-roughness / emissive / 五类贴图 / normal_scale / occlusion / alpha /
-  double_sided / ibl_intensity）。GPU 侧只有 `GpuMaterial::from_material` 一条解释路径。
+  double_sided / ibl_intensity，以及 P3-R162–165 的 clearcoat / sss_strength / iridescence /
+  sheen_color+sheen_roughness 四组，见 §3.16）。GPU 侧只有 `GpuMaterial::from_material` 一条解释路径。
 - **`.material` 格式**：`version=1` + 严格 `key=value`（未知字段、重复 `version`、非有限数、
   越界值、非法路径都报「文件:行号:原因」）。解析器与编码器同在 `rustlua-assets/src/mat_asset.rs`，
   往返测试覆盖全字段；贴图路径必须是工程相对的 png/jpg/jpeg。
@@ -372,6 +393,10 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
   B=金属度）、`emissive_texture` / `emissive_factor` / `KHR_materials_emissive_strength`、
   `normal_texture`、`occlusion_texture`、`alpha_mode/cutoff`、`double_sided`。R02-2 先把 ORM 与
   emissive 接到着色器；normal/occlusion 的取样与切线生成见 §3.5（R02-3）。
+  P3-R162/R164/R165 起另读 `KHR_materials_clearcoat`、`KHR_materials_iridescence`、
+  `KHR_materials_sheen` 的因子，P3-R163 读厂商扩展 `RUSTLUA_materials_sss`
+  （`gltf` crate 开了 `extensions` feature，四者都经 `Material::extensions()` 的原始 JSON
+  取值，缺失即回落到默认；sheen 颜色按分量夹到 0..=1），见 §3.16。
 - **GPU 上传**：base color / emissive 用 `Rgba8UnormSrgb`，ORM 用 `Rgba8Unorm`（数据贴图不能过
   gamma）。贴图按「内容 hash + 尺寸 + 色彩空间」去重；缺省绑定为 1×1 白（因子直通）。
 - **着色**：PBR 片元 `metallic = factor × MR.b`、`roughness = factor × MR.g`（下限 0.045），
@@ -384,7 +409,8 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
   唯一的**故意坏掉的**夹具 `assets/materials/_p3-r02-invalid.material` 用 `_` 前缀走
   「开发期文件」约定（`assetc::is_dev_artifact`）：不进扫描/导入/发行包，因此负向门不会把
   示例项目的导入结果打成失败，而 `wp0_pbr_material_golden` 照样读得到它。
-- **验收**：`cargo test -p rustlua-assets mat_asset`（4 条：往返、缺省值、14 条非法输入、glTF 映射）；
+- **验收**：`cargo test -p rustlua-assets mat_asset`（4 条：往返、缺省值、25 条非法输入
+  （其中 11 条是 §3.16 的新键）、glTF 映射）；
   `cargo test -p rustlua-assets-import material_importer`（合法通过 / 非法逐条报错含行号 / BOM 拦下）；
   `cargo test -p assetc`（示例项目整体导入 `errors=0`）；
   `wp0_pbr_material_golden` 读数 `override=60`、`orm_vs_flat=13`、`emissive=191`、
@@ -791,6 +817,128 @@ R07-3 的 instanced quad 一直在世界 XY 平面上展开：2D 正交相机下
   （`count=50000`、`state_bytes=2400000`、`content_pixels=578`、`default_mode=cpu`）；
   报告候选进 `baselines/p3/particle-r07-4`。读数见计划 §10 的 P3-R07-4 行。
 
+### 3.16 现代材质模型：清漆 / SSS / 薄膜虹彩 / 绒毛（P3-R162–165）
+
+四个"近景才看得见"的材质瓣，用来把甲壳、复眼、半透腹部、绒毛轮廓这类有机表面从
+"一层 GGX 塑料"里救出来。四瓣**只在 PBR 片元里**参与着色，数据面共用一条路：
+`.material` 键 → `MaterialAsset` → `GpuMaterial::from_material` → `arena.rs` 的
+10×`vec4`（160 B）→ `mesh3d_pbr.wgsl` 的 `Material`。
+
+| 瓣 | `.material` 键 | glTF 来源 | 默认值 |
+|---|---|---|---|
+| 清漆（R162） | `clearcoat`、`clearcoat_roughness` | `KHR_materials_clearcoat` | 0（关闭） |
+| SSS 近似（R163） | `sss_strength`、`sss_thickness` | 厂商扩展 `RUSTLUA_materials_sss { strength, thickness }` | 0（关闭） |
+| 薄膜虹彩（R164） | `iridescence`、`iridescence_ior`、`iridescence_thickness_min/max` | `KHR_materials_iridescence` | 0；ior 1.3、厚度 100–400 nm（KHR 默认） |
+| 绒毛（R165） | `sheen_color`（0..=1 三分量）、`sheen_roughness` | `KHR_materials_sheen` | 颜色 0（关闭）、粗糙度 0 |
+
+- **清漆**：在基层之上叠**第二个 GGX 瓣**（`clearcoat_lobe`），F0 固定为介电质 `0.04`、
+  粗糙度独立于基层（下限同 `MIN_ROUGHNESS`）；基层被 `1 - factor·F_cc` 衰减，能量不凭空多出来。
+  直接光与点光各算一次，IBL 侧同口径再叠一层环境清漆并衰减 `spec_ibl`。
+- **SSS 近似**：两项，都乘 `sss_strength` 且被 `metallic` 压掉（金属没有次表面）。
+  ① **wrap 漫反射**：`max((n·l + w)/(1 + w), 0)` 把明暗终止线推过 90°，`w = sss_thickness`；
+  ② **背向透光**（Frostbite 式）：`trans_l = normalize(l + n·0.35)`、`pow(max(dot(v,-trans_l),0), 3)`，
+  用 base color 染色后加在直接光之外，逆光时勾出薄甲壳的轮廓。
+- **薄膜虹彩**：`iridescent_f0` 按光程差 `OPD = 2·ior·thickness·cos(薄膜内折射角)` 在
+  650/510/475 nm 三个波长上取 `0.5 + 0.5·cos(phase)`，用 `iridescence` 因子把基础 F0
+  混向薄膜 F0。**只在 PBR 里改 F0**，不做真光谱积分，也不改相位以外的能量分布。
+- **绒毛**：`sheen_lobe` 用 Estevez–Kulla 的 ASA/Charlie 分布
+  `D = (2 + 1/r)·sin²θ_h^(1/(2r)) / 2π`、`V = 1/(4(n·l + n·v − n·l·n·v))`，直接光与点光
+  各算一次；基层按 `1 − max(sheen_color)` 衰减，能量不凭空多出来。与清漆相反：D 在
+  `n·h≈1` 处为 0、能量集中在掠射角——这正是 setae 在逆光里的绒边。**有意不进 IBL**：
+  环境侧的绒毛需要方向相关的积分，这一批不做，避免在半解析的环境光上伪造一层假高光。
+  `sheen_color` 全 0 时 `rgb` 精确为 0、衰减精确为 1，调用点逐字节回到旧路径。
+  实现上写成**单出口**：`n·l`/`n·v` 用掩码归零而不是早退（实测同一表达式写成早退版本，
+  swiftshader 回退适配器会把整帧渲成纯黑；清晰度上也无损失）。
+- **为什么 SSS 走厂商扩展而不是 `KHR_materials_diffuse_transmission`**：那个扩展的语义是
+  **折射透射**（能看穿物体、要 thickness 贴图与 IOR），本引擎这套是 wrap + 背向透光的
+  **不透光**近似。把玻璃资产解释成半透甲壳是错的语义，所以宁可自己起名也不借标准名。
+  `gltf` crate 1.4 没有 clearcoat/iridescence 的类型化 API，三者统一经
+  `Material::extensions()` 的原始 JSON 读取（crate feature `extensions`）。
+- **零值逐字节退化**：四瓣的因子为 0 时每条改过的表达式都精确回到原式
+  （`x·1.0`、`x+0.0`、`mix(a,b,0.0)`、`if factor <= 0 { return 衰减=1 }`、
+  `color·0 = 0` 且 attenuated=1），所以不含新键的旧 `.material`/glTF 渲染结果不变。
+  这条由**像素门自己的复原断言**盯：`material_lobes` ⑥ 与 `material_preview` 都要求
+  "清掉预览后与磁盘材质逐字节相同"。`wp0_pbr_golden` 是手工 example（不在 verify.ps1 里），
+  本批**没有**重跑它，不能拿它当证据。**不新增变体轴**：四瓣都按 uniform 值求值，
+  编译预算与变体矩阵不变。
+- **验收**：`cargo test -p rustlua-assets`（104 条，含 10 个新键的往返、11 条越界拒绝
+  （非法输入用例总数因此从 14 涨到 25）、glTF 四扩展映射）；像素门
+  `RUSTLUA_REQUIRE_GPU=1 cargo test -p rustlua-gpu --lib material_lobes -- --test-threads=1 --nocapture`
+  实测 `liveness=97 clearcoat=99 sss=14 iridescence=43 sheen=141 sheen_shape=34 restored=true`
+  （对照值：四瓣全 0 恒为 0；门槛取实测约一半 = 40/7/20/70/17）。门的场景把主光与相机
+  关于地面法线**镜像对齐**，否则针尖清漆瓣（α = roughness² ≈ 1e-3）在 n·h≈0.65 处恒为 0，
+  门会假红。⑤b 单独钉**分布项**：两次 `max(sheen_color)` 相同 ⇒ 基层衰减逐字节相同，
+  差值只可能来自 ASA 随粗糙度（0.15 vs 0.9）的变化，`distribution` 整项写错会红。
+- **买不到的部分**：清漆没有独立法线贴图（不能用清漆层做磨损划痕）；SSS 不是真扩散剖面
+  （没有 profile/半径，厚度是标量而非贴图，背光项的 `n·0.35` 是固定经验值）；
+  虹彩按**整份材质**生效，没有 mask 贴图，因此"只有复眼虹彩"要靠拆网格/拆材质而不是靠一张图；
+  三波长近似在厚度极大时会缺色带（真光谱要 30+ 采样）；绒毛没有环境项（IBL 侧不发亮）、
+  没有颜色/粗糙度贴图（整份材质一个值），也不是真丝状几何——轮廓绒边靠瓣而不是
+  alpha card 壳层（docs/03 §10.3 的近景壳层方案仍未做）。
+
+### 3.17 地形实体剖面封口（P3-R166）
+
+高度场只有一层皮：相机裁剪平面把近侧地形整块丢弃后，屏幕上留下一个能看见天空的缺口，
+而真实土块应当是实心的。`sect=1` 让 Tonemap 在切口处补上实体土壤，**不需要额外几何**，
+也不需要为每个视角重建模型。
+
+- **数据面**：`TerrainSpec::section`（spec 串 `&sect=1`）→ `TerrainSpec::height_map()`
+  烘 512² RGBA8（R=高 8 位、G=低 8 位，16 位定点，覆盖整张 `size`）→
+  `Renderer::upload_section_height`。分块地形（`cx/cz/cs/sk`）共用**整张**高度图：
+  `section_fields` 的键是去掉分块参数的 spec，每块只在 `CachedMesh.section_height`
+  里额外记块心偏移，合成时补进 `world_to_local` 的平移列。
+- **uniform**：Tonemap 参数扩到 **96 floats / 384 B**：`section_plane`（`xyz` 法线、
+  `w` 偏移）、`world_to_local`（4×4）、`section_terrain`（`x=min_y`、`y=span`、
+  `z=半边长`、`w=启用`）。没有 `sect=1` 地形时 `w=0` 并绑 1×1 占位高度图。
+- **着色器**：`section_cut(uv)` 先按 `world_from_depth(uv, 1.0)` 重建相机射线，
+  求与平面的交点 `t`；交点过远/出屏/被场景几何挡住（比场景深度更远）都跳过；
+  再变换到地形局部坐标、按 `local/size+0.5` 双线性解码高度。交点**高于**地表说明
+  射线还没进土块，跳过；低于地表则画层理：按世界 `y` 的正弦分层（黏土↔钙积层，
+  低频噪声让层线随地形起伏）+ 两级颗粒噪声 + 顶端 0.25 单位内压草皮色 +
+  随深度变暗（低成本 AO）。平面法线参与单向光照，所以切口朝向随镜头变化。
+- **位置**：合成发生在距离雾之后、闪电之前，只在 HDR Tonemap 路径执行；LDR 回退
+  路径没有封口（与其它 Tonemap 能力同一条边界）。
+- **验收**：离线 `tonemap_uniform_layout_matches_the_wgsl_struct`（解析 WGSL `Params`
+  对账，反面对照改常量 → 红）+ `tonemap_validates_with_naga`；像素门
+  `section_cut_fills_the_clipped_terrain_hole` 在 `sect=1` + 裁剪平面时要求探针为暖色，
+  去掉 `sect=1` 回到清屏蓝 `[50,78,112]`，清掉平面后必须与封口帧有差；反面对照
+  关掉合成 → 门红。
+- **买不到的部分**：层理是程序化颜色，没有根系/石块/含水层的真实几何；高度图分辨率
+  0.94 单位/texel（480 单位地形），细窄沟壑的轮廓会软；剖面只画高度场内部的土，
+  巢道/巢室等内部空间没有深度信息，玻璃折射与可挖巢体仍未做。
+
+### 3.18 开发期 A/B 开关与性能归因口径（P3-R183–R203）
+
+这些开关只用于开发期归因与基线对照，发布默认全部「不启用」——缺省行为逐字节不变：
+
+| 开关 | 作用 | 落点 |
+| --- | --- | --- |
+| `--no-cull` / `--no-instance` | 关视锥剔除 / 关实例合批（M8-08 基线） | `Renderer::new_offscreen` 的 `cull/instancing` |
+| `--skip-mesh <子串>` | 网格路径含该子串的 3D drawable 整个跳过（P3-R184 归因） | `frame_3d_draws` 缓存查询之前 |
+| `--no-depth-sort` | 关不透明前到后排序（P3-R185） | `frame_3d_draws` 末尾 |
+| `--no-planar-cull` | 关平面反射的镜像视锥剔除（P3-R191） | `PlanarReflection` 通道 |
+| `--no-point-face-cull` | 关点光阴影逐面方向锥剔除（P3-R194） | 点光阴影面循环 |
+| `--planar-divisor <1..=8>` | 平面反射目标分辨率除数（P3-R196，默认 2 = 半分辨率） | `ensure_planar_reflection_target` |
+| `--water-cheap` | 全部水面强制廉价光照档（P3-R197：跳过 SH9/点光/级联阴影，保留直射+镜面 IBL） | `WaterSpec.cheap_lighting` / arena 的 `animation.z` |
+| `--shadow-resolution <512/1024/2048/4096>` | 方向光 CSM 阴影图边长（P3-R198，默认 2048）：构建期一次建纹理与绑定组，512/1024 只省显存、时间收益≈0（阴影 pass 非填充瓶颈） | `Renderer::new_with_shadow_resolution` |
+| `--shadow-cascades <1..=4>` | 方向光 CSM 实际渲染的级联层数（P3-R199，默认 4）：少渲染的远级联在构建期清成「全亮」，只失去该距离的阴影；四周恒定的几何/命令成本随档线性下降 | `Renderer::new_with_shadow_resolution` 的级联上限参数 |
+| `--point-shadow-resolution <512/1024>` | 点光 cube 阴影面的边长（P3-R200，默认 1024）：8×6 面的深度数组按档建，512 档显存 192→48 MiB，默认路径不变 | `Renderer::new_with_shadow_resolution` 的点光面参数 |
+| `--point-shadow-lights <1..=8>` | 点光阴影盏数预算（P3-R202，默认 8 = 旧行为）：只给相机焦点最近的 N 盏录 6 面，其余槽位 params 全零 ⇒ 着色器 `params.w>0` 判定无效；运行期 setter，不重建纹理 | `Renderer::set_point_shadow_light_budget` |
+| `--quality <default/medium/low>` | 宿主画质预设（P3-R204 起三档）：medium = planar 1/4（R196）+ 水面廉价光照（R197）；low = medium + 点光 cube 阴影 512（R200）。地形廉价档未并入（视觉未定档）。在逐项开关之后应用，覆盖同名单项值 | `GameApp::with_quality_medium` / `with_quality_low` |
+| `--terrain-cheap` | 地形廉价细节档（P3-R203）：按块 `__terrain__?cheap=1` 或宿主全局覆盖，跳过近处的 2 步视差 + 5 点裂缝 AO + 5 步太阳微阴影；图集/法线/splat 不变，默认像素逐字节不变 | `TerrainSpec.cheap` / `Renderer::set_terrain_cheap_override`（uniform `animation.w`） |
+| `--draw-distance <米>` | 3D 最大绘制距离（P3-R206，默认 0 = 关闭）：按「圆心距 − 包围球半径」剔，超出的实例并入 `cull_frustum`（候选分母不变）；硬截断无渐隐，视觉代价未目鉴定档、未并入 `--quality` | `Renderer::set_max_draw_distance` |
+| `--draw-distance-filter <子串>` | 距离档只作用于网格路径含该子串的实例（P3-R206；默认全体，植被只掐草用 `grass`，Myrmex 草路径为 `assets/models/grass*.glb`） | `Renderer::set_max_draw_distance_filter` |
+| `--water-refraction <增益>` | 水面折射偏移按光程加权（P3-R207）：Tonemap 水掩码内把写死的 `0.0035` 换成 `基准 + 增益 × 逐像素光程 × 掠射角`，光程复用 P3-R171 的「水位 − 河床 y」；两个值走 `water_under.zw` 空槽（132 浮点布局不变）。默认 0 = 旧常数，默认像素逐字节不变；增益非成本档而是画质档，视觉代价未目验、未并入 `--quality` | `Renderer::set_water_refraction_gain`（宿主 `GameApp::with_water_refraction`） |
+| `--underwater-view <0..=1>` | 水下视角把水-气界面换成 Snell 窗口 + 全反射镜像（P3-R208）：只在相机入水（沿用 P3-R173 的开关）且档位 > 0 时，向上打到界面的像素按 `refract` 取界面上方的世界，临界角外（η = 1/1.333 ⇒ θc ≈ 48.6°）换成全反射银面 + 临界角亮环，光程改用「相机 → 界面」的深度；四值走新增 `submersion` vec4 ⇒ Tonemap uniform 布局 132 → 136。默认 0 = 只有 P3-R173 的整帧吸收，像素逐字节不变；画质档而非成本档，视觉代价未目验、未并入 `--quality` | `Renderer::set_submerged_view_gain`（宿主 `GameApp::with_underwater_view`） |
+| `--clip-cap <米>` | 剖切口的实体封口深度（P3-R209）：`mesh3d_pbr.wgsl` 在相机裁剪平面处给背面画的那条封口带宽，从写死的 0.08 m（P3-R54）改成 `select(0.08, camera.cap.x, camera.cap.x > 0.0)` —— > 0 时从切面向内这么深一路画实体截面，切口不再是薄皮而是一段有厚度的剖切体；值走新增 `cap: vec4<f32>` ⇒ Camera uniform 布局 40 → 44 浮点（160 → 176 字节）。默认 0 = 逐字节复现旧的 0.08 薄带；只有双面网格进得了这一档（水面 `double_sided`、地形 `skirt > 0`），单面 glb 壳的背面被剔除 ⇒ 没有封口像素——开关在数据侧：`.material` 的 `double_sided=true` 或 glTF `doubleSided`（金标门 `double_sided_removes_culling`），也可不改数据、由下一行的 `--clip-cap-both-sides` 在运行期强制双面（P3-R211）；运行期由脚本推进：`render.set_clip_cap(米)`（P3-R210，0..=128 校验、0 = 关档，宿主每帧只在值变化时写渲染器；这一段接线无门，见 Myrmex §21.496 反面对照 D）；画质档而非成本档，**未目验、未并入 `--quality`** | `Renderer::set_clip_cap_depth`（宿主 `GameApp::with_clip_cap`；反射 pass 固定传 0，那条裁剪面是水位不是会话剖面） |
+| `--clip-cap-both-sides` | 让封口吃到**单面**网格（P3-R211）：本帧真挂了会话裁剪平面时，主网格通道的双面轴取 `材质.double_sided \|\| 本档`，于是 glb 壳、`__ground_plane__` 这类背面第一遍就被剔除的网格也能在切口侧拿到实体截面；命中的是 P3-R170 反射 pass 早已预热的同一份双面 opaque 变体 ⇒ **不新建管线**，而阴影与平面反射的选键仍按材质自身（否则剖面的背面会进阴影图，把 P3-R54 起的阴影几何改掉）。无值开关，默认关 = 像素逐字节不变；`--clip-cap <米>` 的深度档对它照样有效（关＝贴着切面的 0.08 m 薄皮，开＝向内铺开一段实体剖切体）。运行期由 Lua `render.set_clip_cap_both_sides(bool)` 推进；画质/几何档而非成本档，**未目验、未并入 `--quality`**，Myrmex 特写已接线（Myrmex §21.498），但实测其 `assets/models` 下 glb 全部 `doubleSided=true`（生成器默认）⇒ 对现有内容是空操作，这条档留给以后的单面资产 | `Renderer::set_clip_cap_both_sides`（宿主 `GameApp::with_clip_cap_both_sides`） |
+| `--shader-dir <dir>` | shader 源覆盖 + 150ms 去抖热重载（P3-R05，见 §3.11） | 启动期 + 轮询 |
+
+性能读数口径（活体 A/B 必须遵守）：
+
+1. 只认**同批相邻**两跑的档间差；整批桶同向 +20~30% 是 GPU 时钟/场景状态漂移，跨批绝对值不可比。P3-R205 起台账 JSON 自带 `environment`（生效后的 quality/planar/water/terrain/阴影/绘制距离九项），跨批引用前先核这一组，排除档位错配。
+2. 每帧剔除读数走台账 JSON `cull` 桶与 **F3 覆盖层**（CULL CAND / CULL REJ / PCULL / SCULL / PL CULL / FACE CULL，P3-R193）；覆盖层不是 UI 元素，目验通道是 F2 截图（`screenshots/`）。
+3. 用 `--shader-dir` 覆盖档做逐项归因时，**不能把某个 binding 的全部用途删掉**——naga 会改变模块签名，管线布局校验会拒绝覆盖并回退内置源（tonemap 实测；见 §21.481）。改用运行期恒假的 uniform 阈值让分支保留。
 ## 4. Lua API 概览
 
 3D 相关全局表（完整签名见 [18-lua-api.md](18-lua-api.md)）：

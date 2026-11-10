@@ -51,12 +51,20 @@ pub(super) fn register_all(
         let interact: Table = lua.globals().get("interact")?;
         interact_prompt::register(lua, interact, Rc::clone(&state))?;
     }
-    // 可渲染组件的绑定已下沉到渲染域（P1 ⑤-10）：sprite / quad / mesh / light 四张表。
+    // 可渲染组件的绑定已下沉到渲染域（P1 ⑤-10）：sprite / quad 两张基底表。
     {
         let renderable = state.borrow().renderable.clone();
         let world = state.borrow().world.clone();
         let project_root = state.borrow().project_root.clone();
         crate::script::domain::render::renderable_lua::install(
+            lua,
+            &renderable,
+            &world,
+            &project_root,
+        )?;
+        // M81：mesh / light / terrain3d / water3d 属 3D 包，2D 构建不登记。
+        #[cfg(feature = "3d")]
+        crate::script::domain::render::renderable_lua::install_3d(
             lua,
             &renderable,
             &world,
@@ -68,16 +76,27 @@ pub(super) fn register_all(
         let world = state.borrow().world.clone();
         crate::script::domain::ui::world_text_lua::install(lua, &world)?;
     }
-    // 变换绑定已下沉到 ECS 域（P1 ⑤-10）：transform / transform3d 两张表。
+    // 变换绑定已下沉到 ECS 域（P1 ⑤-10）：transform 基底表（按组件分派，不按维度裁）。
     {
         let world = state.borrow().world.clone();
         crate::script::domain::ecs::transform_lua::install(lua, &world)?;
+        // M81：transform3d 属 3D 包，2D 构建不登记。
+        #[cfg(feature = "3d")]
+        crate::script::domain::ecs::transform_lua::install_3d(lua, &world)?;
     }
-    // 相机绑定已下沉到相机域（P1 ⑤-8）：`camera` / `camera3d` / `camera2d` 三张表。
+    // 相机绑定已下沉到相机域（P1 ⑤-8）：`camera` / `camera2d` 两张基底表。
     {
         let camera = state.borrow().camera.clone();
         let world = state.borrow().world.clone();
         crate::script::domain::camera::camera_lua::install(
+            lua,
+            &camera,
+            &world,
+            installers.pointer_cell(),
+        )?;
+        // M81：camera3d 属 3D 包，2D 构建不登记。
+        #[cfg(feature = "3d")]
+        crate::script::domain::camera::camera_lua::install_3d(
             lua,
             &camera,
             &world,
@@ -93,17 +112,23 @@ pub(super) fn register_all(
     }
     // grid 是纯网格换算（无状态），跟着网格数学留在 gameplay。
     crate::script::domain::gameplay::grid_lua::install(lua)?;
-    // 动画绑定已下沉到动画域（P1 ⑤-10）：nimation / nimation3d 两张表。
+    // 动画绑定已下沉到动画域（P1 ⑤-10）：animation 基底表。
     {
         let animation = state.borrow().animation.clone();
         let world = state.borrow().world.clone();
         crate::script::domain::animation::animation_lua::install(lua, &animation, &world)?;
+        // M81：animation3d 属 3D 包，2D 构建不登记。
+        #[cfg(feature = "3d")]
+        crate::script::domain::animation::animation_lua::install_3d(lua, &animation, &world)?;
     }
-    // 物理绑定已下沉到物理域（P1 ⑤-9）：`physics` / `physics3d` 两张表。
+    // 物理绑定已下沉到物理域（P1 ⑤-9）：`physics` 基底表。
     {
         let physics = state.borrow().physics.clone();
         let world = state.borrow().world.clone();
         crate::script::domain::physics::physics_lua::install(lua, &physics, &world)?;
+        // M81：physics3d 属 3D 包，2D 构建不登记。
+        #[cfg(feature = "3d")]
+        crate::script::domain::physics::physics_lua::install_3d(lua, &physics, &world)?;
     }
     // `particles` 留在脚本层：粒子是 `rustlua-ecs` 的发射器实例列表，没有领域规则要搬。
     particles::register(lua, Rc::clone(&state))?;

@@ -1,5 +1,5 @@
--- api_core：核心运行时的七个步骤 —— 实体身份 / 代际 / 生命值与标签 / 事件总线 /
--- 数据 schema / 资源与平台 / 存档。
+-- api_core：核心运行时的八个步骤 —— 实体身份 / 代际 / 生命值与标签 / 事件总线 /
+-- 数据 schema / 资源与平台 / 存档 / 渲染调参。
 --
 -- 每个步骤只主张一件事，右侧 API 卡列出这一步**真实调用**的函数，页脚写着按键与结论。
 -- 所有读数都来自 API 读回（脚本不编造演示数字），因此读回值对了就等于接口语义还在。
@@ -492,6 +492,49 @@ local steps = {
             save.slot(nil)
             t:eq(save.slot_get(), nil, "save.slot(nil) restores the default slot")
             t:eq(save.read("api_core.missing"), nil, "unknown key reads nil")
+        end,
+    },
+    {
+        id = "render_quality",
+        title = "Render quality",
+        claim = "set_quality 只收 1..=3 并回 (ok, reason)；stats 恒返回四个数值键（未开渲染时为 0）",
+        api = { "render.set_quality", "render.stats" },
+        code = "ok, reason = render.set_quality(2); stats = render.stats()",
+        enter = function()
+            local ok, reason = render.set_quality(2)
+            action = string.format("quality=2 ok=%s %s", tostring(ok), reason)
+        end,
+        run = function()
+            local stats = render.stats()
+            lab.note(string.format(
+                "draw_calls=%s vertices=%s triangles=%s",
+                dash(stats.draw_calls),
+                dash(stats.vertices),
+                dash(stats.triangles)
+            ))
+        end,
+        read = function()
+            local stats = render.stats()
+            return {
+                draw_calls = dash(stats.draw_calls),
+                vertices = dash(stats.vertices),
+                triangles = dash(stats.triangles),
+                set_pass_calls = dash(stats.set_pass_calls),
+            }
+        end,
+        check = function(t)
+            local ok, reason = render.set_quality(2)
+            t:ok(ok, "set_quality(2) accepted: " .. dash(reason))
+            local bad_ok, bad_reason = render.set_quality(4)
+            t:ok(not bad_ok, "set_quality(4) rejected")
+            t:ok(type(bad_reason) == "string" and #bad_reason > 0, "rejection carries a reason")
+            ok = render.set_quality(1)
+            t:ok(ok, "set_quality(1) accepted")
+            local stats = render.stats()
+            t:ok(type(stats) == "table", "stats returns a table")
+            for _, key in ipairs({ "draw_calls", "vertices", "triangles", "set_pass_calls" }) do
+                t:ok(type(stats[key]) == "number", "stats." .. key .. " is a number")
+            end
         end,
     },
 }

@@ -185,7 +185,20 @@ fn check_project_path(
     extensions: &'static [&'static str],
     sentinels: &'static [&'static str],
 ) -> Result<(), String> {
-    if sentinels.contains(&raw) {
+    if sentinels.iter().any(|sentinel| {
+        // P3-R219：**以 `?` 结尾**的哨兵条目按前缀匹配。带参数的规格串
+        // （`__terrain__?size=240&…`、`__cells__?…&bits=…`）有无限多种写法，逐条列进名单
+        // 必然漏——R218 就是名单只写了三张哨兵、少写 `__cells__`，于是真引擎拒绝、
+        // lupa 桩门整条看不见。前缀档只放行**形状**；参数级合法性仍由引擎解析器兜底
+        // （场景加载走 `typed_scene::validate_component_payload`，编辑器写字段走
+        // `actions::components` 的 `from_component_str`），本层不复制第二份解析器。
+        if sentinel.ends_with('?') {
+            // 前缀**含**那个 `?`：`__terrain__?size=…` 命中，`__terrain__nope` 不命中。
+            raw.starts_with(sentinel)
+        } else {
+            *sentinel == raw
+        }
+    }) {
         // 内置值（哨兵）不是路径，引擎解析器直接接受。
         return Ok(());
     }
@@ -965,22 +978,37 @@ const UI_LAYOUT_FIELDS: &[FieldSchema] = &[
 // ---------------------------------------------------------------------------
 
 /// `DirectionalLight::to_component_str`：`direction=..;color=..;intensity=..`
+///
+/// P3-R221 补上点光的三个键（`Light::from_component_str` 早就认它们，示例工程
+/// `scenes/unified.scene` 的 `EmberLight` 也在写）。注意 required 的口径差：引擎解析器
+/// 只在 `type=point` 时**才**强制 `position`/`range`，而 `FieldSchema` 没有条件必填的表达 ⇒
+/// 这里只能都标 optional，"点光少了 position"由引擎解析器负责，面板保存走的就是它。
 const LIGHT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("direction", FieldKind::Vec3, true),
     FieldSchema::new("color", FieldKind::Vec3, true),
     FieldSchema::new("intensity", FieldKind::Number, true),
+    FieldSchema::new("type", FieldKind::Enum, false).with_choices(&["directional", "point"]),
+    FieldSchema::new("position", FieldKind::Vec3, false),
+    FieldSchema::new("range", FieldKind::Number, false),
 ];
 
 /// `MeshRenderer::to_component_str`：`mesh=<项目相对路径>[;material=<.material 路径>]`
 ///
 /// 规则与 `mesh3d::validate_mesh_path` **同一口径**：非空、工程内相对、
-/// 扩展名 `.glb`/`.gltf`，外加内置哨兵 `__ground_plane__`。`material` 可选。
+/// 扩展名 `.glb`/`.gltf`，外加内置哨兵。P3-R219 把四张哨兵全部列进来（此前只有
+/// `__ground_plane__`，于是把 terrain/water/cells 规格串写进 `.scene` 的工程在审计里
+/// 整片判非法）；带参数的那三张按前缀匹配，约定见 [`check_project_path`]。
 const MESH_RENDERER_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("mesh", FieldKind::Text, true).with_rules(&[
         FieldRule::NonEmpty,
         FieldRule::ProjectPath {
             extensions: &["glb", "gltf"],
-            sentinels: &["__ground_plane__"],
+            sentinels: &[
+                "__ground_plane__",
+                "__terrain__?",
+                "__water__?",
+                "__cells__?",
+            ],
         },
     ]),
     FieldSchema::new("material", FieldKind::Text, false).with_rules(&[FieldRule::ProjectPath {
@@ -1694,7 +1722,19 @@ mod tests {
                     .to_component_str(),
                 ],
             ),
-            ("Light", vec![Light::default().to_component_str()]),
+            (
+                "Light",
+                vec![
+                    Light::default().to_component_str(),
+                    // P3-R221：方向光样本抓不到"编码器会写、schema 没登记"——点光才写
+                    // `type/position/range`，示例工程 `EmberLight` 那行就是这么漂出去的。
+                    Light::from_component_str(
+                        "direction=0,-1,0;color=1,0.45,0.15;intensity=2;type=point;position=0,0.8,0;range=6"
+                    )
+                    .expect("valid point light")
+                    .to_component_str(),
+                ],
+            ),
             (
                 "MeshRenderer",
                 vec![
@@ -2382,10 +2422,23 @@ mod tests {
 
         // 网格：非空 / 工程内相对 / `.glb`/`.gltf` / 内置哨兵。
         let mesh = &registry["MeshRenderer"];
+        let cells_spec =
+            rustlua_render::cellmesh::CellMeshSpec::new(1.0, [0.0, 0.0, 0.0], [4, 4, 4])
+                .mesh_path();
         let mesh_samples = [
             ("assets/models/cube.glb", true),
             ("assets/models/cube.gltf", true),
             ("__ground_plane__", true),
+            // P3-R219：三张带参数的哨兵。此前名单只有 `__ground_plane__`，所以这三条
+            // 在 schema 侧一律判非法、在引擎侧一律合法——审计/Inspector ⚠ 与运行时
+            // 对同一份 `.scene` 给相反答案（`__cells__?…` 那条就是 R218 的同族形状）。
+            ("__terrain__?size=240&res=96&amp=2.4&seed=7", true),
+            ("__water__?size=10&res=8&y=0.06&amp=0.02&seed=3", true),
+            // 反面对照①：前缀写错（没有 `?`）不能命中前缀档，必须落回扩展名判定被拒。
+            ("__terrain__nope", false),
+            // 反面对照②：只有 `__cells__` 这张哨兵来自真实编码器，抄进来的串改一个字节
+            // 就两边都拒。
+            (cells_spec.as_str(), true),
             ("assets/models/cube.obj", false),
             ("assets/models/cube", false),
             ("../escape.glb", false),
@@ -2406,6 +2459,24 @@ mod tests {
                 expected_ok,
                 "schema 对 {sample:?} 的判定必须与引擎一致（reason={:?}）",
                 schema.as_ref().err().map(|error| error.reason.clone())
+            );
+        }
+
+        // 前缀档的**刻意分歧**（唯一一处，写死在这里而不是"顺手对齐"）：形状合法、参数非法
+        // 的规格串，schema 放行而引擎解析器拒绝。schema 这一层不该复制第二份参数解析器
+        // （它会漂移，R218 就是漂移的产物），而两条真实写入路径都已经跑引擎解析器：
+        // 场景加载 `typed_scene::validate_component_payload` → `codec.validate`，
+        // 编辑器改字段 `actions::components` → `MeshRenderer::from_component_str`。
+        // 反面对照③：把这段断言的 `is_err` 改成 `is_ok` 会当场红 ⇒ 引擎侧真的在拒。
+        {
+            let payload = "mesh=__terrain__?size=0".to_owned();
+            assert!(
+                rustlua_render::mesh3d::MeshRenderer::from_component_str(&payload).is_err(),
+                "参数非法的哨兵规格必须被引擎解析器拒绝"
+            );
+            assert!(
+                mesh.parse(&payload).is_ok(),
+                "schema 只判形状：这条要绿才说明前缀档没有偷偷变成参数解析器"
             );
         }
 

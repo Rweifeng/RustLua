@@ -58,6 +58,35 @@ fn expand_skin(
     expand(shader, skin, IblMode::Off)
 }
 
+/// 材质 uniform 的 `10×vec4` 必须三处同时成立：WGSL `struct Material` 的行数、`arena.rs`
+/// 的 CPU 打包行数、绑定布局的 `min_binding_size`（后两者共用 `MATERIAL_UNIFORM_ROWS`）。
+/// 少写/多写一行不会编译失败，只会让 GPU 读到上一行或零——表现是"某一瓣静默不生效"，
+/// 像素门只能看见颜色差、指不出根因，所以在这里用源文本把 WGSL 与常量钉住。
+#[test]
+fn material_uniform_rows_match_the_wgsl_struct() {
+    const MARKER: &str = "struct Material {";
+    let source = MESH3D_PBR.source;
+    let start = source
+        .find(MARKER)
+        .unwrap_or_else(|| panic!("{} 缺少 `{MARKER}`", MESH3D_PBR.path));
+    let body = &source[start + MARKER.len()..];
+    let end = body.find('}').expect("struct Material 没有闭合");
+    let rows = body[..end]
+        .lines()
+        .filter(|line| line.trim().ends_with("vec4<f32>,"))
+        .count();
+    assert_eq!(
+        rows,
+        crate::renderer::MATERIAL_UNIFORM_ROWS,
+        "WGSL `struct Material` 的 vec4 行数与 arena.rs 的打包行数不一致"
+    );
+    assert_eq!(
+        crate::renderer::MATERIAL_UNIFORM_BYTES,
+        rows as u64 * 16,
+        "每个 vec4 占 16 字节，绑定布局字节数必须等于 WGSL 行数 × 16"
+    );
+}
+
 /// 网格：静态变体不再读关节调色板，蒙皮变体保留完整权重求和；两者都保留实例矩阵与光照。
 #[test]
 fn mesh_variants_differ_only_in_skinning() {
@@ -330,7 +359,11 @@ fn terrain_cloud_shadows_use_world_space_and_camera_time() {
     let shader = &MESH3D_PBR;
     assert!(shader.source.contains("fn cloud_shadow"));
     assert!(shader.source.contains("camera.position.w"));
-    assert!(shader.source.contains("let cloud_factor = 1.0 - cloud * camera.cloud.w"));
+    assert!(
+        shader
+            .source
+            .contains("let cloud_factor = 1.0 - cloud * camera.cloud.w")
+    );
     assert!(
         shader.source.contains("* cloud_factor"),
         "云影必须在最终颜色上统一执行，而不是只压地形/水面"
@@ -492,18 +525,22 @@ fn terrain_detail_atlas_is_sampled_in_world_space() {
         shader.path
     );
     assert!(
-        shader.source.contains("if (near_detail)"),
-        "{} 必须按 LOD 跳过视差/AO",
+        shader.source.contains("if (near_detail && !terrain_cheap)"),
+        "{} 必须按 LOD + 廉价细节档跳过视差/AO（P3-R203）",
         shader.path
     );
     assert!(
-        shader.source.contains("let curvature = hc * 4.0 - hl - hr - hu - hd"),
+        shader
+            .source
+            .contains("let curvature = hc * 4.0 - hl - hr - hu - hd"),
         "{} 缺少地形高度曲率",
         shader.path
     );
     // P3-R71：大尺度地形色斑。
     assert!(
-        shader.source.contains("let macro_a = value_noise(world_position.xz * 0.008)"),
+        shader
+            .source
+            .contains("let macro_a = value_noise(world_position.xz * 0.008)"),
         "{} 缺少地形 macro 色斑",
         shader.path
     );
@@ -527,19 +564,43 @@ fn terrain_detail_atlas_is_sampled_in_world_space() {
         "{} 缺少湿润粗糙度",
         shader.path
     );
-    assert!(shader.source.contains("material.flags.w > 1.5"), "{} 缺少冰面标记", shader.path);
-    assert!(shader.source.contains("P3-R125"), "{} 缺少冰裂纹", shader.path);
-    assert!(shader.source.contains("P3-R135"), "{} 缺少水面涟漪", shader.path);
-    assert!(shader.source.contains("P3-R136"), "{} 缺少涟漪法线扰动", shader.path);
-    assert!(shader.source.contains("camera.ripple2"), "{} 缺少多涟漪槽", shader.path);
+    assert!(
+        shader.source.contains("material.flags.w > 1.5"),
+        "{} 缺少冰面标记",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("P3-R125"),
+        "{} 缺少冰裂纹",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("P3-R135"),
+        "{} 缺少水面涟漪",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("P3-R136"),
+        "{} 缺少涟漪法线扰动",
+        shader.path
+    );
+    assert!(
+        shader.source.contains("camera.ripple2"),
+        "{} 缺少多涟漪槽",
+        shader.path
+    );
     // P3-R70：水面反射云层。
     assert!(
-        shader.source.contains("let cloud_p = camera.position.xz + reflected.xz * cloud_t"),
+        shader
+            .source
+            .contains("let cloud_p = camera.position.xz + reflected.xz * cloud_t"),
         "{} 缺少水面云反射平面",
         shader.path
     );
     assert!(
-        shader.source.contains("let sky_with_clouds = mix(sky, cloud_color"),
+        shader
+            .source
+            .contains("let sky_with_clouds = mix(sky, cloud_color"),
         "{} 缺少水面云反射混合",
         shader.path
     );
@@ -550,12 +611,16 @@ fn terrain_detail_atlas_is_sampled_in_world_space() {
         shader.path
     );
     assert!(
-        shader.source.contains("for (var i: i32 = 1; i <= 5; i = i + 1)"),
+        shader
+            .source
+            .contains("for (var i: i32 = 1; i <= 5; i = i + 1)"),
         "{} 缺少 5 步地形阴影",
         shader.path
     );
     assert!(
-        shader.source.contains("let ray_slope = clamp(0.55 * sun_height / horizontal"),
+        shader
+            .source
+            .contains("let ray_slope = clamp(0.55 * sun_height / horizontal"),
         "{} 缺少太阳高度阴影斜率",
         shader.path
     );
@@ -569,14 +634,29 @@ fn terrain_detail_atlas_is_sampled_in_world_space() {
 #[test]
 fn clip_plane_caps_backfaces_near_the_cut() {
     let shader = &MESH3D_PBR;
-    assert!(shader.source.contains("let clip_distance = dot(world_position"));
-    assert!(shader.source.contains("!front_facing && clip_distance > -0.08"));
+    assert!(
+        shader
+            .source
+            .contains("let clip_distance = dot(world_position")
+    );
+    assert!(
+        shader
+            .source
+            .contains("let band = select(0.08, camera.cap.x, camera.cap.x > 0.0);"),
+        "P3-R209：封口带宽必须由 `camera.cap.x` 导出，且 0 档逐字回到旧的 0.08"
+    );
+    assert!(
+        shader
+            .source
+            .contains("!front_facing && clip_distance > -band")
+    );
     assert!(shader.source.contains("return vec4<f32>(section, 1.0)"));
 }
 
 /// 点光软阴影必须与方向光共用 `light.params.y`，并真的做 3×3 比较采样。
 #[test]
-fn point_shadow_pcf_reuses_the_soft_shadow_flag() {    for shader in [MESH3D, MESH3D_PBR] {
+fn point_shadow_pcf_reuses_the_soft_shadow_flag() {
+    for shader in [MESH3D, MESH3D_PBR] {
         assert!(
             shader.source.contains("fn sample_point_shadow"),
             "{} 缺少点光采样函数",
@@ -991,4 +1071,45 @@ fn ibl_specular_variant_compiles_with_prefiltered_cube() {
     renderer.clear_environment();
     assert_eq!(renderer.environment_map_info(), None);
     assert_eq!(renderer.ibl_mode(), IblMode::Off);
+}
+
+/// P3-R197：水面廉价光照档的三条门必须钉在 shader 源里——缺任何一条都会静默退回
+/// 全量光照（读数会变成「开了没效果」）。读源文本的门只能防删，不能防改语义，
+/// 活体 A/B 与像素目验才是语义证据。
+#[test]
+fn water_cheap_lighting_gates_are_present() {
+    let source = include_str!("../../../shaders/mesh3d_pbr.wgsl");
+    assert!(
+        source.contains("material.animation.z > 0.5"),
+        "水档标志必须从 animation.z 读取"
+    );
+    assert!(
+        source.contains("select(min(u32(light.params.x), 16u), 0u, water_cheap)"),
+        "点光循环必须被 water_cheap 关掉"
+    );
+    assert!(
+        source.contains(
+            "if (!water_cheap) {\n        shadow_visibility = shadow_visibility_four_cascades("
+        ) || source.contains("shadow_visibility = shadow_visibility_four_cascades("),
+        "级联阴影必须被 water_cheap 门控"
+    );
+    assert!(
+        source.contains("if (!water_cheap) {"),
+        "SH9 漫反射必须被 water_cheap 门控"
+    );
+}
+
+/// P3-R203：地形廉价细节档必须钉在 shader 源里——读源文本只防删，语义证据是
+/// `terrain_cheap_skips_near_detail_pixels` 的像素对照（默认逐字节不变）。
+#[test]
+fn terrain_cheap_detail_gate_is_present() {
+    let source = include_str!("../../../shaders/mesh3d_pbr.wgsl");
+    assert!(
+        source.contains("material.animation.x > 1.5 && material.animation.w > 0.5"),
+        "地形档标志必须从 animation.w 读取"
+    );
+    assert!(
+        source.contains("if (near_detail && !terrain_cheap) {"),
+        "近细节分支必须被 terrain_cheap 门控"
+    );
 }

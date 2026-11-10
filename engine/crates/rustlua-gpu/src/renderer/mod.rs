@@ -12,7 +12,7 @@ use std::{
 use rustlua_assets::asset_handle::AssetHandle;
 use rustlua_assets::env_asset::EnvironmentAsset;
 use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
-use rustlua_math::math3d::{Mat4, Vec3};
+use rustlua_math::math3d::{Aabb3, Mat4, Vec3};
 use rustlua_render::async_loader::AsyncLoader;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::{Light, MAX_POINT_LIGHTS, PointLight};
@@ -25,10 +25,12 @@ use rustlua_render::render_settings::{
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 
 use rustlua_render::frame::{Scene3d, SceneMesh};
+use rustlua_render::instance_batch::InstanceBatch3D;
 
 pub use environment::EnvironmentMapError;
 
 mod arena;
+mod batch_motion_gpu;
 mod capabilities;
 mod compute;
 mod construct;
@@ -50,6 +52,7 @@ pub use shader_hot_reload::{ShaderReloadError, ShaderReloadReport, ShaderSourceS
 mod targets;
 mod timestamp;
 mod world_sprite;
+pub use batch_motion_gpu::BatchMotionGpuError;
 pub use capabilities::RendererCapabilities;
 pub use compute::{ComputeBinding, ComputeDispatch, ComputeError, ComputeRequest, ComputeStats};
 pub use gpu_particles::{
@@ -210,11 +213,46 @@ struct GpuMaterial {
     /// Built-in terrain detail-atlas tile size in world units; `0` = flat
     /// procedural ground. Reaches the shader as `Material.surface.w`.
     detail_scale: f32,
+    /// P3-R162：清漆层（第二 GGX 瓣，F0=0.04）；0 = 关闭。
+    clearcoat: f32,
+    clearcoat_roughness: f32,
+    /// P3-R163：SSS 近似（wrap 漫反射 + 背向透光，albedo 染色）；0 = 关闭。
+    sss_strength: f32,
+    sss_thickness: f32,
+    /// P3-R164：薄膜干涉虹彩（复眼/甲壳）；0 = 关闭。
+    iridescence: f32,
+    iridescence_ior: f32,
+    iridescence_thickness_min: f32,
+    iridescence_thickness_max: f32,
+    /// P3-R165：绒毛/布面光泽瓣（ASA 分布，逆光绒边）；颜色全 0 = 关闭。
+    sheen_color: [f32; 3],
+    sheen_roughness: f32,
+    /// P3-R197：水面廉价光照档（`__water__?...&cheap=1`）。只对水面有意义，缺省 false。
+    water_cheap: bool,
+    /// P3-R203：地形廉价细节档（`__terrain__?...&cheap=1`）。只对地形有意义，缺省 false。
+    terrain_cheap: bool,
+}
+
+/// P3-R166：`sect=1` 地形的高度图，供 Tonemap 在裁剪平面处封出实体土壤剖面。
+/// 高度以 16 位定点打包在 R/G 双通道里，采样用 `textureLoad`（不插值）。
+#[derive(Clone)]
+struct SectionHeightMap {
+    view: wgpu::TextureView,
+    /// `height_range()` 的下界与跨度，着色器用它把定点值还原成世界 y。
+    min_y: f32,
+    span: f32,
+    /// 地形半边长度（世界单位）；着色器用它把局部 xz 映射到高度图 UV。
+    half: f32,
+    /// 分块中心（世界 xz）。高度图烘的是整张地形，着色器把世界坐标折回
+    /// 整张地形局部坐标时要补上这个偏移；整张地形为 `[0, 0]`。
+    origin: [f32; 2],
 }
 
 /// Cached GPU geometry + file materials for one mesh path.
 struct CachedMesh {
     primitives: Vec<CachedPrimitive>,
+    /// 只有 `sect=1` 的整张地形才有；其它网格保持 `None`，Tonemap 不封口。
+    section_height: Option<SectionHeightMap>,
 }
 
 impl GpuMaterial {
@@ -246,6 +284,18 @@ impl GpuMaterial {
             alpha_cutoff: material.alpha_cutoff,
             double_sided: material.double_sided,
             detail_scale: material.detail_scale,
+            clearcoat: material.clearcoat,
+            clearcoat_roughness: material.clearcoat_roughness,
+            sss_strength: material.sss_strength,
+            sss_thickness: material.sss_thickness,
+            iridescence: material.iridescence,
+            iridescence_ior: material.iridescence_ior,
+            iridescence_thickness_min: material.iridescence_thickness_min,
+            iridescence_thickness_max: material.iridescence_thickness_max,
+            sheen_color: material.sheen_color,
+            sheen_roughness: material.sheen_roughness,
+            water_cheap: false,
+            terrain_cheap: false,
         }
     }
 }
@@ -265,6 +315,50 @@ struct FrameDraw {
     material: GpuMaterial,
     palette: Vec<Mat4>,
     models: Vec<Mat4>,
+    /// P3-R170：`__water__` 哨兵网格。平面反射 pass 跳过它（水面是镜面本身）。
+    water: bool,
+    /// P3-R188：组内全部实例的世界包围盒并集。点光阴影 pass 用它做 range 剔除
+    /// （range 外的投射者不可能遮挡 range 内的接收者 ⇒ 数学精确，不改像素）。
+    bounds: Aabb3,
+    /// P3-R245：`Some` = 这份 draw 的实例矩阵由 compute 现场求值（`models` 保留作回退：
+    /// 烘焙失败/无 compute 能力时仍按 CPU 路径画）。
+    ///
+    /// P3-R246：`models` 可以为空（宿主不再每帧求 CPU 矩阵）——此时实例数看批次本身，
+    /// 回退矩阵在烘焙失败时就地按 `matrices_at` 补算，不回退到"空模型表的 draw"。
+    gpu_motion: Option<FrameGpuMotion>,
+    /// P3-R255：这批实例的网格局部包围球半径（从局部原点算，含球心偏移），供视锥剔除
+    /// 在 GPU 侧展开成逐实例保守球（再乘 max|scale|·model_scale）。非 GPU 批恒 0。
+    gpu_motion_local_radius: f32,
+    /// P3-R248：这条 draw 是否进方向光 CSM 链。`false` = 被分类排除档按样本名/网格路径
+    /// 掐掉（静态合批组只按路径判），主视图/平面反射照旧；成组/建 draw 时一次算好。
+    cast_shadow: bool,
+    /// P3-R265：这条 draw 是否进点光 6 面链。默认与 `cast_shadow` 同值（`shadow_caster_skip`
+    /// 两链一起掐）；点光专用排除档只清这一位 ⇒ CSM 的 crowd 阴影保留、6 面链的 crowd
+    /// 提交掐掉，主视图/平面反射照旧。
+    cast_point_shadow: bool,
+}
+
+impl FrameDraw {
+    /// 这条 draw 实际要画的实例数。
+    ///
+    /// P3-R246：GPU 位姿批次的 `models` 可能是空的（宿主跳过了 CPU 求值），实例数以批次为准；
+    /// 其余情况就是 `models.len()`。画调用、记账、合批日志都必须用这一个口径，否则
+    /// "画 N 个却只上传 0 个"会读到邻居的矩阵。
+    fn instance_count(&self) -> usize {
+        self.gpu_motion
+            .as_ref()
+            .map_or(self.models.len(), |motion| motion.batch.instances.len())
+    }
+}
+
+/// P3-R245：一份 draw 的 GPU 位姿求值输入。批次按 `Arc` 共享（同一批次的多个
+/// primitive 各一条 draw，批次数据只存一份）。
+struct FrameGpuMotion {
+    batch: Arc<InstanceBatch3D>,
+    /// 求值时刻（场景时钟秒）。
+    time: f32,
+    /// 导入设置的模型缩放（CPU `scaled_model` 同式）。
+    model_scale: f32,
 }
 
 /// Static drawables sharing one mesh path + primitive, accumulated for a
@@ -273,6 +367,14 @@ struct StaticGroup {
     geometry: GpuGeometry,
     material: GpuMaterial,
     models: Vec<Mat4>,
+    water: bool,
+    /// P3-R188：全部实例世界包围盒的并集（组内逐实例扩展）。
+    bounds: Aabb3,
+    /// P3-R248：整组是否进方向光 CSM 链（组键里的网格路径命中排除子串 ⇒ false）。
+    cast_shadow: bool,
+    /// P3-R265：整组是否进点光 6 面链（组键路径命中点光专用排除子串 ⇒ false；
+    /// `cast_shadow` 为假时恒假）。
+    cast_point_shadow: bool,
 }
 
 /// 一个可复用的非阻塞回读槽：GPU 拷贝目标 buffer + 提交序号 + 映射完成标志。
@@ -307,6 +409,14 @@ pub struct RenderFrameMetrics {
     pub mesh3d_draw_calls: u64,
     /// 仅 3D indexed mesh 的实例数，不含 2D/粒子。
     pub mesh3d_instances: u64,
+    /// P3-R183：本帧参与 3D 绘制的 drawable×primitive 候选数（网格已缓存、进入剔除判定）。
+    ///
+    /// 与 `cull_frustum` 一起构成「剔掉多少实例」的门读数：候选 − 剔除 = 进入合批/提交的
+    /// 实例数。剔除关闭时 `cull_frustum` 恒 0，候选数不变——两档 A/B 因此可比。
+    pub cull_candidates: u64,
+    /// P3-R183：本帧被剔除的 drawable×primitive 数（`cull_enabled` 关闭时视锥部分恒 0）。
+    /// P3-R206 起含**最大绘制距离**剔除（该档默认关闭，计数与视锥共用同一分母）。
+    pub cull_frustum: u64,
     pub triangles: u64,
     /// 本帧实际提交的顶点数。2D overlay / 世界 Sprite / 矢量文字按顶点计；
     /// 3D 按「每个实例的顶点数 × 实例数」统计一次（与 `triangles` 同口径，不因阴影 pass 重复）。
@@ -343,6 +453,10 @@ pub struct RenderFrameMetrics {
     pub ssao_active: bool,
     /// 本帧 Tonemap 是否实际执行了 SSR-lite（HDR 且 `RenderSettings.ssr`）。
     pub ssr_active: bool,
+    /// P3-R170：本帧是否真的跑了水面平面反射（PBR + HDR + SSR + 场景有水面 + 有 3D 网格）。
+    pub planar_reflection_active: bool,
+    /// 平面反射 pass 里的 draw 数（0 与 `planar_reflection_active` 同时成立 = 空 pass）。
+    pub planar_reflection_draws: u64,
     /// 本帧 Tonemap 是否实际执行了屏幕空间接触阴影。
     pub contact_shadows_active: bool,
     /// 本帧方向光是否走了 ESM filtered shadow。
@@ -357,6 +471,74 @@ pub struct RenderFrameMetrics {
     pub dof_active: bool,
     /// 本帧是否渲染了前八盏（最多 8 盏）点光的立方体阴影。
     pub point_shadows_active: bool,
+    /// P3-R180：`render()` 里 surface acquire 的 CPU 时间；离屏路径恒 0。
+    pub cpu_acquire_us: u64,
+    /// P3-R180：`output.present()` 的 CPU 时间；离屏路径恒 0。
+    ///
+    /// 为什么单列：宿主 `host_phases.submit` 包住的是 acquire + 录制 + `queue.submit` +
+    /// present 四件事（`game_app.rs`）。有帧步调/垂直同步时 present 会把整段吃掉，
+    /// 那时把录制优化到极致也不动读数——不拆开就只能靠猜。
+    pub cpu_present_us: u64,
+    /// P3-R180：命令录制（`render_passes` 全程，含 uniform 写入与实例合批）的 CPU 时间。
+    pub cpu_record_us: u64,
+    /// P3-R180：`queue.submit` 本身的 CPU 时间（不含录制、不含 present）。
+    pub cpu_submit_us: u64,
+    /// P3-R180：录制里方向光阴影链（4 级联 + ESM 全屏）的 CPU 时间。
+    pub record_shadow_us: u64,
+    /// P3-R180：录制里点光立方体阴影（最多 8 盏 × 6 面，每面重画全部 drawable）的 CPU 时间。
+    pub record_point_shadow_us: u64,
+    /// P3-R180：本帧录制的方向光阴影 pass 数（4 级联，开 `filtered_shadows` 时再 +4 个 ESM 全屏）。
+    ///
+    /// 为什么要计数而不是只计时：跳过空 pass 的优化必须能被断言，而 CPU 计时在本机是
+    /// 毫秒级噪声；pass 数是确定量。
+    pub shadow_passes_recorded: u64,
+    /// P3-R180：本帧录制的点光阴影像 pass 数（盏数 × 6，`point_shadows` 关或无点光时为 0）。
+    pub point_shadow_passes_recorded: u64,
+    /// P3-R188：点光阴影 pass 里因落在光照 range 外被剔除的 draw 次数（跨全部面累计；
+    /// 0 = 剔除没起作用或关闭）。与 `point_shadow_passes_recorded` 同口径可断言。
+    pub point_shadow_draws_culled: u64,
+    /// P3-R249：点光链里被分类排除档（`shadow_caster_skip`，或 P3-R265 只掐点光链的
+    /// `point_shadow_caster_skip`）挡在 6 面之外的 draw 次数
+    /// （跨灯 × 面累计，按"本来会提交"计）。与方向光的 `shadow_draws_skipped` 分开记账：
+    /// 两条链的尝试分母不同，混在一起就没有守恒式可对账。
+    pub point_shadow_draws_skipped: u64,
+    /// P3-R194：点光阴影 pass 里因落在该面相机视锥外被剔除的 draw 次数（跨灯×面累计；
+    /// range 剔除之后的第二层，面视锥就是 GPU 的裁剪体 ⇒ 只省不丢）。
+    pub point_shadow_face_draws_culled: u64,
+    /// P3-R189：方向光阴影 pass 里因落在该级联裁剪体外的 draw 次数（跨 4 级联累计）。
+    /// 级联盒就是阴影相机的裁剪体，盒外几何 GPU 本来也会裁掉 ⇒ 只省不丢。
+    pub shadow_cascade_draws_culled: u64,
+    /// P3-R247：方向光阴影链里**实际提交**的 draw 次数（跨级联累计，不含 ESM 全屏 quad）。
+    ///
+    /// 与 `shadow_cascade_draws_culled` 同帧对账：`shadow_draws_drawn + culled`
+    /// 恒等于「drawable 数 × 实际录制的级联数」。为什么要读实际提交：批次被拆成多条
+    /// draw 后，逐级联剔除的粒度变了，"阴影便宜了"必须能拆成"少录了几次 draw"。
+    pub shadow_draws_drawn: u64,
+    /// P3-R247：同口径累计的实例数（每条提交的 `instance_count()` 之和，跨级联）。
+    ///
+    /// 阴影 pass 是几何/顶点瓶颈时，这个数就是下一刀（逐实例剔除/LOD）的分母：
+    /// 它大于 0 说明确实有实例级余量，接近 0 说明只剩静态物。
+    pub shadow_instances_drawn: u64,
+    /// P3-R261：点光 6 面链里**实际提交**的 draw 次数（跨灯 × 面累计）。
+    ///
+    /// 为什么单列：`shadow_draws_drawn` / `shadow_instances_drawn` 只统计方向光 CSM 链。
+    /// P3-R260 实测「150 m 预算把 CSM 实例砍 97.7 %、shadow pass 只掉 4.5 %」，正是因为
+    /// 点光链的 crowd 提交一直在跑，却没有任何一列在数它（§21.540）。
+    pub point_shadow_draws_drawn: u64,
+    /// P3-R261：同口径的点光链提交实例数（跨灯 × 面累计）。
+    pub point_shadow_instances_drawn: u64,
+    /// P3-R248：被分类排除档（`shadow_caster_skip`）挡在 CSM 链外的 draw 次数
+    /// （跨级联累计，按"本应提交"计）。与 `shadow_draws_drawn` 分开记：一个是视锥剔除
+    /// （只省不丢），一个是用户显式要求的观感取舍（会丢阴影）。
+    pub shadow_draws_skipped: u64,
+    /// P3-R256：被距离预算挡在 CSM 链外的 draw 次数（跨级联累计，按"本应提交"计）。
+    /// 与分类排除分开：两档可叠加，守恒式仍是
+    /// `提交 + 级联剔除 + 分类排除 + 距离预算 = drawable × 级联`。
+    pub shadow_distance_skipped: u64,
+    /// P3-R256：点光链里被距离预算挡在 6 面之外的 draw 次数（跨灯 × 面累计）。
+    pub point_shadow_distance_skipped: u64,
+    /// P3-R191：平面反射 pass 里因落在镜像相机视锥外的 draw 次数（水面与 Blend 不计）。
+    pub planar_draws_culled: u64,
 }
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
@@ -603,6 +785,8 @@ fn scaled_model(model: Mat4, scale: f32) -> Mat4 {
 /// `position.w` 原先固定为 1；P3-R02 起没有着色器读它，因此复用成水面等
 /// 程序化材质的动画时钟。旧 `mesh3d.wgsl` 只声明前 64 字节；同一个 buffer
 /// 因此仍能同时服务回滚档与 PBR 档。
+// 一个 uniform 字段一个参数：打包成结构体后调用点看不出哪一段对应 WGSL 的哪一行。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn camera_uniform(
     view_projection: &Mat4,
     position: Vec3,
@@ -616,8 +800,9 @@ pub(super) fn camera_uniform(
     surface: [f32; 2],
     ripple: [f32; 2],
     ripple_extra: [f32; 4],
-) -> [f32; 40] {
-    let mut data = [0.0; 40];
+    clip_cap: f32,
+) -> [f32; 44] {
+    let mut data = [0.0; 44];
     for (index, column) in view_projection.columns.iter().enumerate() {
         data[index * 4..index * 4 + 4].copy_from_slice(column);
     }
@@ -638,6 +823,8 @@ pub(super) fn camera_uniform(
     data[34] = ripple[0];
     data[35] = ripple[1];
     data[36..40].copy_from_slice(&ripple_extra);
+    // P3-R209：剖面封口深度。0（含 NaN/负值）= 旧的 0.08 薄带，默认像素逐字节不变。
+    data[40] = clip_cap.max(0.0);
     data
 }
 
@@ -667,6 +854,8 @@ pub struct Renderer {
     gpu_particle_wind_sources: [[f32; 7]; 4],
     /// 粒子湍流时钟（秒）；与 CPU ParticleSystem.time 同相位来源。
     gpu_particle_time: f32,
+    /// P3-R234：网格体积风/温度浮力场的显存副本（`None` = 无场 ⇒ GPU 走原 shader）。
+    gpu_particle_grid: Option<gpu_particles::GpuParticleGrid>,
     /// P3-R80：脚本/天气覆盖的云量（0..1）；0.5 是默认覆盖度。
     cloud_coverage: f32,
     /// P3-R82：云层漂移速度倍率（0..4，默认 1）。
@@ -705,13 +894,15 @@ pub struct Renderer {
     /// [`Self::world_sprite_camera_bind_group`]、`white` 复用同一份绑定组）、group2=粒子资源。
     /// 与 [`Self::gpu_particle_draw_layout`] 同生共死。
     gpu_particle_pipeline_layout: Option<wgpu::PipelineLayout>,
-    /// 已编译的 instanced 粒子管线与其目标格式。`None` = 本进程还没画过 GPU 粒子。
+    /// 已编译的 instanced 粒子管线与其目标格式（按格式最多两条）。空 = 本进程还没画过、
+    /// 也没预热过 GPU 粒子。
     ///
-    /// 只缓存**一条**（不是 Map）：一帧只有一个场景目标格式，HDR 切换最多各编译一次；
-    /// 用格式相等做键，格式变了才重编，与 P3-R02 的 PBR 延迟补编译同一套理由。
+    /// HDR 与 LDR 是两条真实变体（附件格式不同），所以按格式各缓存一条；默认仍是第一次
+    /// 绘制才编译（启动预算不为"没配 GPU 粒子"的进程付管线的钱，P3-R02 同一理由），
+    /// P3-R243 的 [`Renderer::prewarm_gpu_particles`] 让宿主显式把这份钱挪到启动期。
     /// 目标格式取 `self.config.format`（LDR）/`Rgba16Float`（HDR），与后处理离屏纹理、
     /// 热重载重建 LDR 槽位读的是同一个来源。
-    gpu_particle_pipeline: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    gpu_particle_pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     pipeline: wgpu::RenderPipeline,
     /// P3-R04-3：按固定轴缓存的 3D 网格/阴影管线。`Arc` 让绘制侧只借用、不复制；
     /// 键与统计见 [`pipeline_cache`]。
@@ -872,6 +1063,29 @@ pub struct Renderer {
     /// P0-①：per-instance 模型矩阵的帧级环形缓冲，同上，STORAGE 用法。
     instance_arena: wgpu::Buffer,
     instance_arena_used: u64,
+    /// P3-R245：帧路径 GPU 位姿档（默认关）。关时 `frame_3d_draws` 一个字节都不碰。
+    gpu_motion_batches: bool,
+    /// P3-R250：GPU 位姿烘焙的逐实例距离剔除半径（米，默认 0 = 关）。剔除球心用当帧
+    /// 相机世界位置；矩阵同时供主视图/阴影/planar ⇒ 剔除是全链一致的取舍。
+    gpu_motion_cull_distance: f32,
+    /// P3-R255：逐实例视锥剔除档（默认关）。开档时烘焙内核再把实例保守包围球对主视图
+    /// 六面判一次；球整颗在外侧 ⇒ 与距离剔除同一条退化路径（零矩阵 / 不领槽位）。
+    gpu_motion_frustum_cull: bool,
+    /// P3-R266：远程密度档 `(半径米, 步长)`（默认 `None` = 关）。离相机超过半径的实例
+    /// 只保留批次内 `index % 步长 == 0` 的那些；近距离一只不动。这是一条**观感取舍档**
+    /// （远区变稀），判据用静态下标 ⇒ 留下的那几只每帧固定，不闪。
+    gpu_motion_thin: Option<(f32, u32)>,
+    /// P3-R267：第二远带（必须比第一带更远；`None` = 关）。
+    gpu_motion_thin_far: Option<(f32, u32)>,
+    /// P3-R255：当帧主视图视锥六面（归一化，`[nx, ny, nz, d]` × 6）。关档时恒 `None`；
+    /// `render_passes` 每帧从与网格同一份 `main_matrix` 打包，烘焙只读这一份。
+    bake_frustum: Option<[[f32; 4]; 6]>,
+    /// P3-R250：当帧相机世界位置（`update_3d_uniforms` 每帧写入），供烘焙剔除球心用。
+    camera_world_position: Vec3,
+    /// P3-R245：宿主在本帧 `render`/`render_into_texture` 前登记的运动批次。按
+    /// `Scene3dDrawable::entity` 的 id 认领，没被认领的在帧末丢弃。第三项是求值时刻
+    /// （场景时钟秒）——渲染器不持有场景时钟，必须由宿主给。
+    staged_motion: Vec<(u64, Arc<InstanceBatch3D>, f32)>,
     /// P4-①：3D 材质绑定组缓存（按本帧 draw 序位）。稳态帧零 `create_bind_group`；
     /// 详见 `arena::MaterialBindKey` 的注释。arena 扩容时靠代次让旧条目失配。
     material_bind_cache: Vec<arena::CachedMaterialBind>,
@@ -889,6 +1103,9 @@ pub struct Renderer {
     /// docs/54 §4.4：网格资源身份 → `mesh_cache` 的键。运行时给了句柄就按句柄查（O(1)），
     /// 并且同一网格跨帧恒同键——路径字符串重新解析、或两个不同路径互相顶替，都不会发生。
     mesh_slots: HashMap<AssetHandle, String>,
+    /// P3-R166：整张地形的高度场缓存，键是去掉分块字段后的 mesh path。
+    /// 同一地形的 16 个分块共享一张贴图，只有 `origin` 不同。
+    section_fields: HashMap<String, SectionHeightMap>,
     /// 网格身份缓存命中/未命中次数（诊断/验收用）。
     mesh_identity_hits: u64,
     mesh_identity_misses: u64,
@@ -916,6 +1133,91 @@ pub struct Renderer {
     white_albedo_view: wgpu::TextureView,
     /// CPU frustum culling of scene drawables (M8-08).
     cull_enabled: bool,
+    /// P3-R183：本帧 `frame_3d_draws` 的剔除计数（每次调用重置），随 metrics 上报。
+    frame_cull_candidates: u64,
+    frame_cull_frustum: u64,
+    /// P3-R206 读数补全：本帧被最大绘制距离档剔掉的实例数（已含在 `frame_cull_frustum` 里，
+    /// 单列一份只为归因；距离档关闭时恒 0）。
+    frame_cull_distance: u64,
+    /// P3-R184：开发期归因开关（`--skip-mesh`）：网格路径含该子串的 3D drawable 整个跳过
+    /// （在缓存查询与剔除之前）。`None` = 不跳过（默认）。只为 A/B 归因某一类网格的
+    /// GPU 成本，不改任何渲染语义；阴影/反射/深度各 pass 复用同一份 `frame_draws`，一并生效。
+    skip_mesh_filter: Option<String>,
+    /// 本帧被 `skip_mesh_filter` 跳过的 drawable 数（每次调用重置），进周期基线日志。
+    frame_skip_mesh: u64,
+    /// P3-R252：本帧因「整批都在距离剔除球外」直接不登记 draw 的 GPU 位姿批次 draw 数
+    /// （每次调用重置）。像素与"烘焙后零矩阵"一致，省掉的是 53 个阴影 pass/planar/主视图
+    /// 各自录一遍这条 draw；剔除档关闭时恒 0。
+    frame_gpu_motion_culled: u64,
+    /// P3-R254：本帧被整批跳过的 GPU 位姿批次带的实例总数（每次调用重置）。
+    /// `frame_gpu_motion_culled` 数的是 draw 条数，这里数的是原本会烘进实例缓冲的那批实例；
+    /// 有了它，`cull_candidates − cull_frustum − skipped_instances` 才重新约等于"提交实例"。
+    frame_gpu_motion_culled_instances: u64,
+    /// P3-R185：不透明 draw 按到相机距离前到后排序（early-Z 拒绝被挡像素）。
+    /// `false`（`--no-depth-sort` 回滚档）= 保持声明/合批顺序。Blend 队列不受影响。
+    depth_sort_enabled: bool,
+    /// P3-R191：平面反射按镜像视锥剔除（`--no-planar-cull` 回滚档，A/B 用）。
+    planar_cull_enabled: bool,
+    /// P3-R194：点光阴影逐面方向锥剔除（`--no-point-face-cull` 回滚档，A/B 用）。
+    point_face_cull_enabled: bool,
+    /// P3-R196：平面反射目标的分辨率除数（2 = 半分辨率默认；4 = 四分之一档）。
+    planar_reflection_divisor: u32,
+    /// P3-R206：3D 最大绘制距离（米，0 = 关闭）。超出者按包围球边缘判、并入
+    /// `cull_frustum` 计数（低端机的第一级植被 LOD：硬截断，未做渐隐）。
+    max_draw_distance: f32,
+    /// P3-R206 分类档：只对网格路径含该子串的 drawable 生效（`None` = 全体，默认）。
+    /// 植被 LOD 的第一级就是「只掐草」，不能把蚁/地形/道具一起掐掉。
+    max_draw_distance_filter: Option<String>,
+    /// P3-R248：方向光 CSM 链的**分类排除**档（样本名或网格路径含该子串的 drawable
+    /// 不投影；`None` = 不排除，默认）。与距离档同一"按类别掐"的形状：6 万只蚂蚁的阴影
+    /// 在 2048² 覆盖 480 m 时一个纹素约 0.23 m，比蚂蚁本身还大 ⇒ 留着只是白付几何。
+    /// 只影响阴影链，主视图照画（与 `max_draw_distance` 的"两个 pass 一起掐"不同）。
+    shadow_caster_skip: Option<String>,
+    /// P3-R265：点光 6 面链的**专用**分类排除档（`None` = 不排除，默认）。与
+    /// `shadow_caster_skip` 的区别是作用域：后者两链一起掐，这一档只掐点光链，
+    /// 方向光 CSM 的 crowd 阴影保留。P3-R263 的归因显示 shadow 的 147 ms 里有相当
+    /// 一部分是最近几盏灯照到的 crowd 面，而 CSM 的 crowd 阴影在 2048²/480 m 下
+    /// 一个纹素比蚂蚁还大 ⇒ 值得给"掐点光、留 CSM"一个单独的档位。
+    point_shadow_caster_skip: Option<String>,
+    /// P3-R256：阴影投射者的**距离预算**（米，`0.0` = 关闭，默认）。离相机超过该距离的
+    /// drawable 不进阴影链（方向光 CSM 与点光 6 面都掐），主视图/平面反射照旧。与 R248 的
+    /// 分类档同属观感取舍，但按几何位置而不是类别：远处的阴影本来只值几个纹素。
+    /// 判据与 `max_draw_distance` 同形——包围盒到相机的最近距离（不是中心距离）。
+    shadow_caster_max_distance: f32,
+    /// P3-R207：深度加权折射增益（uv / 米 / 掠射角）。`0.0` = 关闭（默认），
+    /// 此时 Tonemap 仍用旧的固定偏移；非有限值同样归一为关闭。
+    water_refraction_gain: f32,
+    /// P3-R208：水下视角的界面替换强度（0..=1）。`0.0` = 关闭（默认），此时相机入水
+    /// 只有 P3-R173 的整帧吸收；非有限或负值同样归一为关闭。
+    submerged_view_gain: f32,
+    /// P3-R241：水面折射的屏幕空间步进次数（`0` = 关闭（默认）= R207 的偏移近似，
+    /// 像素逐字节不变；`1..=32` = 沿 Snell 折射方向在水下步进找几何交点）。
+    water_refract_steps: u32,
+    /// P3-R209：剖切口的实体封口深度（米）。`0.0` = 关闭（默认），双面网格的切口只画
+    /// P3-R54 那 0.08 m 薄带；非有限或负值同样归一为关闭。
+    clip_cap_depth: f32,
+    /// P3-R211：封口要不要也吃到**单面**网格（`--clip-cap-both-sides`）。`false`（默认）=
+    /// 主网格通道按材质自身的双面档选管线，单面 glb 壳的背面在第一遍就被硬件剔除 ⇒
+    /// 封口分支没有像素可画；`true` = 仅当本帧真挂了会话裁剪平面时，主网格通道改用双面
+    /// 变体，把背面放回来让剖面切得开。不新建管线：双面 opaque 变体已由 P3-R170 的反射
+    /// 预热建好，命中缓存；没有裁剪面时选键逐字回到旧形状 ⇒ 像素与代价都不变。
+    clip_cap_both_sides: bool,
+    /// P3-R197：开发期全局覆盖——所有水面强制走廉价光照档（`--water-cheap`，A/B 用）。
+    water_cheap_override: bool,
+    /// P3-R203：开发期全局覆盖——所有地形强制走廉价细节档（`--terrain-cheap`，A/B 用）。
+    terrain_cheap_override: bool,
+    /// P3-R198：方向光 CSM 阴影图边长（默认 2048；512/1024 为低端档）。构建期决定，
+    /// 纹理与绑定组在 `new_async` 里一次建好，运行期不重建。
+    shadow_resolution: u32,
+    /// P3-R199：方向光 CSM 实际渲染的级联层数（1..=4，默认 4）。未渲染的远级联在构建期
+    /// 清成「全亮」（深度 1.0）⇒ 只失去该距离的阴影，不会被旧内容误压暗。
+    shadow_cascade_limit: u32,
+    /// P3-R200：点光 cube 阴影面的边长（默认 1024；512 为低端档，8×6 面 192→48 MiB）。
+    /// 构建期决定，运行期不重建。
+    point_shadow_resolution: u32,
+    /// P3-R202：阴影盏数预算（1..=8）——只给相机焦点最近的 N 盏点光录 6 面。
+    /// 运行期可改，只影响每帧 uniform 与 pass 录制，不重建纹理/绑定。
+    point_shadow_light_budget: u32,
     /// Grouping of same mesh/material draws into instanced calls (M8-08).
     instancing_enabled: bool,
     /// Frames rendered since startup, for periodic baseline logging.
@@ -923,6 +1225,9 @@ pub struct Renderer {
     /// Monotonic render clock. Only the `w` lane of the camera position is used
     /// (water ripples); gameplay time stays authoritative in the 10 Hz sim.
     clock: web_time::Instant,
+    /// P3-R236：时间锁。着色器时间 uniform 全部走 `clock_secs()`，钉住后同一场景的
+    /// 任意两帧逐像素可比（生产路径恒为 `None` = 渲染钟）。
+    clock_frozen_secs: Option<f32>,
     _material_bind_group_layout: wgpu::BindGroupLayout,
     /// 非阻塞回读槽（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
     readback_slots: Vec<ReadbackSlot>,
@@ -991,6 +1296,8 @@ pub struct Renderer {
     /// Tonemap 全屏管线（输入 HDR 场景、输出 LDR 目标）。能力不足时为 `None`。
     tonemap_pipeline: Option<wgpu::RenderPipeline>,
     tonemap_params: wgpu::Buffer,
+    /// P3-R166：没有 `sect=1` 地形时 Tonemap 绑定的 1×1 占位高度图。
+    section_height_white: wgpu::TextureView,
     /// 半分辨率 SSAO 生成 pass 与目标；Tonemap 只读这张 AO 图。
     ssao_pipeline: wgpu::RenderPipeline,
     ssao_bind_group_layout: wgpu::BindGroupLayout,
@@ -1014,7 +1321,19 @@ pub struct Renderer {
     ssr_texture: wgpu::Texture,
     ssr_history_texture: wgpu::Texture,
     ssr_prev_view_projection: Option<Mat4>,
+    /// P3-R174：上一帧 Tonemap 用的视图投影（相机运动模糊的重投影用）。与 SSR 的那份分开：
+    /// SSR 关掉时它不更新，而运动模糊要跟着每一帧走。
+    tonemap_prev_view_projection: Option<Mat4>,
     ssr_size: (u32, u32),
+    /// P3-R170：水面平面反射的离屏颜色目标（半分辨率 `Rgba16Float`）+ 自己的深度附件。
+    /// 未启用时绑定 1×1 透明占位图，Tonemap 的绑定组形状因此恒定。
+    planar_reflection_texture: wgpu::Texture,
+    planar_reflection_view: wgpu::TextureView,
+    planar_reflection_depth: wgpu::TextureView,
+    planar_reflection_size: (u32, u32),
+    /// 镜像相机 uniform（与主相机同一布局，160B）与它的绑定组。
+    planar_camera_buffer: wgpu::Buffer,
+    planar_camera_bind_group: wgpu::BindGroup,
 }
 
 /// 光照 uniform 的浮点字数：方向光 12（direction / color_intensity / params）+ 点光 8×8。
@@ -1030,11 +1349,71 @@ pub(super) const POINT_SHADOW_UNIFORM_BYTES: usize =
 /// ESM filtered shadow 的边长：与方向光 CSM 同分辨率，4 层。
 /// `R16Float` 每层 2 B/px ⇒ 4 × 2048² × 2 B = 32 MiB。
 pub(super) const ESM_SIZE: u32 = 2048;
+
+/// P3-R198：方向光 CSM 的缺省边长。`Renderer::new_with_shadow_resolution` 可降档，
+/// 默认值保持不变 ⇒ 默认路径与旧版逐字节一致。
+pub(super) const DEFAULT_SHADOW_RESOLUTION: u32 = 2048;
+
+/// P3-R199：方向光 CSM 缺省级联层数。默认渲染四级 ⇒ 与旧版像素一致。
+pub(super) const DEFAULT_SHADOW_CASCADE_LIMIT: u32 = 4;
+
+/// P3-R200：点光 cube 阴影面的缺省边长。默认值保持不变 ⇒ 默认路径逐字节一致。
+pub(super) const DEFAULT_POINT_SHADOW_RESOLUTION: u32 = 1024;
 pub(super) const ESM_LAYERS: usize = 4;
 
 const LIGHT_UNIFORM_WORDS: usize = 12 + MAX_POINT_LIGHTS * 8;
 /// 对应字节数。`construct.rs` 的绑定尺寸与着色器结构必须同时等于它。
 pub(super) const LIGHT_UNIFORM_BYTES: u64 = (LIGHT_UNIFORM_WORDS * 4) as u64;
+
+/// PBR 材质 uniform 的 `vec4` 行数（P3-R02 起 6 行，P3-R162–165 涨到 10 行）。
+///
+/// 三处必须同步：`mesh3d_pbr.wgsl` 的 `struct Material`、`arena.rs` 的 CPU 打包、
+/// `construct.rs` 的绑定布局 `min_binding_size`。少一行不会编译失败，只会让 GPU
+/// 读到上一行的值或零——画面表现为"某瓣不生效"，像素门未必指得出原因，
+/// 所以由 `material_uniform_rows_match_the_wgsl_struct` 把三者钉死。
+pub(super) const MATERIAL_UNIFORM_ROWS: usize = 10;
+pub(super) const MATERIAL_UNIFORM_BYTES: u64 = (MATERIAL_UNIFORM_ROWS * 16) as u64;
+
+/// Tonemap uniform 的浮点字数（P3-R166 起 96；P3-R170 的平面反射再加 4 = 100；
+/// P3-R171 的水体吸收再加 4 = 104、P3-R172 的水体散射再加 4 = 108、
+/// P3-R173 的相机入水体积吸收再加 4 = 112；P3-R174 的运动模糊再加 mat4 + vec4 = 132；
+/// P3-R208 的水下界面再加 4 = 136；P3-R241 的水面折射步进再加 4 = 140：
+/// 8 标量 + 4×mat4 + 17 个 vec4 槽）。
+///
+/// 三处必须同步：`tonemap.wgsl` 的 `struct Params`、`passes.rs` 的 `params` 数组、
+/// `construct.rs` 的绑定布局 `min_binding_size`/缓冲区大小。少写一个槽不会编译失败，
+/// 只会让着色器读到零——剖面封口这类"某帧才开"的分支会静默不生效，因此由
+/// `tonemap_uniform_layout_matches_the_wgsl_struct` 按 WGSL 字段逐项算偏移钉死。
+pub(crate) const TONEMAP_UNIFORM_FLOATS: usize = 140;
+pub(crate) const TONEMAP_UNIFORM_BYTES: u64 = (TONEMAP_UNIFORM_FLOATS * 4) as u64;
+
+/// 水面平面反射的镜像视图投影（P3-R170）。
+///
+/// 世界先关于 `y = level` 平面镜像（`R`），再走主视图投影：`clip = (VP·R)·p`。
+/// 镜像图因此**已经是屏幕朝向**：水面像素的反射内容就落在该像素自己的 uv 上，
+/// Tonemap 直接按当前 uv 采样（不能再补一次 `1 - u`）。
+///
+/// 为什么不再左乘 `F = diag(-1,1,1,1)`：那一步会把裁剪空间 x 取反，连带把屏幕绕序
+/// 翻过来。`det(F)·det(R) = +1` 只保证 3×3 线性部分同号，**不保证透视除法之后的
+/// 屏幕绕序**——实测镜像四边形在 `F·VP·R` 下全被背面剔除（P3-R170 像素门红：
+/// draws=1、覆盖 0；去掉 `F` 后同一帧覆盖 244 像素）。`det3` 同号那条离线门因此
+/// 是假绿，已删除。镜像是反向变换，屏幕绕序对一部分几何翻转、对另一部分保持，
+/// 不存在单一剔除模式能服务所有几何 ⇒ 反射 pass 改用双面变体（`cull_mode: None`），
+/// 覆盖由 `planar_reflection_only_draws_geometry_above_the_water` 的像素回读兜住。
+///
+/// 镜像平面上的点满足 `R·p = p`，所以水面像素在镜像图里落在同一屏幕坐标，
+/// 这正是投影采样能用当前 uv 的前提。
+pub(crate) fn planar_reflection_view_projection(main: &Mat4, level: f32) -> Mat4 {
+    let mirror = Mat4 {
+        columns: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 2.0 * level, 0.0, 1.0],
+        ],
+    };
+    *main * mirror
+}
 
 /// 打包一帧的光照 uniform。
 ///
@@ -1076,6 +1455,9 @@ impl Renderer {
     /// 没有才回退到 `Scene3d.view`——那是**同一次视口烘焙**的结果（相机拆分批 7），因此回退
     /// 路径与声明路径不可能给出两个不同的比例。
     fn update_3d_uniforms(&mut self, scene: &Scene3d, view_projection: Option<Mat4>) {
+        // P3-R250：烘焙剔除球心用当帧相机位置。放在早退之前——视图矩阵缺失的帧也要更新，
+        // 否则上一帧的位置会被当成这一帧的球心。
+        self.camera_world_position = scene.camera.position;
         let Some(matrix) = view_projection.or_else(|| scene.view.matrix()) else {
             // 宿主既没声明视图、相机又退化：不写 uniform（保持上一帧的值），并留下诊断。
             // 这条路径不该在正常帧里出现——世界视图矩阵的唯一来源是宿主声明的 `RenderView`。
@@ -1092,7 +1474,7 @@ impl Renderer {
         let camera_uniform = camera_uniform(
             &matrix,
             scene.camera.position,
-            self.clock.elapsed().as_secs_f32(),
+            self.clock_secs(),
             scene.camera.clip_plane,
             self.cloud_coverage,
             self.cloud_speed,
@@ -1102,6 +1484,7 @@ impl Renderer {
             self.surface_cover,
             ripple,
             ripple_extra,
+            self.clip_cap_depth,
         );
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -1135,15 +1518,14 @@ impl Renderer {
                 point_shadow,
             ),
         );
-        // 前八盏（最多 8 盏）点光各写 6 面矩阵；未用槽位保持全零，着色器用 params.w>0 判定有效性。
+        // P3-R202：预算内只给最近的 N 盏点光写 6 面矩阵；其余槽位保持全零，
+        // 着色器用 params.w>0 判定有效性 ⇒ 预算外的那几盏自动无阴影。
         let mut bytes = vec![0u8; POINT_SHADOW_UNIFORM_BYTES];
         if self.render_settings.point_shadows {
-            for (slot, point) in scene
-                .point_lights
-                .iter()
-                .take(POINT_SHADOW_LIGHTS)
-                .enumerate()
-            {
+            let selection =
+                point_shadow_light_indices(scene, self.point_shadow_light_budget as usize);
+            for (slot, &index) in selection.iter().enumerate() {
+                let point = &scene.point_lights[index];
                 let far = point_shadow_far(point.range);
                 let cameras = point_shadow_view_projections(point.position, far);
                 let matrix_base = slot * 6 * 64;
@@ -1170,7 +1552,12 @@ impl Renderer {
             .write_buffer(&self.point_shadow_uniform_buffer, 0, &bytes);
         // 阴影跟着相机焦点走：四级阴影图都以 target 为中心，近/中/远/超远半宽随距离伸缩。
         let distance = (scene.camera.position - scene.camera.target).length();
-        let cascades = shadow_view_projections(scene.light, scene.camera.target, distance);
+        let cascades = shadow_view_projections(
+            scene.light,
+            scene.camera.target,
+            distance,
+            self.shadow_resolution,
+        );
         let matrices: Vec<[[f32; 4]; 4]> = cascades.iter().map(|matrix| matrix.columns).collect();
         self.queue.write_buffer(
             &self.shadow_camera_buffer,
@@ -1202,6 +1589,217 @@ impl Renderer {
     #[must_use]
     pub fn frame_views(&self) -> FrameViews {
         self.frame_views
+    }
+
+    /// P3-R184：开发期归因开关（`--skip-mesh <子串>`）：网格路径含该子串的 3D drawable
+    /// 整个跳过。`None`（默认，也是回滚档）= 不跳过，行为逐字节不变。
+    pub fn set_skip_mesh_filter(&mut self, filter: Option<String>) {
+        self.skip_mesh_filter = filter;
+    }
+
+    /// P3-R185：开关不透明前到后排序。`true`（默认）= 排序；`false` = 回滚到
+    /// 声明/合批顺序（A/B 对照档）。不透明渲染与顺序无关，两档像素一致。
+    pub fn set_depth_sort_enabled(&mut self, enabled: bool) {
+        self.depth_sort_enabled = enabled;
+    }
+
+    /// P3-R191：平面反射逐 draw 剔除开关（`true` 默认；`false` = A/B 回滚档）。
+    pub fn set_planar_cull_enabled(&mut self, enabled: bool) {
+        self.planar_cull_enabled = enabled;
+    }
+
+    /// P3-R194：点光阴影逐面剔除开关（`true` 默认；`false` = A/B 回滚档）。
+    pub fn set_point_face_cull_enabled(&mut self, enabled: bool) {
+        self.point_face_cull_enabled = enabled;
+    }
+
+    /// P3-R196：平面反射目标分辨率除数（默认 2 = 半分辨率）。4 = 四分之一档（更省、更糊），
+    /// 1 = 全分辨率（最贵、最锐）。只在下一帧目标重建时生效，越界值会被夹到 1..=8。
+    pub fn set_planar_reflection_divisor(&mut self, divisor: u32) {
+        self.planar_reflection_divisor = divisor.clamp(1, 8);
+    }
+
+    /// P3-R206：3D 最大绘制距离（米；0 或非正值 = 关闭）。只影响绘制，不改场景数据；
+    /// 判定用包围球边缘（`圆心距离 − 半径`），近处大物体不会被"圆心远"误杀。
+    pub fn set_max_draw_distance(&mut self, meters: f32) {
+        self.max_draw_distance = if meters.is_finite() && meters > 0.0 {
+            meters
+        } else {
+            0.0
+        };
+    }
+
+    /// P3-R206 分类档：把最大绘制距离限制到网格路径含 `filter` 子串的 drawable
+    /// （`None` = 全体，默认）。只影响哪些实例参与距离剔除，不改距离值本身。
+    pub fn set_max_draw_distance_filter(&mut self, filter: Option<String>) {
+        self.max_draw_distance_filter = filter;
+    }
+
+    /// 当前生效的最大绘制距离（米；0 = 关闭，已按 setter 的归一规则处理）。
+    #[must_use]
+    pub fn max_draw_distance(&self) -> f32 {
+        self.max_draw_distance
+    }
+
+    /// 当前生效的距离档分类子串（`None` = 全体）。
+    #[must_use]
+    pub fn max_draw_distance_filter(&self) -> Option<&str> {
+        self.max_draw_distance_filter.as_deref()
+    }
+
+    /// P3-R248：方向光 CSM 链的分类排除档（网格路径含该子串的 drawable 不投影；
+    /// `None` = 不排除，默认）。只影响阴影链——主视图/平面反射照旧，因此画面会丢阴影，
+    /// 是一条**观感取舍档**（"小到纹素盖不住的批次不投影"），不是无损剔除。
+    pub fn set_shadow_caster_skip(&mut self, filter: Option<String>) {
+        self.shadow_caster_skip = filter.filter(|value| !value.is_empty());
+    }
+
+    /// 当前生效的阴影投射排除子串（`None` = 不排除）。
+    #[must_use]
+    pub fn shadow_caster_skip(&self) -> Option<&str> {
+        self.shadow_caster_skip.as_deref()
+    }
+
+    /// P3-R265：点光 6 面链的专用分类排除档（样本名或网格路径含该子串的 drawable 不进
+    /// 点光链；`None` = 不排除，默认）。只影响点光链——方向光 CSM、主视图、平面反射照旧，
+    /// 属观感取舍档（远处/小物件的点光阴影），不是无损剔除。
+    pub fn set_point_shadow_caster_skip(&mut self, filter: Option<String>) {
+        self.point_shadow_caster_skip = filter.filter(|value| !value.is_empty());
+    }
+
+    /// 当前生效的点光链投射排除子串（`None` = 不排除）。
+    #[must_use]
+    pub fn point_shadow_caster_skip(&self) -> Option<&str> {
+        self.point_shadow_caster_skip.as_deref()
+    }
+
+    /// P3-R256：阴影投射者的距离预算（米；0 或非正值 = 关闭）。只影响阴影链——
+    /// 主视图/平面反射照旧，因此画面会丢远处物体的阴影，是一条**观感取舍档**。
+    pub fn set_shadow_caster_max_distance(&mut self, meters: f32) {
+        self.shadow_caster_max_distance = if meters.is_finite() && meters > 0.0 {
+            meters
+        } else {
+            0.0
+        };
+    }
+
+    /// 当前生效的阴影投射距离预算（米；0 = 关闭，已按 setter 的归一规则处理）。
+    #[must_use]
+    pub fn shadow_caster_max_distance(&self) -> f32 {
+        self.shadow_caster_max_distance
+    }
+
+    /// P3-R207：深度加权折射增益。`0.0` = 关闭（默认，走旧的固定偏移），
+    /// 非有限或负值同样归一为关闭。
+    pub fn set_water_refraction_gain(&mut self, gain: f32) {
+        self.water_refraction_gain = if gain.is_finite() && gain > 0.0 {
+            gain
+        } else {
+            0.0
+        };
+    }
+
+    /// P3-R236：把着色器时间钉在给定秒数（`None` = 回到渲染钟 = 旧行为）。
+    ///
+    /// 水波相位、云、天空反射、后期颗粒都由 `clock.elapsed()` 驱动，不钉住的话
+    /// 「同一场景两次运行」的像素差里混着相位差，逐像素对账无从谈起。
+    /// 非有限的秒数一律拒绝（保持原值）；返回是否生效。
+    pub fn set_frozen_clock_secs(&mut self, secs: Option<f32>) -> bool {
+        match secs {
+            Some(value) if value.is_finite() => {
+                self.clock_frozen_secs = Some(value);
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.clock_frozen_secs = None;
+                true
+            }
+        }
+    }
+
+    /// 测试专用入口（生产路径用 [`Self::set_frozen_clock_secs`]）。
+    #[cfg(test)]
+    pub fn freeze_clock_for_tests(&mut self, secs: f32) {
+        self.set_frozen_clock_secs(Some(secs));
+    }
+
+    /// 当前生效的深度加权折射增益（0 = 关闭）。
+    #[must_use]
+    pub fn water_refraction_gain(&self) -> f32 {
+        self.water_refraction_gain
+    }
+
+    /// P3-R208：水下视角的界面替换强度。`0.0` = 关闭（默认，只有 P3-R173 的吸收），
+    /// 1.0 = 界面像素完全换成 Snell 窗口/全反射镜像；非有限或负值归一为关闭，
+    /// 大于 1 截断为 1（超过 1 的混合权重在 `mix` 里会反色，不是更强的效果）。
+    pub fn set_submerged_view_gain(&mut self, gain: f32) {
+        self.submerged_view_gain = if gain.is_finite() && gain > 0.0 {
+            gain.min(1.0)
+        } else {
+            0.0
+        };
+    }
+
+    /// 当前生效的水下界面强度（0 = 关闭）。
+    #[must_use]
+    pub fn submerged_view_gain(&self) -> f32 {
+        self.submerged_view_gain
+    }
+
+    /// P3-R241：水面折射的屏幕空间步进次数。`0` = 关闭（默认，走 R207 的偏移近似，
+    /// 像素逐字节不变）；超过 32 截到 32（再多也只在水柱里多采几次并可能钻出屏幕）。
+    /// 这条档只改**取样位置**，不改吸收/散射权重；相机在水下时它不生效（水面求交
+    /// 在水下没有前向交点，着色器自动退回偏移落点）。
+    pub fn set_water_refract_steps(&mut self, steps: u32) {
+        self.water_refract_steps = steps.min(32);
+    }
+
+    /// 当前生效的水面折射步进次数（0 = 关闭）。
+    #[must_use]
+    pub fn water_refract_steps(&self) -> u32 {
+        self.water_refract_steps
+    }
+
+    /// P3-R209：剖切口向内多深仍然画实体截面（米）。`0.0` = 关闭（默认，只有 P3-R54 的
+    /// 0.08 m 薄带，像素逐字节不变）；非有限或负值归一为关闭。深度只在会话裁剪平面
+    /// 生效时才有意义，水平面/反射那两条平面不吃这条档。
+    pub fn set_clip_cap_depth(&mut self, depth: f32) {
+        self.clip_cap_depth = if depth.is_finite() && depth > 0.0 {
+            depth
+        } else {
+            0.0
+        };
+    }
+
+    /// 当前生效的剖面封口深度（0 = 关闭 = 旧的 0.08 m 薄带）。
+    #[must_use]
+    pub fn clip_cap_depth(&self) -> f32 {
+        self.clip_cap_depth
+    }
+
+    /// P3-R211：封口是否也吃到单面网格。`false`（默认）= 只有双面网格（水面、带裙边的
+    /// 地形、`double_sided` 材质）的切口能画出实体截面；`true` = 有会话裁剪平面时，主网格
+    /// 通道对**所有**网格改用双面变体，于是单面 glb 壳（巢丘、道具）也被切成实心剖面。
+    /// 没有裁剪面的帧不受影响；阴影/平面反射通道也不吃这条档。
+    pub fn set_clip_cap_both_sides(&mut self, enabled: bool) {
+        self.clip_cap_both_sides = enabled;
+    }
+
+    /// 当前生效的「封口吃到单面网格」档。
+    #[must_use]
+    pub fn clip_cap_both_sides(&self) -> bool {
+        self.clip_cap_both_sides
+    }
+
+    /// P3-R197：把全部水面强制切到廉价光照档（A/B 用；`false` = 只按 spec 的 `cheap=1`）。
+    pub fn set_water_cheap_override(&mut self, enabled: bool) {
+        self.water_cheap_override = enabled;
+    }
+
+    /// P3-R203：把全部地形强制切到廉价细节档（A/B 用；`false` = 只按 spec 的 `cheap=1`）。
+    pub fn set_terrain_cheap_override(&mut self, enabled: bool) {
+        self.terrain_cheap_override = enabled;
     }
 
     /// docs/54 §4.3：打开 / 关闭后处理通道。
@@ -1315,7 +1913,10 @@ impl Renderer {
 
     /// 设置水体染色 rgb + 浑浊度 w（各 0..=1）；返回是否接受。
     pub fn set_water_tint(&mut self, tint: [f32; 4]) -> bool {
-        if tint.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+        if tint
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
             return false;
         }
         self.water_tint = tint;
@@ -1359,6 +1960,16 @@ impl Renderer {
     #[must_use]
     pub const fn exposure_offset(&self) -> f32 {
         self.exposure_offset
+    }
+
+    /// 着色器时间 uniform 的唯一取值点（P3-R207）。生产路径就是渲染钟；
+    /// P3-R236 的 `set_frozen_clock_secs` 钉住它（宿主做逐像素对账时用）。
+    #[must_use]
+    pub(crate) fn clock_secs(&self) -> f32 {
+        if let Some(secs) = self.clock_frozen_secs {
+            return secs;
+        }
+        self.clock.elapsed().as_secs_f32()
     }
 
     /// P3-R135：在世界 (x,z) 触发一圈水面涟漪。
@@ -1418,6 +2029,106 @@ impl Renderer {
     #[must_use]
     pub fn render_settings(&self) -> RenderSettings {
         self.render_settings
+    }
+
+    /// P3-R245：帧路径 GPU 位姿档（默认关）。关掉时暂存的批次不被消费，宿主侧提取
+    /// 仍按 CPU `matrices_at` 填 `instances`，画面与开档前逐字节相同。
+    ///
+    /// 开档后 `frame_3d_draws` 对**本帧暂存的批次**放弃逐实例剔除与合批，改为
+    /// "compute 烘焙进实例 arena + 单独一条 draw"；CPU 矩阵保留在 `FrameDraw.models`
+    /// 里作回退（烘焙失败/无 compute 能力时照旧画）。
+    pub fn set_gpu_motion_batches(&mut self, enabled: bool) {
+        self.gpu_motion_batches = enabled;
+    }
+
+    /// P3-R245 开档状态（诊断/验收用）。
+    #[must_use]
+    pub fn gpu_motion_batches(&self) -> bool {
+        self.gpu_motion_batches
+    }
+
+    /// P3-R250：GPU 位姿烘焙的逐实例距离剔除半径（米）。`0` = 关（默认，逐矩阵不变）。
+    ///
+    /// 只对走 GPU 烘焙的批次生效；半径 <= 0 或非有限值一律归 0。剔除球心是当帧相机
+    /// 世界位置，判在实例**世界位置**上（不做包围球膨胀）⇒ 贴近切面的实例可能整只
+    /// 消失，这是一条观感取舍档，不进 `--quality`。
+    pub fn set_gpu_motion_cull_distance(&mut self, meters: f32) {
+        self.gpu_motion_cull_distance = if meters.is_finite() && meters > 0.0 {
+            meters
+        } else {
+            0.0
+        };
+    }
+
+    /// P3-R250 剔除半径（诊断/验收用）。
+    #[must_use]
+    pub fn gpu_motion_cull_distance(&self) -> f32 {
+        self.gpu_motion_cull_distance
+    }
+
+    /// P3-R255：逐实例视锥剔除档。`false` = 关（默认，逐矩阵不变）。
+    ///
+    /// 开档时主视图看不见的实例连槽位都不领 ⇒ 它们在阴影/planar 里也一起消失（矩阵共享），
+    /// 这是与距离剔除同类的观感取舍；保守包围球只会少剔、不会误剔。
+    pub fn set_gpu_motion_frustum_cull(&mut self, enabled: bool) {
+        self.gpu_motion_frustum_cull = enabled;
+    }
+
+    /// P3-R255 视锥剔除档（诊断/验收用）。
+    #[must_use]
+    pub fn gpu_motion_frustum_cull(&self) -> bool {
+        self.gpu_motion_frustum_cull
+    }
+
+    /// P3-R266：GPU 位姿烘焙的远程密度档：`(半径米, 步长)`。`None` / 步长 < 2 / 半径 <= 0
+    /// 一律关（默认，逐矩阵不变）。开档后离相机超过半径的实例只留批次内
+    /// `index % 步长 == 0` 的那些；矩阵共享 ⇒ 主视图/阴影/planar 一起变稀。
+    pub fn set_gpu_motion_thin(&mut self, thin: Option<(f32, u32)>) {
+        self.gpu_motion_thin =
+            thin.filter(|(meters, stride)| meters.is_finite() && *meters > 0.0 && *stride >= 2);
+    }
+
+    /// P3-R266 远程密度档（诊断/验收用）。
+    #[must_use]
+    pub fn gpu_motion_thin(&self) -> Option<(f32, u32)> {
+        self.gpu_motion_thin
+    }
+
+    /// P3-R267：第二远带 `(半径米, 步长)`——只在第一带已开时生效，且半径必须更大；
+    /// 与第一带取**交集**（第一带已留下标集合，第二带再抽）。`None` = 关（默认）。
+    pub fn set_gpu_motion_thin_far(&mut self, thin_far: Option<(f32, u32)>) {
+        self.gpu_motion_thin_far =
+            thin_far.filter(|(meters, stride)| meters.is_finite() && *meters > 0.0 && *stride >= 2);
+    }
+
+    /// P3-R267 第二远带（诊断/验收用）。
+    #[must_use]
+    pub fn gpu_motion_thin_far(&self) -> Option<(f32, u32)> {
+        self.gpu_motion_thin_far
+    }
+
+    /// P3-R255：当帧烘焙用的主视图视锥（6 × `vec4` 打包）。`None` = 本帧没有主视图。
+    #[must_use]
+    pub fn bake_frustum(&self) -> Option<[[f32; 4]; 6]> {
+        self.bake_frustum
+    }
+
+    /// P3-R245：为这一帧的 3D 提取登记一批运动实例。宿主在 `render` / `render_into_texture`
+    /// **之前**调用；批次按 `entity`（`Scene3dDrawable::entity` 的 id）认领，一帧内没被
+    /// 认领的在帧末丢弃，不会跨帧残留。`time` 是求值用的场景时钟（秒）。
+    ///
+    /// 只登记不生效：还要 [`Self::set_gpu_motion_batches`] 开档。同一实体重复登记以后者为准。
+    pub fn stage_motion_batch(&mut self, entity: u64, batch: InstanceBatch3D, time: f32) {
+        if let Some(existing) = self
+            .staged_motion
+            .iter_mut()
+            .find(|(staged, _, _)| *staged == entity)
+        {
+            existing.1 = Arc::new(batch);
+            existing.2 = time;
+        } else {
+            self.staged_motion.push((entity, Arc::new(batch), time));
+        }
     }
 
     /// P3-R03-3：设置完整环境（`.rlenv` 的预过滤 cubemap + SH9 + 强度/旋转）。
@@ -1562,6 +2273,21 @@ impl Renderer {
         self.last_frame_metrics
     }
 
+    /// P3-R200：点光 cube 阴影面的实际边长（构建期建出的纹理尺寸）。
+    pub fn point_shadow_resolution(&self) -> u32 {
+        self.point_shadow_resolution
+    }
+
+    /// P3-R202：当前点光阴影盏数预算（1..=8）。
+    pub fn point_shadow_light_budget(&self) -> u32 {
+        self.point_shadow_light_budget
+    }
+
+    /// P3-R202：运行期改盏数预算；clamp 到 1..=8，下一帧生效（不重建纹理/绑定）。
+    pub fn set_point_shadow_light_budget(&mut self, budget: u32) {
+        self.point_shadow_light_budget = budget.clamp(1, POINT_SHADOW_LIGHTS as u32);
+    }
+
     /// 上一帧的渲染通道计划（docs/54 §4.3）。
     #[must_use]
     pub fn last_frame_plan(&self) -> &RenderPlan {
@@ -1628,6 +2354,25 @@ impl Renderer {
     #[must_use]
     pub fn cached_mesh_count(&self) -> usize {
         self.mesh_cache.len()
+    }
+
+    /// P3-R206 读数补全：本帧被最大绘制距离档剔掉的实例数（已含在 `frame_cull_frustum` 里）。
+    #[must_use]
+    pub fn frame_cull_distance(&self) -> u64 {
+        self.frame_cull_distance
+    }
+
+    /// P3-R252：本帧因整批落在距离剔除球外而没登记 draw 的 GPU 位姿批次 draw 数。
+    #[must_use]
+    pub fn frame_gpu_motion_culled(&self) -> u64 {
+        self.frame_gpu_motion_culled
+    }
+
+    /// P3-R254：本帧被整批跳过带走的实例数（批次内实例总和）。只在
+    /// `gpu_motion_cull_distance > 0` 时非零。
+    #[must_use]
+    pub fn frame_gpu_motion_culled_instances(&self) -> u64 {
+        self.frame_gpu_motion_culled_instances
     }
 
     /// 2D 顶点缓冲扩容次数（诊断/验收：稳定场景不应持续增长）。
@@ -1784,7 +2529,7 @@ fn identity_palette_data() -> Vec<[f32; 4]> {
 /// 阴影落点与受光点像素相同）。
 #[cfg(test)]
 fn light_view_projection(light: Light) -> Mat4 {
-    light_view_projection_focused(light, Vec3::ZERO, 10.0)
+    light_view_projection_focused(light, Vec3::ZERO, 10.0, DEFAULT_SHADOW_RESOLUTION)
 }
 
 /// 两级阴影的半宽随相机距离变化：近级保住细节，远级覆盖大范围。
@@ -1819,6 +2564,20 @@ fn shadow_half_extents_for(distance: f32) -> [f32; 4] {
 }
 
 /// 点光阴影远平面：跟随灯的范围，至少 5 m、最多 100 m，避免远处小物体也进 6 个面。
+/// P3-R202：盏数预算内挑出最近的 N 盏点光（相机焦点为参照），返回场景下标。
+/// 排序键 =「距离平方升序、同距按下标」⇒ 槽位分配每帧稳定；着色器按灯位匹配槽位，
+/// 所以重排槽位不改变采样正确性。
+pub(super) fn point_shadow_light_indices(scene: &Scene3d, budget: usize) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..scene.point_lights.len().min(POINT_SHADOW_LIGHTS)).collect();
+    indices.sort_by(|&a, &b| {
+        let da = (scene.point_lights[a].position - scene.camera.target).length_squared();
+        let db = (scene.point_lights[b].position - scene.camera.target).length_squared();
+        da.total_cmp(&db).then(a.cmp(&b))
+    });
+    indices.truncate(budget.clamp(1, POINT_SHADOW_LIGHTS));
+    indices
+}
+
 fn point_shadow_far(range: f32) -> f32 {
     (range.max(5.0) * 1.2).clamp(5.0, 100.0)
 }
@@ -1863,13 +2622,13 @@ fn point_shadow_view_projections(position: Vec3, far: f32) -> [Mat4; 6] {
     result
 }
 
-fn shadow_view_projections(light: Light, focus: Vec3, distance: f32) -> [Mat4; 4] {
+fn shadow_view_projections(light: Light, focus: Vec3, distance: f32, resolution: u32) -> [Mat4; 4] {
     let [near, mid, far, ultra] = shadow_half_extents_for(distance);
     [
-        light_view_projection_focused(light, focus, near),
-        light_view_projection_focused(light, focus, mid),
-        light_view_projection_focused(light, focus, far),
-        light_view_projection_focused(light, focus, ultra),
+        light_view_projection_focused(light, focus, near, resolution),
+        light_view_projection_focused(light, focus, mid, resolution),
+        light_view_projection_focused(light, focus, far, resolution),
+        light_view_projection_focused(light, focus, ultra, resolution),
     ]
 }
 
@@ -1879,13 +2638,18 @@ fn shadow_view_projections(light: Light, focus: Vec3, distance: f32) -> [Mat4; 4
 /// 这是“看起来有阴影、实际上远处没有”的根因。这里用相机 `target` 做焦点，
 /// 半宽 30 m（60 m 覆盖），并把焦点**在光源平面内**按纹素对齐；斜射光下只 snap
 /// 世界 x/z 仍会抖，因此在 `right/up` 基上 snap，再重建焦点。
-fn light_view_projection_focused(light: Light, focus: Vec3, half_extent: f32) -> Mat4 {
+fn light_view_projection_focused(
+    light: Light,
+    focus: Vec3,
+    half_extent: f32,
+    resolution: u32,
+) -> Mat4 {
     let direction = light
         .direction
         .normalized()
         .unwrap_or(Vec3::new(0.0, -1.0, 0.0));
     let half = half_extent.max(1.0);
-    let texel = 2.0 * half / 2048.0;
+    let texel = 2.0 * half / resolution.max(1) as f32;
     let snap = |value: f32| (value / texel).round() * texel;
     // 光源平面的正交基：`right × up` 与光方向一致时，相机姿态可复现。
     let up_hint = if direction.y.abs() > 0.99 {

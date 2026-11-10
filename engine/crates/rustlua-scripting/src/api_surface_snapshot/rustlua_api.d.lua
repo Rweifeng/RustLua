@@ -1,7 +1,7 @@
 ---@meta
 -- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。
 -- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。
--- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 66 个真的不收参数。两种声明不合并（合并 = 假诊断）。
+-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 71 个真的不收参数。两种声明不合并（合并 = 假诊断）。
 -- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则
 -- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。
 -- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，
@@ -162,7 +162,7 @@ function audio.music(name) end
 ---@return any
 function audio.play(name) end
 
---- 在世界坐标处播放一次音效（SFX 总线），按听者位姿算距离衰减与左右声像。2D 工程省略 `z`（视作 0）。
+--- 在世界坐标处播放一次音效（SFX 总线），按听者位姿算距离衰减与左右声像；距离还会
 ---@param name string
 ---@param x number
 ---@param y number
@@ -344,6 +344,45 @@ function camera3d.ray(x, y) end
 ---@param z number
 ---@return any
 function camera3d.world_to_screen(x, y, z) end
+
+--- cells3d：运行期 API 面基线里的 7 个函数
+cells3d = {}
+
+---@param path string
+---@return any
+function cells3d.bounds(path) end
+
+---@param opts table
+---@return any
+function cells3d.build(opts) end
+
+---@param path string
+---@return any
+function cells3d.count(path) end
+
+---@param path string
+---@param index number
+---@return any
+function cells3d.dig(path, index) end
+
+---@param path string
+---@param index number
+---@return any
+function cells3d.fill(path, index) end
+
+---@param path string
+---@param x number
+---@param y number
+---@param z number
+---@return any
+function cells3d.index(path, x, y, z) end
+
+---@param path string
+---@param x number
+---@param y number
+---@param z number
+---@return any
+function cells3d.solid_at(path, x, y, z) end
 
 --- clock：运行期 API 面基线里的 6 个函数
 clock = {}
@@ -890,13 +929,29 @@ function map.state(name, value) end
 function map.state_clear(name) end
 
 --- `mesh` 给实体挂/换 3D 网格与材质覆盖。网格路径来自 `.glb/.gltf`，或引擎哨兵
---- mesh：运行期 API 面基线里的 4 个函数
+--- mesh：运行期 API 面基线里的 9 个函数
 mesh = {}
+
+--- 读这个实体上的实例批次里有多少份实例变换。实体没有批次时返回 `0`（不是 `nil`）。
+---@param id integer
+---@return any
+function mesh.batch_count(id) end
+
+--- 读这个实体上的实例批次里**第 `index` 个实例此刻的位姿**（世界位置 + 绕 Y 的 yaw）。
+---@param id integer
+---@param index integer
+---@return any
+function mesh.batch_pose(id, index) end
 
 --- 移除实体的 `MeshRenderer`，3D 网格立刻不再绘制；之后 `mesh.get` 返回 `nil`。
 ---@param id integer
 ---@return any
 function mesh.clear(id) end
+
+--- 摘掉这个实体上的实例批次：下一帧起这些实例不再绘制。实体上的普通 `MeshRenderer`
+---@param id integer
+---@return any
+function mesh.clear_batch(id) end
 
 --- 读当前网格路径；实体没有 `MeshRenderer` 时返回 `nil`，不是空串。
 ---@param id integer
@@ -908,6 +963,22 @@ function mesh.get(id) end
 ---@param path string
 ---@return any
 function mesh.set(id, path) end
+
+--- 把 N 份实例变换收进**一个**实体：渲染侧逐实例做视锥剔除，把留在视野里的那些合成
+---@param id integer
+---@param path string
+---@param instances any
+---@param material string?
+---@param motion table?
+---@return any
+function mesh.set_batch(id, path, instances, material, motion) end
+
+--- 就地替换批次里从 `start` 起的一段实例：只解析被改的那 K 份、只动这一段，**数量与
+---@param id integer
+---@param start integer
+---@param instances any
+---@return any
+function mesh.set_batch_range(id, start, instances) end
 
 --- 给已有 `MeshRenderer` 的实体设置 `.material` 覆盖；这是 X-ray/半透明外壳一类
 ---@param id integer
@@ -1050,7 +1121,7 @@ function net.send(bytes) end
 function net.status() end
 
 --- 粒子是**视觉层**：`particles.count()` 只读得到 CPU 池；`mode="gpu"` 的 burst 交给渲染器后，
---- particles：运行期 API 面基线里的 11 个函数
+--- particles：运行期 API 面基线里的 24 个函数
 particles = {}
 
 --- 在二维世界坐标 `(x, y)` 打一簇粒子。缺省参数保持历史行为（速度 120、寿命 0.6 秒、橙色）。
@@ -1074,7 +1145,11 @@ function particles.burst3d(x, y, z, count, options) end
 ---@return any
 function particles.clear_streams3d() end
 
---- 清空全部 4 个局部风源槽。
+--- 移除网格体积风场，粒子回到只受全局风/风场/风源影响的状态（场景重置、火灭时用）。无场时调用是空操作。
+---@return any
+function particles.clear_wind_grid() end
+
+--- 清空全部 4 个局部风源槽（火灭/场景重置时用）。
 ---@return any
 function particles.clear_wind_sources() end
 
@@ -1095,16 +1170,25 @@ function particles.set_wind(x, y) end
 ---@return any
 function particles.set_wind3d(x, y, z) end
 
---- 在全局风之上加风场：高度剪切 + 空间阵风。倍率
---- `max(1 + shear*z + gust*sin(z*gust_hz + x*0.11), 0)`，CPU/GPU 同一公式。
+--- 建一张覆盖世界区域的三维速度/温度网格（体积风场 + 温度浮力场）。粒子每步按所在格三线性采样成加速度，
+---@param nx integer
+---@param ny integer
+---@param nz integer
+---@param ox number
+---@param oy number
+---@param oz number
+---@param cell number
+---@return any
+function particles.set_wind_grid(nx, ny, nz, ox, oy, oz, cell) end
+
+--- 在全局风之上加**风场**：高度剪切 + 空间阵风。倍率公式为
 ---@param shear number
 ---@param gust number
 ---@param gust_hz number
 ---@return any
 function particles.set_wind_profile(shear, gust, gust_hz) end
 
---- 设置一个局部风源（4 槽）。坐标与 burst3d 一致：x/y 水平面（y=高度），z 深度；
---- 半径内衰减 (1-d/radius)^2，radial 沿源→粒子三维方向外推，lift 沿世界高度向上推。
+--- 设置一个**局部风源**（4 个槽，`index` 0..=3）。坐标与 `burst3d` 一致：`x/y` 是水平面
 ---@param index integer
 ---@param x number
 ---@param y number
@@ -1142,6 +1226,62 @@ function particles.wind() end
 --- 读回三分量全局风（含 CPU 池的 z）。
 ---@return any
 function particles.wind3d() end
+
+--- 往格 `(x,y,z)` **累加**速度增量（脉冲注入，如火柱每步往上推一点）；扩散会把它抹开到邻格。
+---@param x integer
+---@param y integer
+---@param z integer
+---@param vx number
+---@param vy number
+---@param vz number
+---@return any
+function particles.wind_grid_add_velocity(x, y, z, vx, vy, vz) end
+
+--- 按**世界坐标**钉一处温度（火源灌热用）：引擎把世界点映到**最近节点**（偏差不超过半格），
+---@param x number
+---@param y number
+---@param z number
+---@param value number
+---@return any
+function particles.wind_grid_heat(x, y, z, value) end
+
+--- 读回场的几何（各轴格数、原点、格距）；只读，不改场。无场返回 `nil`。
+---@return any
+function particles.wind_grid_info() end
+
+--- 配置网格模拟系数；全部有限且在范围内才整批写入，否则一个都不改。
+---@param diffusion number
+---@param velocity_decay number
+---@param temperature_decay number
+---@param buoyancy number
+---@param iterations integer
+---@return any
+function particles.wind_grid_params(diffusion, velocity_decay, temperature_decay, buoyancy, iterations) end
+
+--- 按**世界坐标**往最近节点**累加**速度增量（火柱每帧往上推一点，热气与上升气流就长起来）；
+---@param x number
+---@param y number
+---@param z number
+---@param vx number
+---@param vy number
+---@param vz number
+---@return any
+function particles.wind_grid_push(x, y, z, vx, vy, vz) end
+
+--- 只读采样世界点 `(x,height,z)` 的加速度 `(ax,ay,az)`（三线性插值的速度 + 温度浮力）；不改场。
+---@param x number
+---@param y number
+---@param z number
+---@return any
+function particles.wind_grid_sample(x, y, z) end
+
+--- 设置格 `(x,y,z)` 的温度（绝对值，如把火源格钉在某温度）；浮力按 `buoyancy·温度` 抬升该格速度，扩散把热量抹开。
+---@param x integer
+---@param y integer
+---@param z integer
+---@param value number
+---@return any
+function particles.wind_grid_set_temperature(x, y, z, value) end
 
 --- 读回当前风场 `(shear, gust, gust_hz)`。
 ---@return any
@@ -1202,11 +1342,16 @@ function physics.set_position(id, x, y) end
 ---@return any
 function physics.set_velocity(...) end
 
---- physics3d：运行期 API 面基线里的 9 个函数
+--- physics3d：运行期 API 面基线里的 11 个函数
 physics3d = {}
 
---- 为实体添加一块静态地形高度场：heights 行主序、rows×cols；局部 XZ 由 sx/sz 铺开，
---- 高度乘 sy。固定体，可被射线/动态刚体碰撞。
+--- 给实体挂上**逐格体素的碰撞体**（P3-R215）。`opts` 就是 `cells3d.build(opts)` 那张表
+---@param id integer
+---@param opts table
+---@return any
+function physics3d.add_cells(id, opts) end
+
+--- 为实体添加一块**静态地形高度场**（P3-R55）。`heights` 行主序、`rows × cols` 个数；
 ---@param id integer
 ---@param x number
 ---@param y number
@@ -1330,6 +1475,99 @@ function quad.get(id) end
 ---@param component string
 ---@return any
 function quad.set(id, component) end
+
+--- render：运行期 API 面基线里的 17 个函数
+render = {}
+
+---@param depth number
+---@return any
+function render.set_clip_cap(depth) end
+
+---@param on any
+---@return any
+function render.set_clip_cap_both_sides(on) end
+
+--- 覆盖云底高度（世界 y，40..200，默认 100）。天空体积云的采样区间变为
+---@param base number
+---@return any
+function render.set_cloud_base(base) end
+
+--- 覆盖云量（0..1）：地面/水面/世界 Sprite 的云影阈值按它偏移，天空体积云密度也按它偏移。
+---@param coverage number
+---@return any
+function render.set_cloud_coverage(coverage) end
+
+--- 覆盖云影强度（0..0.6，默认 0.26）：地面/水面/Sprite 云影按
+---@param strength number
+---@return any
+function render.set_cloud_shadow_strength(strength) end
+
+--- 覆盖云层漂移速度倍率（0..4，默认 1）。地面/水面/Sprite 云影与天空体积云共用同一速度；
+---@param speed number
+---@return any
+function render.set_cloud_speed(speed) end
+
+--- 设置曝光偏移（EV，-4..4），叠加在 Tonemap 的 `exposure_ev` 上；用于雨天压暗、
+---@param ev number
+---@return any
+function render.set_exposure(ev) end
+
+--- 设置屏幕闪电闪光（0..1）；Tonemap 在雾之后、色调映射之前叠加冷白色。脚本每帧
+---@param intensity number
+---@return any
+function render.set_flash(intensity) end
+
+--- 覆盖渲染器的距离雾密度（`RenderSettings.fog_density`）。宿主每帧读一次，只在值变化时
+---@param density number
+---@return any
+function render.set_fog(density) end
+
+--- 覆盖渲染器的雾颜色（线性 RGB，`0..=1`）。宿主每帧读一次并应用到
+---@param r number
+---@param g number
+---@param b number
+---@return any
+function render.set_fog_color(r, g, b) end
+
+--- 设置暗角/颗粒强度（各 0..1）：暗角在 Tonemap 后按屏幕径向压暗，
+---@param vignette number
+---@param grain number
+---@return any
+function render.set_post_fx(vignette, grain) end
+
+--- 运行期画质档（1=低、2=中、3=高）。低档关 SSAO/SSR/接触阴影/泛光/点光阴影；
+---@param level integer
+---@return any
+function render.set_quality(level) end
+
+--- 在世界 `(x,z)` 触发一圈水面涟漪（消费一次）：半径随时间扩到约 15，1.5 秒内淡出。
+---@param x number
+---@param z number
+---@return any
+function render.set_ripple(x, z) end
+
+--- 设置地面覆盖（各 0..1）：`snow` 把地形颜色拉向冷白，`wet` 压暗地表。宿主每帧读一次；
+---@param snow number
+---@param wet number
+---@return any
+function render.set_surface_cover(snow, wet) end
+
+--- 把水面折射的 Snell 步进数调到 `steps`（0..=32 的整数；0 = 关 = 回退到 P3-R207 的「光程加权偏移」）。
+---@param steps any
+---@return any
+function render.set_water_refract_steps(steps) end
+
+--- 设置水体染色 rgb 与浑浊度 w（各 0..1）。水体先把基色乘 `rgb` 再按 0.65 混合；
+---@param r number
+---@param g number
+---@param b number
+---@param turbidity number
+---@return any
+function render.set_water_tint(r, g, b, turbidity) end
+
+--- 返回上一帧渲染统计表：
+---@return any
+function render.stats() end
 
 --- 预测与回滚账本。它**不碰模拟**：快照是脚本自己序列化的字节串（整张世界表、场景状态都行），
 --- rollback：运行期 API 面基线里的 9 个函数
@@ -1479,7 +1717,7 @@ terrain3d = {}
 ---@return any
 function terrain3d.bounds(spec) end
 
---- 可见地面的高度查询；返回值和网格顶点来自同一个 [`TerrainSpec::height`]。
+--- 可见地面的高度查询；返回值和网格顶点来自同一个 `TerrainSpec::height`。
 ---@param spec string
 ---@param x number
 ---@param z number
@@ -2110,68 +2348,3 @@ function world_text.attach(id, component) end
 ---@param id integer
 ---@return any
 function world_text.detach(id) end
-
---- render锛氳繍琛屾湡 API 闈㈠熀绾块噷鐨?1 涓嚱鏁?render = {}
-
----@param density number
----@return any
-function render.set_fog(density) end
-
----@param r number
----@param g number
----@param b number
----@return any
-function render.set_fog_color(r, g, b) end
-
----@param coverage number
----@return any
-function render.set_cloud_coverage(coverage) end
-
----@param speed number
----@return any
-function render.set_cloud_speed(speed) end
-
----@param base number
----@return any
-function render.set_cloud_base(base) end
-
----@param strength number
----@return any
-function render.set_cloud_shadow_strength(strength) end
-
----@param intensity number
----@return any
-function render.set_flash(intensity) end
-
----@param r number
----@param g number
----@param b number
----@param turbidity number
----@return any
-function render.set_water_tint(r, g, b, turbidity) end
-
----@param level integer
----@return any
-function render.set_quality(level) end
-
----@param snow number
----@param wet number
----@return any
-function render.set_surface_cover(snow, wet) end
-
----@param ev number
----@return any
-function render.set_exposure(ev) end
-
----@param x number
----@param z number
----@return any
-function render.set_ripple(x, z) end
-
----@param vignette number
----@param grain number
----@return any
-function render.set_post_fx(vignette, grain) end
-
----@return any
-function render.stats() end

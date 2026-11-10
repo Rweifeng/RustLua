@@ -48,6 +48,9 @@ pub enum RenderPass {
     WorldSpriteOpaque,
     /// 阴影贴图（方向光）。
     Shadow,
+    /// 水面平面反射（P3-R170）：镜像相机把不透明场景再画一遍到离屏色图，
+    /// Tonemap 在水面像素上按投影坐标采样。只在水面 + HDR + SSR 同时成立时出现。
+    PlanarReflection,
     /// 深度 / 不透明网格。
     DepthOpaque,
     /// 世界 Sprite 通道：共用 3D 视图时画**半透明**段（测深度不写深度），否则画全部段
@@ -82,10 +85,11 @@ pub enum RenderPass {
 
 impl RenderPass {
     /// 规范执行顺序。渲染器按这个顺序执行，计划也必须按这个顺序列出通道。
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Clear,
         Self::WorldSpriteOpaque,
         Self::Shadow,
+        Self::PlanarReflection,
         Self::DepthOpaque,
         Self::WorldSprite,
         Self::Particle,
@@ -103,6 +107,7 @@ impl RenderPass {
             Self::Clear => "clear",
             Self::WorldSpriteOpaque => "world_sprite_opaque",
             Self::Shadow => "shadow",
+            Self::PlanarReflection => "planar_reflection",
             Self::DepthOpaque => "depth_opaque",
             Self::WorldSprite => "world_sprite",
             Self::Particle => "particle",
@@ -147,6 +152,12 @@ pub struct FrameFacts {
     /// 为真时场景先画进 `Rgba16Float` 目标，因此**本帧一定会清屏**（离屏 HDR 附件没有
     /// "上一帧内容"可叠）——与 `post_process` 同一条理由。
     pub tonemap: bool,
+    /// 本帧要跑水面平面反射（P3-R170）：PBR + HDR + SSR + 场景里存在 `__water__` 同时成立。
+    ///
+    /// 反射结果由 Tonemap 消费，因此这一条只可能在 `tonemap` 为真时出现；它排在
+    /// `Shadow` 之后（阴影贴图本帧已就绪）与 `DepthOpaque` 之前（先渲反射再渲主视图，
+    /// 两张目标互不依赖，但先做反射可以让主 pass 少等一次附件切换）。
+    pub planar_reflection: bool,
     /// `RenderLayer::World2D` 桶的 draw 数。
     pub world_2d_draws: usize,
     /// `RenderLayer::Overlay2D` 桶的 draw 数。
@@ -194,6 +205,9 @@ impl RenderPlan {
         }
         if facts.has_3d_draws {
             passes.push(RenderPass::Shadow);
+            if facts.planar_reflection {
+                passes.push(RenderPass::PlanarReflection);
+            }
             passes.push(RenderPass::DepthOpaque);
         }
         if facts.world_sprites > 0 {
@@ -299,6 +313,7 @@ mod tests {
             world_sprite_shared_depth: true,
             gpu_particles: true,
             tonemap: true,
+            planar_reflection: true,
             world_2d_draws: 2,
             overlay_2d_draws: 1,
             screen_ui_draws: 3,
@@ -317,6 +332,7 @@ mod tests {
                 RenderPass::Clear,
                 RenderPass::WorldSpriteOpaque,
                 RenderPass::Shadow,
+                RenderPass::PlanarReflection,
                 RenderPass::DepthOpaque,
                 RenderPass::WorldSprite,
                 RenderPass::Particle,
@@ -333,7 +349,41 @@ mod tests {
             RenderPass::ALL.len(),
             "ALL_LEN 必须与规范顺序一致"
         );
-        assert_eq!(RenderPass::ALL.len(), 11, "通道数变化必须同步改渲染器");
+        assert_eq!(RenderPass::ALL.len(), 12, "通道数变化必须同步改渲染器");
+    }
+
+    /// P3-R170：平面反射夹在 `Shadow` 与 `DepthOpaque` 之间，且没有 3D 网格时不可能出现
+    /// （没有可反射的几何，也没有共用的材质绑定）。
+    #[test]
+    fn planar_reflection_sits_between_shadow_and_the_main_mesh_pass() {
+        let with = RenderPlan::for_frame(FrameFacts {
+            has_3d_draws: true,
+            tonemap: true,
+            planar_reflection: true,
+            ..FrameFacts::default()
+        });
+        assert_eq!(
+            with.passes(),
+            [
+                RenderPass::Clear,
+                RenderPass::Shadow,
+                RenderPass::PlanarReflection,
+                RenderPass::DepthOpaque,
+                RenderPass::Tonemap,
+            ]
+        );
+        assert!(with.is_canonical());
+
+        let without_draws = RenderPlan::for_frame(FrameFacts {
+            has_3d_draws: false,
+            tonemap: true,
+            planar_reflection: true,
+            ..FrameFacts::default()
+        });
+        assert!(
+            !without_draws.contains(RenderPass::PlanarReflection),
+            "没有 3D 网格时平面反射不该出现"
+        );
     }
 
     /// P3-R01：HDR 帧的 `Tonemap` 必须**在 2D/UI 之前**，且本身会强制清屏。
@@ -466,7 +516,7 @@ mod tests {
     /// 计划恒为规范顺序：把 bool 事实穷举一遍，`is_canonical` 必须无例外成立。
     #[test]
     fn every_fact_combination_yields_a_canonical_plan() {
-        for bits in 0u32..(1 << 9) {
+        for bits in 0u32..(1 << 10) {
             let facts = FrameFacts {
                 clear: bits & 1 != 0,
                 has_3d_draws: bits & 2 != 0,
@@ -480,6 +530,8 @@ mod tests {
                 post_process: bits & 64 != 0,
                 gpu_particles: bits & 128 != 0,
                 tonemap: bits & 256 != 0,
+                // `planar_reflection` 独立取位：非法组合（无 3D 却要反射）由 `for_frame` 自己收敛。
+                planar_reflection: bits & 512 != 0,
             };
             let plan = RenderPlan::for_frame(facts);
             assert!(plan.is_canonical(), "{facts:?} ⇒ {:?}", plan.passes());

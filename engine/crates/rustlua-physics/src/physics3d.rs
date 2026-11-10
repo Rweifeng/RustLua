@@ -19,7 +19,10 @@ use rustlua_math::math3d::{Quat, Vec3};
 pub enum ColliderShape3d {
     Ball(f32),
     Cuboid(Vec3),
-    Capsule { half_height: f32, radius: f32 },
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
     /// 静态地形高度场（P3-R55）：`heights` 行主序，`rows × cols`；
     /// 局部 XZ 由 `scale.x/z` 铺开，Y 由 `scale.y` 乘高度。
     Heightfield {
@@ -530,10 +533,7 @@ impl PhysicsWorld3d {
                     scale,
                 } => {
                     let matrix = nalgebra::DMatrix::from_row_slice(rows, cols, &heights);
-                    ColliderBuilder::heightfield(
-                        matrix,
-                        Vector::new(scale.x, scale.y, scale.z),
-                    )
+                    ColliderBuilder::heightfield(matrix, Vector::new(scale.x, scale.y, scale.z))
                 }
             };
             builder = builder
@@ -612,6 +612,82 @@ impl PhysicsWorld3d {
             ccd: false,
         };
         self.add_body(entity, position, false, vec![desc])
+    }
+
+    /// 添加一个静态**逐格体素**碰撞体（P3-R215）。
+    ///
+    /// 与渲染侧 `__cells__`（`rustlua-render::cellmesh`）同源的一张实心格位图：`solids` 是
+    /// 0 基平铺下标（`x + w * (z + d * y)`，与 `CellMeshSpec::index` 同式），区域 min 角落在
+    /// `position`。格位图先贪心并块成尽量少的轴对齐长方体，再作为同一刚体上的多个 `Cuboid`
+    /// 插入 ⇒ 碰撞体数量只跟表面的块状程度走，不跟格数走（3.5 k 格的巢并到百级）。
+    ///
+    /// **语义是替换**：这条 API 没有 Lua 侧的 remove 通路，而「挖一格」的唯一做法就是重建位图，
+    /// 所以实体已有刚体时先删旧的。返回并块后的长方体个数，是给门的读数。
+    pub fn add_cells(
+        &mut self,
+        entity: EntityId,
+        position: Vec3,
+        cell: f32,
+        dims: [usize; 3],
+        solids: &[usize],
+    ) -> Result<usize, PhysicsError> {
+        crate::voxel::validate(dims, solids).map_err(|error| {
+            PhysicsError::Malformed(match error {
+                crate::voxel::VoxelError::Axis => "cells axis must be 1..=64".to_owned(),
+                crate::voxel::VoxelError::Total => "cells total must be <= 32768".to_owned(),
+                crate::voxel::VoxelError::IndexOutOfRange(index) => {
+                    format!("cell index {index} is outside the region")
+                }
+                crate::voxel::VoxelError::Duplicate(index) => {
+                    format!("cell index {index} is listed twice")
+                }
+            })
+        })?;
+        if !position.x.is_finite()
+            || !position.y.is_finite()
+            || !position.z.is_finite()
+            || !cell.is_finite()
+            || !(crate::voxel::MIN_CELL..=crate::voxel::MAX_CELL).contains(&cell)
+        {
+            return Err(PhysicsError::Malformed(
+                "cell size must be finite and within 0.05..=64 metres".to_owned(),
+            ));
+        }
+        let boxes = crate::voxel::merge(dims, solids);
+        let descs: Vec<ColliderDesc3d> = boxes
+            .into_iter()
+            .map(|voxel| {
+                let extent = [
+                    voxel.extent[0] as f32 * cell,
+                    voxel.extent[1] as f32 * cell,
+                    voxel.extent[2] as f32 * cell,
+                ];
+                let center = [
+                    (voxel.min[0] as f32 + voxel.extent[0] as f32 * 0.5) * cell,
+                    (voxel.min[1] as f32 + voxel.extent[1] as f32 * 0.5) * cell,
+                    (voxel.min[2] as f32 + voxel.extent[2] as f32 * 0.5) * cell,
+                ];
+                ColliderDesc3d {
+                    shape: ColliderShape3d::Cuboid(Vec3::new(
+                        extent[0] * 0.5,
+                        extent[1] * 0.5,
+                        extent[2] * 0.5,
+                    )),
+                    offset: Vec3::new(center[0], center[1], center[2]),
+                    sensor: false,
+                    dynamic: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                }
+            })
+            .collect();
+        let count = descs.len();
+        if self.entity_bodies.contains_key(&entity) {
+            self.remove_body(entity)?;
+        }
+        self.add_body(entity, position, false, descs)?;
+        Ok(count)
     }
 
     /// Removes a body and its colliders (e.g. when its entity is destroyed).
@@ -1513,5 +1589,380 @@ mod tests {
             .unwrap();
         let moved = world.step(0.016);
         assert!(moved.iter().any(|(e, p)| *e == player && p.y > 1.9));
+    }
+
+    /// 并块本身：一整块 4×3×1 只要 1 个长方体（横向贪心 + 竖向接柱），
+    /// 挖掉中间一格之后必须多出一块——否则「挖」在物理侧不可见。
+    #[test]
+    fn voxel_merge_collapses_runs_and_columns() {
+        let dims = [4usize, 3, 1];
+        let full: Vec<usize> = (0..12).collect();
+        let boxes = crate::voxel::merge(dims, &full);
+        assert_eq!(boxes.len(), 1, "整块应该并成一个长方体：{boxes:?}");
+        assert_eq!(boxes[0].min, [0, 0, 0]);
+        assert_eq!(boxes[0].extent, [4, 3, 1]);
+
+        // 挖掉 y=1 层 x=2 那一格：那一层被劈成两段（左 2 格 + 右 1 格），上下两层各自成块。
+        // 竖向接柱接不上是**正确**行为：中间层断了，y=0 与 y=2 的矩形不再连续。
+        let dug: Vec<usize> = full
+            .iter()
+            .copied()
+            .filter(|&i| i != crate::voxel::flat_index(dims, 2, 1, 0))
+            .collect();
+        let boxes = crate::voxel::merge(dims, &dug);
+        assert_eq!(boxes.len(), 4, "挖一格应该多出一段：{boxes:?}");
+        let total_cells: usize = boxes
+            .iter()
+            .map(|b| b.extent[0] * b.extent[1] * b.extent[2])
+            .sum();
+        assert_eq!(total_cells, 11, "并块不能凭空增减格子");
+    }
+
+    /// 因果判据：墙挡得住射线，挖穿的那一格让射线过去，其余格仍然挡。
+    #[test]
+    fn add_cells_blocks_rays_and_a_dug_cell_lets_one_through() {
+        let mut world = PhysicsWorld3d::new();
+        let wall = entity(21);
+        let dims = [1usize, 5, 3];
+        let full: Vec<usize> = (0..15).collect();
+        let merged = world
+            .add_cells(wall, Vec3::ZERO, 1.0, dims, &full)
+            .expect("wall");
+        assert_eq!(merged, 1, "整面墙并成 1 个长方体");
+        // 并块后的形状就是普通 Cuboid ⇒ `debug_draw` 看得见（与高度场不同），
+        // 半尺寸/中心都按格算：dims [1,5,3] × cell 1 ⇒ 半边 (0.5, 2.5, 1.5)。
+        let wire = world.debug_shapes();
+        assert_eq!(wire.len(), 1, "debug_draw 应该收到并出来的那块：{wire:?}");
+        assert_eq!(wire[0].entity, wall);
+        assert!(!wire[0].dynamic);
+        let ColliderShape3d::Cuboid(half) = wire[0].shape else {
+            panic!("并块出来的碰撞体必须是 Cuboid，拿到 {:?}", wire[0].shape);
+        };
+        assert_eq!(half, Vec3::new(0.5, 2.5, 1.5));
+        assert_eq!(wire[0].center, Vec3::new(0.5, 2.5, 1.5));
+        let mid_y = 2.5;
+        assert_eq!(
+            world
+                .raycast(Vec3::new(-5.0, mid_y, 1.5), Vec3::X, 20.0)
+                .unwrap(),
+            Some(wall),
+            "未挖的墙必须挡住射线"
+        );
+        // 挖掉 (x=0, y=2, z=1) 这一格之后重建同一实体。
+        let hole = crate::voxel::flat_index(dims, 0, 2, 1);
+        let dug: Vec<usize> = full.iter().copied().filter(|&i| i != hole).collect();
+        let merged = world.add_cells(wall, Vec3::ZERO, 1.0, dims, &dug).unwrap();
+        assert_eq!(
+            world
+                .raycast(Vec3::new(-5.0, 2.5, 1.5), Vec3::X, 20.0)
+                .unwrap(),
+            None,
+            "挖穿的那一格必须让射线过去"
+        );
+        assert_eq!(
+            world
+                .raycast(Vec3::new(-5.0, 0.5, 1.5), Vec3::X, 20.0)
+                .unwrap(),
+            Some(wall),
+            "相邻的格还得挡"
+        );
+        assert!(merged > 1, "挖开后并块数应涨：{merged}");
+    }
+
+    /// 动态体真的被逐格体素接住（不是只有射线看得见）。
+    #[test]
+    fn dynamic_body_rests_on_a_voxel_floor() {
+        let mut world = PhysicsWorld3d::new();
+        let floor = entity(22);
+        let dims = [4usize, 1, 4];
+        let full: Vec<usize> = (0..16).collect();
+        world
+            .add_cells(floor, Vec3::ZERO, 1.0, dims, &full)
+            .unwrap();
+        let ball_id = entity(23);
+        world
+            .add_body(ball_id, Vec3::new(2.0, 5.0, 2.0), true, vec![ball(0.5)])
+            .unwrap();
+        let mut resting = Vec3::ZERO;
+        for _ in 0..120 {
+            for (e, p) in world.step(1.0 / 60.0) {
+                if e == ball_id {
+                    resting = p;
+                }
+            }
+        }
+        assert!(
+            (resting.y - 1.5).abs() < 0.1,
+            "球应该停在地板面上（y≈1.5），实得 y={}",
+            resting.y
+        );
+        assert!(
+            world
+                .debug_shapes()
+                .iter()
+                .any(|shape| shape.entity == floor),
+            "逐格长方体要进调试形状"
+        );
+    }
+
+    /// 边界与错误形状：出界/重复/超上限都报错，不夹取（与 `cells3d` 同口径）。
+    #[test]
+    fn add_cells_rejects_malformed_fields() {
+        let mut world = PhysicsWorld3d::new();
+        let cases: [(&str, [usize; 3], Vec<usize>, f32); 5] = [
+            ("单轴 65", [65, 1, 1], vec![0], 1.0),
+            ("总格数超限", [64, 64, 9], vec![0], 1.0),
+            ("下标出界", [2, 2, 2], vec![8], 1.0),
+            ("下标重复", [2, 2, 2], vec![1, 1], 1.0),
+            ("格太小", [2, 2, 2], vec![0], 0.04),
+        ];
+        for (name, dims, solids, cell) in cases {
+            let error = world
+                .add_cells(entity(30), Vec3::ZERO, cell, dims, &solids)
+                .err()
+                .unwrap_or_else(|| panic!("{name} 应该报错却通过了"));
+            assert!(
+                matches!(error, PhysicsError::Malformed(_)),
+                "{name} 的形状不对：{error:?}"
+            );
+        }
+        // 上限内侧要过：64×64×8 = 32768 正好到总格上限。
+        assert_eq!(crate::voxel::MAX_AXIS, 64);
+        assert_eq!(crate::voxel::MAX_CELLS, 64 * 64 * 8);
+        world
+            .add_cells(entity(31), Vec3::ZERO, 1.0, [64, 64, 8], &[0])
+            .expect("边界内侧必须通过");
+    }
+
+    /// 平铺下标用的是**深度** `dims[2]`，不是层数 `dims[1]`：立方区域两种写法自洽，
+    /// 只有非立方区域能分辨（与渲染侧 `CellMeshSpec::index` 必须同式）。
+    #[test]
+    fn flat_index_uses_depth_not_layer_count() {
+        let dims = [2usize, 3, 5];
+        assert_eq!(
+            crate::voxel::flat_index(dims, 0, 1, 0),
+            10,
+            "一层应该是 w*d = 10 格"
+        );
+        assert_eq!(
+            crate::voxel::flat_index(dims, 1, 2, 4),
+            2 * 3 * 5 - 1,
+            "区域最后一个格必须落在 total-1"
+        );
+    }
+
+    /// Myrmex 尺寸的读数：一整块巢并成 1 个长方体，剖一间 3×3×3 腔之后仍是常数级。
+    #[test]
+    fn myrmex_sized_field_merges_to_a_few_colliders() {
+        let dims = [21usize, 9, 21];
+        let total = 21 * 9 * 21;
+        let full: Vec<usize> = (0..total).collect();
+        assert_eq!(crate::voxel::merge(dims, &full).len(), 1);
+
+        // 挖一间室（3×3 平面 × 3 层）+ 一条 3×3 竖井，看并块后的数量级。
+        let mut carved = vec![false; total];
+        for y in 4..7 {
+            for z in 9..12 {
+                for x in 9..12 {
+                    carved[crate::voxel::flat_index(dims, x, y, z)] = true;
+                }
+            }
+        }
+        for y in 0..9 {
+            for z in 9..12 {
+                for x in 9..12 {
+                    carved[crate::voxel::flat_index(dims, x, y, z)] = true;
+                }
+            }
+        }
+        let solids: Vec<usize> = (0..total).filter(|&i| !carved[i]).collect();
+        let boxes = crate::voxel::merge(dims, &solids);
+        let merged: usize = boxes
+            .iter()
+            .map(|b| b.extent[0] * b.extent[1] * b.extent[2])
+            .sum();
+        println!(
+            "voxel_merge_reading: cells={} boxes={} cells_covered={}",
+            solids.len(),
+            boxes.len(),
+            merged
+        );
+        assert_eq!(merged, solids.len(), "并块必须恰好覆盖所有实心格");
+        assert!(
+            boxes.len() < 64,
+            "Myrmex 尺寸的巢并块后应该只有几十级长方体，实得 {}",
+            boxes.len()
+        );
+    }
+
+    /// P3-R232：碰撞体个数 → 每步物理成本的**确定性**曲线（活体四档只有 13 / 8 两个点，
+    /// 且整帧漂移把差值压到 0.2 ms，见 Myrmex §21.511）。这里在物理域内造三个量级：
+    /// 空世界 / 并块后的十几个 / 逐格不并的几千个，同一张位图，只差碰撞体切分。
+    ///
+    /// 计时用 `Instant` 而不是 `pipeline.counters`：rapier 0.22 的 `Timer::start/pause/resume`
+    /// 整体挂在 `#[cfg(feature = "profiler")]` 上，而该 feature 非默认 ⇒ `counters.enable()`
+    /// 之后所有阶段读数恒为 0，拿它归因是空洞通过。
+    ///
+    /// 第四臂白盒隔离查询 BVH：`step()` 无条件传 `Some(&mut query_pipeline)`，rapier 在最后一个
+    /// 子步做 `refit + rebalance`（`physics_pipeline.rs` 的 `update_incremental(..., true)`），
+    /// 全静态世界也一样做。这一臂用同一条 rapier 调用但传 `None`，差值就是那一段的价钱。
+    #[test]
+    fn cells_collider_count_cost_curve() {
+        const STEPS: usize = 30;
+        let dims = [21usize, 9, 21];
+        let total = dims[0] * dims[1] * dims[2];
+        let mut carved = vec![false; total];
+        for y in 0..dims[1] {
+            for z in 9..12 {
+                for x in 9..12 {
+                    carved[crate::voxel::flat_index(dims, x, y, z)] = true;
+                }
+            }
+        }
+        let solids: Vec<usize> = (0..total).filter(|&i| !carved[i]).collect();
+
+        let mut empty = PhysicsWorld3d::new();
+        let mut merged = PhysicsWorld3d::new();
+        let boxes = merged
+            .add_cells(entity(40), Vec3::ZERO, 0.5, dims, &solids)
+            .expect("merged field");
+        let mut per_cell = PhysicsWorld3d::new();
+        let descs: Vec<ColliderDesc3d> = solids
+            .iter()
+            .map(|&i| {
+                let x = i % dims[0];
+                let z = (i / dims[0]) % dims[2];
+                let y = i / (dims[0] * dims[2]);
+                ColliderDesc3d {
+                    shape: ColliderShape3d::Cuboid(Vec3::new(0.25, 0.25, 0.25)),
+                    offset: Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5) * 0.5,
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                    dynamic: false,
+                }
+            })
+            .collect();
+        let cells = descs.len();
+        per_cell
+            .add_body(entity(41), Vec3::ZERO, false, descs)
+            .expect("per-cell field");
+        let mut no_query = PhysicsWorld3d::new();
+        no_query
+            .add_cells(entity(42), Vec3::ZERO, 0.5, dims, &solids)
+            .expect("no-query field");
+
+        let mut timings: Vec<(&str, usize, f64)> = Vec::new();
+        for (name, count, world) in [
+            ("empty", 0usize, &mut empty),
+            ("merged", boxes, &mut merged),
+            ("per_cell", cells, &mut per_cell),
+        ] {
+            let start = std::time::Instant::now();
+            for _ in 0..STEPS {
+                world.step(1.0 / 60.0);
+            }
+            timings.push((
+                name,
+                count,
+                start.elapsed().as_secs_f64() * 1e6 / STEPS as f64,
+            ));
+        }
+        // 白盒臂：与 `step()` 同一条 rapier 调用，只把查询管线换成 `None`。
+        let integration = IntegrationParameters {
+            dt: 1.0 / 60.0,
+            ..Default::default()
+        };
+        let start = std::time::Instant::now();
+        for _ in 0..STEPS {
+            no_query.pipeline.step(
+                &no_query.gravity,
+                &integration,
+                &mut no_query.islands,
+                &mut no_query.broad_phase,
+                &mut no_query.narrow_phase,
+                &mut no_query.bodies,
+                &mut no_query.colliders,
+                &mut no_query.impulse_joints,
+                &mut no_query.multibody_joints,
+                &mut no_query.ccd_solver,
+                None,
+                &no_query.hooks,
+                &no_query.collector,
+            );
+        }
+        timings.push((
+            "merged_no_query",
+            boxes,
+            start.elapsed().as_secs_f64() * 1e6 / STEPS as f64,
+        ));
+
+        // 活体形状复现：Myrmex 的 3D 物理世界 = 一张 33×33 地形高度场 + 地下的巢体格体
+        // （`view/terrain3d.lua` 的 cells=32 ⇒ rows=cols=33）。活体四档里"巢体在/不在"差 0.9 ms，
+        // 而 13 盒 vs 8 盒只差 0.2 ms ⇒ 怀疑贵在与高度场的窄相，而不是盒数。这三臂把
+        // "有没有高度场"与"巢体贴不贴着地表"分开。位图/尺寸是复现，不是活体那张。
+        let heights = vec![0.0f32; 33 * 33];
+        let scale = Vec3::new(256.0, 1.0, 256.0);
+        let mut hf_only = PhysicsWorld3d::new();
+        hf_only
+            .add_heightfield(entity(50), Vec3::ZERO, scale, 33, 33, heights.clone())
+            .expect("heightfield");
+        let mut hf_near = PhysicsWorld3d::new();
+        hf_near
+            .add_heightfield(entity(51), Vec3::ZERO, scale, 33, 33, heights.clone())
+            .expect("heightfield");
+        let near_boxes = hf_near
+            .add_cells(entity(52), Vec3::new(0.0, -4.5, 0.0), 0.5, dims, &solids)
+            .expect("cells near surface");
+        let mut hf_far = PhysicsWorld3d::new();
+        hf_far
+            .add_heightfield(entity(53), Vec3::ZERO, scale, 33, 33, heights)
+            .expect("heightfield");
+        let far_boxes = hf_far
+            .add_cells(entity(54), Vec3::new(0.0, -500.0, 0.0), 0.5, dims, &solids)
+            .expect("cells far below");
+        for (name, count, world) in [
+            ("hf_only", 1usize, &mut hf_only),
+            ("hf_near", 1 + near_boxes, &mut hf_near),
+            ("hf_far", 1 + far_boxes, &mut hf_far),
+        ] {
+            let start = std::time::Instant::now();
+            for _ in 0..STEPS {
+                world.step(1.0 / 60.0);
+            }
+            timings.push((
+                name,
+                count,
+                start.elapsed().as_secs_f64() * 1e6 / STEPS as f64,
+            ));
+        }
+
+        for (name, count, us) in &timings {
+            println!("cells_cost_curve: arm={name} colliders={count} step_us={us:.1}");
+        }
+        let us = |arm: &str| timings.iter().find(|(n, _, _)| *n == arm).unwrap().2;
+        // 并块的存在理由：逐格比并块贵一个量级以上。红了说明 merge 没生效或成本不在碰撞体数上。
+        assert!(
+            us("per_cell") > us("merged") * 10.0,
+            "逐格 {} us 应该远贵于并块 {} us",
+            us("per_cell"),
+            us("merged")
+        );
+        // 非空世界的计时必须真的量到东西（防"全是 0 也绿"的空洞通过）。
+        assert!(us("merged") > 0.0 && us("empty") > 0.0);
+        println!(
+            "cells_cost_curve: query_term_us={:.1} merged_us={:.1} per_cell_us={:.1}",
+            us("merged") - us("merged_no_query"),
+            us("merged"),
+            us("per_cell")
+        );
+        println!(
+            "cells_cost_curve: hf_base_us={:.1} cells_near_us={:.1} cells_far_us={:.1} merge_speedup={:.0}x",
+            us("hf_only"),
+            us("hf_near") - us("hf_only"),
+            us("hf_far") - us("hf_only"),
+            us("per_cell") / us("merged")
+        );
     }
 }

@@ -425,6 +425,88 @@ impl Renderer {
         })
     }
 
+    /// P3-R170：把平面反射的镜像色图（`Rgba16Float`，半分辨率）同步回读到 CPU。
+    ///
+    /// 只在平面反射 pass 真跑过之后才有意义：没跑过的帧里目标仍是构造期的 1×1 透明占位图，
+    /// 返回的尺寸就是 `(1, 1)`。alpha 是命中掩码，`alpha >= 0.5` 才说明几何真的光栅化进去了。
+    pub fn read_planar_reflection_to_cpu(&self) -> anyhow::Result<SceneColorReadback> {
+        let (width, height) = self.planar_reflection_size;
+        if width == 0 || height == 0 {
+            anyhow::bail!("planar reflection target has zero size ({width}x{height})");
+        }
+        let row_bytes = 8 * width;
+        let bytes_per_row = row_bytes.div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-planar-reflection-readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rustlua-planar-reflection-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.planar_reflection_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        let map_result = rx.recv().map_err(|error| {
+            anyhow::anyhow!("planar reflection readback channel error: {error}")
+        })?;
+        map_result
+            .map_err(|error| anyhow::anyhow!("planar reflection texture map failed: {error}"))?;
+        let padded = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for row in 0..height as usize {
+            let start = row * bytes_per_row as usize;
+            for column in 0..width as usize {
+                let offset = start + column * 8;
+                let channel = |index: usize| {
+                    f16_bits_to_f32(u16::from_le_bytes([
+                        padded[offset + index * 2],
+                        padded[offset + index * 2 + 1],
+                    ]))
+                };
+                pixels.push([channel(0), channel(1), channel(2), channel(3)]);
+            }
+        }
+        drop(padded);
+        buffer.unmap();
+        Ok(SceneColorReadback {
+            width,
+            height,
+            pixels,
+        })
+    }
+
     /// 非阻塞离屏回读：总是提交一次纹理拷贝（写进环中下一空闲槽），同时尝试
     /// 读取之前提交的结果。就绪返回 `Ready(pixels)`，未就绪返回 `Pending`——
     /// 主线程永不阻塞等待 GPU。纹理须有 `COPY_SRC` usage。

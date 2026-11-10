@@ -80,8 +80,20 @@ fn migrated_components_keep_their_handwritten_widget_kinds() {
             ),
             ("color", FieldWidget::Color { parts: 3 }),
             ("intensity", FieldWidget::Number { integer: false }),
+            // P3-R221：点光的三个键（`type/position/range`）进 schema 之后各自的控件形态。
+            // 这条断言同时是"点光可以出现在面板上"的口径：`type` 走下拉而不是文本框，
+            // 引擎解析器只认 directional/point 两个字面量。
+            ("type", FieldWidget::Choice),
+            (
+                "position",
+                FieldWidget::Vector {
+                    parts: 3,
+                    size: false
+                }
+            ),
+            ("range", FieldWidget::Number { integer: false }),
         ],
-        "Light 的三个字段在通用编辑器里必须分别得到 DragValue/取色器/DragValue"
+        "Light 的六个字段在通用编辑器里必须分别得到 DragValue/取色器/DragValue/下拉/DragValue×3/DragValue"
     );
 }
 

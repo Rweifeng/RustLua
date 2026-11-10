@@ -201,6 +201,9 @@ fn builtin_pipeline_preserves_legacy_stage_order() {
             "animation3d_advance",
             "animation_player_advance",
             "spatial_propagate",
+            // 表现层脚本回调是帧内最后一格：它拿到的必须是本帧最终状态，
+            // 写在它后面的提取才会看见同一份顶点/相机。
+            "lua_frame",
         ]
     );
 }
@@ -424,4 +427,82 @@ fn systems_owning_script_state_run_inside_the_shared_schedule() {
         .run_script_steps(0, 1.0 / 60.0, &InputSnapshot::default())
         .expect("zero-step call still runs the frame pipeline");
     assert_eq!(*runs.borrow(), 2);
+}
+
+/// `on_frame(dt)`：每个**渲染帧**一次（与固定步数无关），dt = 固定步长 × 步数。
+///
+/// 这是"逻辑帧 / 渲染帧"拆分的地基：steps=3 时 `update` 跑 3 次、`on_frame` 只跑 1 次，
+/// 且拿到 3/60 秒。护栏防的是把它接成 step 系统——那样表现层成本会随追帧步数线性增长，
+/// 正是这轮要消掉的那块浪费。0 步帧（帧率高于逻辑频率）仍要调一次，dt 为 0。
+#[test]
+fn on_frame_runs_once_per_rendered_frame_with_accumulated_dt() {
+    let mut runtime = sample_runtime();
+    let path = std::env::temp_dir().join(format!(
+        "rustlua-on-frame-{}-{}.lua",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::write(
+        &path,
+        "updates = 0\nframes = 0\nlast_dt = -1\n\
+         function update() updates = updates + 1 return 'ok' end\n\
+         function on_frame(dt) frames = frames + 1 last_dt = dt end",
+    )
+    .unwrap();
+    runtime
+        .script
+        .execute_project_script(&path)
+        .expect("load project script");
+    runtime
+        .run_script_steps(3, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("scheduled steps");
+
+    assert_eq!(
+        read_lua_number(&runtime, "updates"),
+        3.0,
+        "update 必须按固定步跑 3 次"
+    );
+    assert_eq!(
+        read_lua_number(&runtime, "frames"),
+        1.0,
+        "on_frame 每渲染帧只跑一次，不能跟着 steps 翻倍"
+    );
+    assert!(
+        (read_lua_number(&runtime, "last_dt") - 3.0 / 60.0).abs() < 1e-6,
+        "on_frame(dt) 必须拿到本帧累计模拟时间，得到 {}",
+        read_lua_number(&runtime, "last_dt")
+    );
+
+    runtime
+        .run_script_steps(0, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("zero-step call still runs the frame pipeline");
+    assert_eq!(
+        read_lua_number(&runtime, "updates"),
+        3.0,
+        "0 步帧不推进逻辑回调"
+    );
+    assert_eq!(
+        read_lua_number(&runtime, "frames"),
+        2.0,
+        "0 步帧仍然渲染，on_frame 照跑"
+    );
+    assert_eq!(
+        read_lua_number(&runtime, "last_dt"),
+        0.0,
+        "0 步帧的 on_frame dt 为 0"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+fn read_lua_number(runtime: &RuntimeScene, name: &str) -> f64 {
+    runtime
+        .script
+        .lua()
+        .globals()
+        .get::<f64>(name)
+        .unwrap_or_else(|error| panic!("read {name}: {error}"))
 }

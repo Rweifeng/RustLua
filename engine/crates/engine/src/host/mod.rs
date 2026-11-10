@@ -29,8 +29,8 @@ pub mod scene_extract;
 mod tank_project;
 
 pub use frame_profile::{
-    FrameProfile, FrameProfileSummary, PARALLELISM_GATE_SHARE_PCT, StageProfile, SystemProfile,
-    TimingStats,
+    FrameProfile, FrameProfileSummary, GpuPassProfile, HostPhaseSummary, HostPhases,
+    PARALLELISM_GATE_SHARE_PCT, StageProfile, SystemProfile, TimingStats,
 };
 pub use gamepad::{
     FakeBackend, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,

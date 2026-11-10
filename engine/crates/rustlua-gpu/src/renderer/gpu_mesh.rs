@@ -16,7 +16,7 @@ use wgpu::util::DeviceExt;
 
 use super::{
     CachedMaterialTexture, CachedMesh, CachedPrimitive, GpuGeometry, GpuMaterial, LoadedTexture,
-    MaterialTextureIndices, Renderer, compute_mesh_bounds, hash_bytes,
+    MaterialTextureIndices, Renderer, SectionHeightMap, compute_mesh_bounds, hash_bytes,
 };
 
 /// 五个贴图槽的路径签名：只有签名变化才重新解码/上传贴图。
@@ -126,7 +126,10 @@ impl Renderer {
             tracing::warn!(target: "render", path = %path, "[render] 3D mesh has no primitives; skipped");
             return None;
         }
-        Some(CachedMesh { primitives })
+        Some(CachedMesh {
+            primitives,
+            section_height: None,
+        })
     }
 
     /// P0-②：网格 MISS 的异步请求 + 收完成品上传。Async 下资源后台解码、就绪后入缓存；
@@ -145,7 +148,14 @@ impl Renderer {
                 return;
             };
             let mesh = spec.build_mesh();
-            if let Some(cached) = self.cached_from_meshes(path, &[mesh]) {
+            if let Some(mut cached) = self.cached_from_meshes(path, &[mesh]) {
+                // P3-R203：把 spec 的廉价细节档带到材质（渲染期还会 OR 上全局覆盖）。
+                for primitive in &mut cached.primitives {
+                    primitive.material.terrain_cheap = spec.cheap;
+                }
+                // P3-R166：`sect=1` 的地形额外烘一张高度图，Tonemap 用它把
+                // 相机裁剪平面处的切口封成实体土壤（随地形起伏）。
+                cached.section_height = self.upload_section_height(&spec);
                 self.mesh_cache.insert(path.to_owned(), cached);
             }
             return;
@@ -155,6 +165,27 @@ impl Renderer {
                 tracing::warn!(target: "render", path = %path, "[render] invalid water spec; skipped");
                 return;
             };
+            let mesh = spec.build_mesh();
+            if let Some(mut cached) = self.cached_from_meshes(path, &[mesh]) {
+                // P3-R197：把 spec 的廉价光照档带到材质（渲染期还会 OR 上全局覆盖）。
+                for primitive in &mut cached.primitives {
+                    primitive.material.water_cheap = spec.cheap_lighting;
+                }
+                self.mesh_cache.insert(path.to_owned(), cached);
+            }
+            return;
+        }
+        if rustlua_render::cellmesh::CellMeshSpec::is_cells_path(path) {
+            // P3-R213：逐格实心体也是内建几何（可挖巢体的前置）。空区域不上传：0 顶点的
+            // 缓冲在部分后端会直接红，而「挖穿了」本来就不该画东西，留 warning 即可。
+            let Some(spec) = rustlua_render::cellmesh::CellMeshSpec::parse(path).ok() else {
+                tracing::warn!(target: "render", path = %path, "[render] invalid cells spec; skipped");
+                return;
+            };
+            if spec.solid_count() == 0 {
+                tracing::warn!(target: "render", path = %path, "[render] cells spec has no solid cell; skipped");
+                return;
+            }
             let mesh = spec.build_mesh();
             if let Some(cached) = self.cached_from_meshes(path, &[mesh]) {
                 self.mesh_cache.insert(path.to_owned(), cached);
@@ -311,6 +342,72 @@ impl Renderer {
                 false,
             ),
         }
+    }
+
+    /// P3-R166：把 `sect=1` 地形的高度图上传成 GPU 贴图（R/G = 16 位定点高度）。
+    ///
+    /// 分块地形共享同一张**整张地形**的高度图：缓存键去掉 `cx/cz/cs/sk`，只留高度场
+    /// 参数与 edit；每块只在自己的 `CachedMesh` 里额外记一个块心偏移。
+    fn upload_section_height(&mut self, spec: &TerrainSpec) -> Option<SectionHeightMap> {
+        let mut field = *spec;
+        field.chunk_size = 0.0;
+        field.chunk_origin = [0.0, 0.0];
+        field.chunk_skirt = 0.0;
+        let key = field.mesh_path();
+        if let Some(shared) = self.section_fields.get(&key) {
+            return Some(SectionHeightMap {
+                origin: spec.chunk_origin,
+                ..shared.clone()
+            });
+        }
+        let image = field.height_map()?;
+        let (width, height) = (image.width.max(1), image.height.max(1));
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-terrain-section-height"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let (min_y, span) = field.height_range();
+        let shared = SectionHeightMap {
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            min_y,
+            span,
+            half: field.size * 0.5,
+            origin: [0.0, 0.0],
+        };
+        self.section_fields.insert(key, shared.clone());
+        Some(SectionHeightMap {
+            origin: spec.chunk_origin,
+            ..shared
+        })
     }
 
     /// 上传 RGBA8 材质贴图并返回槽位。内容相同的贴图只上传一次（glTF 多个图元常共用
@@ -645,6 +742,7 @@ impl Renderer {
                 ),
                 bounds: compute_mesh_bounds(&vertices),
             }],
+            section_height: None,
         }
     }
 

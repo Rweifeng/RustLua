@@ -41,7 +41,7 @@ use crate::picking;
 /// 输入侧共享的视口指针单元（Registry::pointer_cell 的类型）。
 pub type PointerCell = Rc<Cell<Option<(f32, f32)>>>;
 
-/// 装 `camera` / `camera3d` / `camera2d` 三张全局表。
+/// 装 `camera` / `camera2d` 两张基底全局表（M81：`camera3d` 拆去 [`install_3d`]）。
 ///
 /// `pointer` 是输入侧共享的视口指针单元（`Registry::pointer_cell`）：`camera3d.mouse_ray`
 /// 与 `camera2d.mouse_world` 读它，因此它必须与 `input.cursor_position()` 是同一个 `Cell`。
@@ -52,9 +52,21 @@ pub fn install(
     pointer: PointerCell,
 ) -> LuaResult<()> {
     install_camera(lua, state, world)?;
-    install_camera3d(lua, state, world, Rc::clone(&pointer))?;
     install_camera2d(lua, state, world, pointer)?;
     Ok(())
+}
+
+/// M81：3D 包的 `camera3d` 表（射线/投影）+ 向共享 `camera` 表补 `set_clip_plane`。
+/// 领域 crate 不带 feature，由组合根 `register_all` 在 `3d` 开启时才调用
+/// （2D 构建的 Lua 面没有 camera3d 表，camera 表也没有 set_clip_plane）。
+pub fn install_3d(
+    lua: &Lua,
+    state: &Handle<CameraState>,
+    world: &Handle<World>,
+    pointer: PointerCell,
+) -> LuaResult<()> {
+    install_camera3d(lua, state, world, pointer)?;
+    install_camera_clip_plane(lua, world)
 }
 
 // ── 共享助手（与脚本层 `values` 同一口径，逐字保留错误串） ─────────────────────────
@@ -245,6 +257,15 @@ fn install_camera(lua: &Lua, state: &Handle<CameraState>, world: &Handle<World>)
             },
         )?,
     )?;
+    lua.globals().set("camera", camera)?;
+    Ok(())
+}
+
+/// M81 批 2：`camera.set_clip_plane` 写 Camera3D 载荷，属 3D 包，由 [`install_3d`]
+/// 补进共享 `camera` 表（表是引用语义，`ui` 三段式同一先例）。`camera.get` 返回的
+/// `clip_*` 字段留在基底——读无害，保持单一事实源形状。
+fn install_camera_clip_plane(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
+    let camera: Table = lua.globals().get("camera")?;
     let w = world.clone();
     camera.set(
         "set_clip_plane",
@@ -278,7 +299,6 @@ fn install_camera(lua: &Lua, state: &Handle<CameraState>, world: &Handle<World>)
             Ok(true)
         })?,
     )?;
-    lua.globals().set("camera", camera)?;
     Ok(())
 }
 
@@ -597,6 +617,8 @@ mod tests {
         let world = Handle::new(World::new(), "world");
         let pointer = Rc::new(Cell::new(Some((400.0, 300.0))));
         install(&lua, &state, &world, Rc::clone(&pointer)).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world, Rc::clone(&pointer)).unwrap();
         (lua, state, world, pointer)
     }
 

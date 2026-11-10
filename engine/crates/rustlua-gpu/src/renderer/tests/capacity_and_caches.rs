@@ -250,6 +250,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
             mesh_handle: handle,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
             palette: Vec::new(),
+            instances: Vec::new(),
             bounds: rustlua_render::frame::Scene3dBounds {
                 local_aabb: rustlua_math::math3d::Aabb3 {
                     min: Vec3::new(-4.0, -4.0, -0.1),

@@ -11,7 +11,7 @@ use rustlua_audio::audio::AudioSystem;
 use rustlua_input::host::HostInput;
 use rustlua_input::input::ActionMap;
 use rustlua_input::port::{LoadedSettings, SettingsLoadError, SettingsPort, SettingsSaveError};
-use rustlua_lua_api::{Handle, Registry};
+use rustlua_lua_api::{ApiDimension, ApiPack, Handle, Registry};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -140,39 +140,87 @@ pub fn registry() -> Rc<Registry> {
 /// 拆成两个注册表会让"同一帧里 audio 读到的根与 input 读到的根"变成两次查询。
 #[must_use]
 pub fn registry_with_handles() -> (Rc<Registry>, Handles) {
-    let mut registry = Registry::new();
+    let mut registry = crate::new_lua_api_registry();
     let audio = Handle::new(AudioSystem::default(), "audio");
     let input = HostInput::new(&registry);
+    let mut shared_pack = ApiPack::new(
+        "gameplay-base",
+        env!("CARGO_PKG_VERSION"),
+        ApiDimension::Shared,
+    );
 
     let audio_settings: Rc<dyn rustlua_audio::lua::SettingsPort> = Rc::new(
         crate::audio_lua::FileAudioSettings::new(registry.root_cell()),
     );
     let audio_installer = audio.clone();
-    registry.add("audio", move |lua| {
+    shared_pack.module("audio", move |lua| {
         rustlua_audio::lua::install(lua, &audio_installer, &audio_settings)
     });
 
     let input_settings: Rc<dyn SettingsPort> =
         Rc::new(FileInputSettings::new(registry.root_cell()));
     let input_installer = input.clone();
-    registry.add("input", move |lua| {
+    shared_pack.module("input", move |lua| {
         rustlua_input::lua::install(lua, &input_installer, &input_settings)
     });
 
-    // `nav` 网格状态跟注册表同寿命：热重载重建 VM 时同一份状态被重新装回去，
-    // 脚本按名字 `nav.create_grid` 会替换旧网格而不是每次 reload 漏一张。
-    let nav = crate::nav_lua::state();
-    registry.add("nav", move |lua| crate::nav_lua::install(lua, &nav));
-
     // `net` 连接也跨热重载保留：重载脚本不该顺手掐断已经配对的对战连接。
     let net = crate::net_lua::state();
-    registry.add("net", move |lua| crate::net_lua::install(lua, &net));
+    shared_pack.module("net", move |lua| crate::net_lua::install(lua, &net));
 
     // 回滚账本同寿命：热重载不该丢掉已确认输入与预测窗口。
     let rollback = crate::rollback_lua::state();
-    registry.add("rollback", move |lua| {
+    shared_pack.module("rollback", move |lua| {
         crate::rollback_lua::install(lua, &rollback)
     });
+    registry.add_pack(shared_pack);
+
+    // `nav` 网格状态跟注册表同寿命：热重载重建 VM 时同一份状态被重新装回去，
+    // 脚本按名字 `nav.create_grid` 会替换旧网格而不是每次 reload 漏一张。
+    // M81：nav 属 3D 包（XZ 战场导航），2D 构建不登记。
+    #[cfg(feature = "3d")]
+    {
+        let nav = crate::nav_lua::state();
+        let mut pack = ApiPack::new(
+            "navigation-3d",
+            env!("CARGO_PKG_VERSION"),
+            ApiDimension::ThreeD,
+        )
+        .with_dependency("gameplay-base");
+        pack.module("nav", move |lua| crate::nav_lua::install(lua, &nav));
+        registry.add_pack(pack);
+    }
 
     (Rc::new(registry), Handles { audio, input })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gameplay_api_packs_follow_the_build_dimension() {
+        let registry = registry();
+        let packs = registry.packs();
+        let shared = packs
+            .iter()
+            .find(|pack| pack.id == "gameplay-base")
+            .expect("共享玩法包");
+        assert_eq!(shared.dimension, ApiDimension::Shared);
+        assert_eq!(shared.modules, ["audio", "input", "net", "rollback"]);
+
+        #[cfg(feature = "3d")]
+        {
+            let navigation = packs
+                .iter()
+                .find(|pack| pack.id == "navigation-3d")
+                .expect("3D 构建应包含导航包");
+            assert_eq!(navigation.dimension, ApiDimension::ThreeD);
+            assert_eq!(navigation.dependencies, ["gameplay-base".to_owned()]);
+            assert_eq!(navigation.modules, ["nav"]);
+        }
+
+        #[cfg(not(feature = "3d"))]
+        assert_eq!(packs.len(), 1, "2D 构建不得登记 3D API 包");
+    }
 }

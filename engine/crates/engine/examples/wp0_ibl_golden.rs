@@ -190,12 +190,14 @@ fn main() {
         filtered_shadows: false,
         fog: false,
         fog_density: 0.0015,
+        fog_color: [0.62, 0.68, 0.76],
         god_rays: false,
         dof: false,
         dof_focus: 20.0,
         dof_range: 30.0,
         dof_strength: 1.0,
         point_shadows: false,
+        motion_blur: 0.0,
     });
     renderer.set_environment(lighting);
     assert_eq!(

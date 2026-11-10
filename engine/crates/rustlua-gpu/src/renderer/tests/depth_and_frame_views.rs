@@ -59,7 +59,7 @@ fn focused_shadow_camera_centers_on_the_camera_target() {
         ..Light::default()
     };
     let focus = Vec3::new(40.0, 0.0, -20.0);
-    let matrix = light_view_projection_focused(sun, focus, 30.0);
+    let matrix = light_view_projection_focused(sun, focus, 30.0, DEFAULT_SHADOW_RESOLUTION);
     let centre = matrix.transform_point(focus).expect("focus clip");
     assert!(
         centre.x.abs() < 0.01 && centre.y.abs() < 0.01,
@@ -85,8 +85,18 @@ fn shadow_projection_is_stable_under_sub_texel_focus_motion() {
         intensity: 1.0,
         ..Light::default()
     };
-    let a = shadow_view_projections(sun, Vec3::new(40.0, 0.0, -20.0), 270.0);
-    let b = shadow_view_projections(sun, Vec3::new(40.0005, 0.0, -20.0005), 270.0);
+    let a = shadow_view_projections(
+        sun,
+        Vec3::new(40.0, 0.0, -20.0),
+        270.0,
+        DEFAULT_SHADOW_RESOLUTION,
+    );
+    let b = shadow_view_projections(
+        sun,
+        Vec3::new(40.0005, 0.0, -20.0005),
+        270.0,
+        DEFAULT_SHADOW_RESOLUTION,
+    );
     for (index, (left, right)) in a.iter().zip(b.iter()).enumerate() {
         assert_eq!(
             left.columns, right.columns,
@@ -138,7 +148,8 @@ fn far_shadow_cascade_covers_beyond_the_near_cascade() {
         ..Light::default()
     };
     let focus = Vec3::new(40.0, 0.0, -20.0);
-    let [near, mid, far, _ultra] = shadow_view_projections(sun, focus, 270.0);
+    let [near, mid, far, _ultra] =
+        shadow_view_projections(sun, focus, 270.0, DEFAULT_SHADOW_RESOLUTION);
     let point = Vec3::new(focus.x + 120.0, focus.y, focus.z);
     let near_clip = near.transform_point(point).expect("near clip");
     let mid_clip = mid.transform_point(point).expect("mid clip");
@@ -167,7 +178,8 @@ fn ultra_shadow_cascade_covers_beyond_the_far_cascade() {
         ..Light::default()
     };
     let focus = Vec3::new(40.0, 0.0, -20.0);
-    let [near, mid, far, ultra] = shadow_view_projections(sun, focus, 270.0);
+    let [near, mid, far, ultra] =
+        shadow_view_projections(sun, focus, 270.0, DEFAULT_SHADOW_RESOLUTION);
     let point = Vec3::new(focus.x + 200.0, focus.y, focus.z);
     for (name, clip) in [
         ("near", near.transform_point(point).expect("near clip")),
@@ -499,5 +511,37 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
         pixel(&clipped, SIZE - 3, SIZE / 2),
         clear,
         "矩形之外的右条同样保持清屏色（居中不是左上贴齐）"
+    );
+}
+
+/// P3-R198：分辨率档必须真的进入纹素对齐。焦点取光源空间原点，沿光源平面偏移
+/// 1/4 个 512 纹素：512 档量化回原点（矩阵不变），2048 档正好跨一个纹素（矩阵必须变）。
+#[test]
+fn shadow_texel_snap_follows_the_configured_resolution() {
+    let sun = Light {
+        direction: Vec3::new(0.4, -0.8, 0.5),
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        ..Light::default()
+    };
+    let direction = sun.direction.normalized().expect("sun direction");
+    let right = direction
+        .cross(Vec3::new(0.0, 1.0, 0.0))
+        .normalized()
+        .expect("light-plane right axis");
+    let half = 30.0;
+    let shift = right * (2.0 * half / 512.0 * 0.25);
+    let focus = Vec3::ZERO;
+    let low_a = light_view_projection_focused(sun, focus, half, 512);
+    let low_b = light_view_projection_focused(sun, focus + shift, half, 512);
+    let high_a = light_view_projection_focused(sun, focus, half, 2048);
+    let high_b = light_view_projection_focused(sun, focus + shift, half, 2048);
+    assert_eq!(
+        low_a.columns, low_b.columns,
+        "512 档：1/4 纹素的焦点抖动必须被量化掉"
+    );
+    assert_ne!(
+        high_a.columns, high_b.columns,
+        "2048 档：同样的抖动跨了一个纹素，矩阵必须变化（否则分辨率没进纹素对齐）"
     );
 }

@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# M81：2D 基底 + 3D 可插包。`3d` 默认开；2D 发布 = --no-default-features。
+# engine 是纯透传（host 不注册 API），供叶子包与 dump_lua_api 按维度构建。
+default = ["3d"]
+3d = ["rustlua-scripting/3d", "rustlua-gameplay/3d"]
+
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
@@ -39,8 +45,9 @@ rustlua-audio.workspace = true
 # `audio` 绑定的能力单元类型（`Handle<AudioSystem>`）：组合根持有它驱动 BGM 生命周期。
 rustlua-lua-api.workspace = true
 rustlua-input.workspace = true
-rustlua-gameplay.workspace = true
-rustlua-scripting.workspace = true
+# M81：feature 链上的边必须显式断默认（理由同 scripting 清单），故这两条用路径形式。
+rustlua-gameplay = { path = "../rustlua-gameplay", default-features = false }
+rustlua-scripting = { path = "../rustlua-scripting", default-features = false }
 rustlua-infra.workspace = true
 
 [dev-dependencies]

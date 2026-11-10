@@ -82,6 +82,9 @@ pub struct RenderSettings {
     pub dof_strength: f32,
     /// 前八盏（最多 8 盏）点光源的立方体阴影。默认关闭；每帧最多 48 个 1024² 深度面。
     pub point_shadows: bool,
+    /// 相机运动模糊强度 0..1（0 = 关）。按上一帧视图投影的屏幕位移做 5 抽头拖尾：
+    /// 相机静止时逐字节不变；UI 不经过 Tonemap，文字不受影响。
+    pub motion_blur: f32,
 }
 
 impl Default for RenderSettings {
@@ -107,6 +110,7 @@ impl Default for RenderSettings {
             dof_range: 30.0,
             dof_strength: 1.0,
             point_shadows: false,
+            motion_blur: 0.0,
         }
     }
 }
@@ -134,6 +138,7 @@ impl RenderSettings {
         dof_range: 30.0,
         dof_strength: 1.0,
         point_shadows: false,
+        motion_blur: 0.0,
     };
 
     /// 只改 HDR 开关的构造器（golden/测试最常用）。

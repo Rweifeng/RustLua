@@ -48,6 +48,10 @@ pub struct HintedAtlas {
     ascent: f32,
     descent: f32,
     cached: HashMap<char, HintedGlyph>,
+    /// 字符 → 推进量（px）。`advance` 每次都要重建 `FontRef`、解析 cmap 与 hmtx，
+    /// 一条 8 字文本在排版里会问 3 遍；一帧上百条静态标签就是上千次解析。
+    /// 字体字节在生命周期内不变，这里按字符记忆一次。
+    advances: HashMap<char, f32>,
     missing: HashSet<char>,
     packer: Packer,
     context: ScaleContext,
@@ -99,6 +103,7 @@ impl HintedAtlas {
             ascent: metrics.ascent,
             descent: metrics.descent,
             cached: HashMap::new(),
+            advances: HashMap::new(),
             missing: HashSet::new(),
             packer: Packer::new(INITIAL_ATLAS_SIZE, INITIAL_ATLAS_SIZE),
             context: ScaleContext::new(),
@@ -165,7 +170,19 @@ impl HintedAtlas {
 
     /// 水平推进（px）。hinting 理论上可通过 phantom point 改推进，但 ttfautohint
     /// 不改；这里取 hmtx 原值，与 `FontVectorAtlas::advance_em` 同口径。
-    pub fn advance(&self, character: char) -> f32 {
+    ///
+    /// 结果按字符记忆：`FontRef::from_index` + cmap + hmtx 的解析远比一次哈希查找贵，
+    /// 而排版一条文本会对同一个字符问多次（换行预算、行宽、放置）。
+    pub fn advance(&mut self, character: char) -> f32 {
+        if let Some(advance) = self.advances.get(&character) {
+            return *advance;
+        }
+        let advance = self.compute_advance(character);
+        self.advances.insert(character, advance);
+        advance
+    }
+
+    fn compute_advance(&self, character: char) -> f32 {
         let bytes = select_font(&self.primary, self.fallback.as_ref(), character);
         let Some(font) = FontRef::from_index(bytes, 0) else {
             return 0.0;
@@ -188,7 +205,13 @@ impl HintedAtlas {
             return None;
         }
         let bytes = select_font(&self.primary, self.fallback.as_ref(), character);
-        let advance = self.advance(character);
+        let advance = if let Some(advance) = self.advances.get(&character) {
+            *advance
+        } else {
+            let advance = self.compute_advance(character);
+            self.advances.insert(character, advance);
+            advance
+        };
         let image = rasterize(bytes, &mut self.context, self.ppem, character);
         let Some(image) = image else {
             self.missing.insert(character);
@@ -340,4 +363,38 @@ fn has_hinting_tables(bytes: &[u8]) -> bool {
     [b"fpgm", b"prep", b"cvt "]
         .iter()
         .all(|tag| raw.table(ttf_parser::Tag::from_bytes(tag)).is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HintedAtlas;
+
+    /// 仓库内的点阵字体（真指令表），advance 记忆与逐次解析必须逐位一致。
+    fn pixel_font() -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf");
+        std::fs::read(&path).expect("仓库内点阵字体缺失")
+    }
+
+    /// 推进量按字符记忆后，第二遍必须命中缓存且数值与首次解析逐位相同；
+    /// `glyph()` 自带的那份 advance 也要与 `advance()` 同口径。
+    #[test]
+    fn advance_memo_matches_fresh_parse() {
+        let bytes = pixel_font();
+        let mut atlas = HintedAtlas::load(&bytes, 12).expect("hinting 图集");
+        for character in ['A', 'W', 'i', '江', '，', '9'] {
+            let fresh = atlas.compute_advance(character);
+            let first = atlas.advance(character);
+            let second = atlas.advance(character);
+            assert_eq!(first, fresh, "{character:?} 首次记忆值与解析值不一致");
+            assert_eq!(second, first, "{character:?} 命中记忆后数值漂移");
+        }
+        // 空格没有位图（`glyph` 给 None），但推进量必须仍可查且稳定。
+        let space = atlas.advance(' ');
+        assert!(space > 0.0, "空格推进应为正");
+        assert_eq!(atlas.advance(' '), space);
+        // 有字形的字符：`glyph()` 内部的 advance 与 `advance()` 同源。
+        let glyph = atlas.glyph('A').expect("A 应有字形");
+        assert_eq!(glyph.advance, atlas.advance('A'));
+    }
 }

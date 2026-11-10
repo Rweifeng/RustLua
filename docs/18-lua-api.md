@@ -17,7 +17,7 @@
 | `mesh` | `set/get/clear` | 设置/读取/清除 `MeshRenderer` 网格路径 |
 | `camera` | `set_active/get_active/get` | **唯一**的活动相机选择链（批 9 起不再分 2D/3D）：`set_active(id)` 只要求实体带 `Camera`，由 `projection` 决定它服务哪个 pass（透视 → 3D world，正交 → 2D overlay）；`get(id)` 读写**透视 payload**，返回 `x,y,z,tx,ty,tz,fov,near,far` |
 | `light` | `set_active/get/set` | 设置/读取方向光；`set(id,dx,dy,dz,r,g,b,intensity)` |
-| `physics3d` | `add_heightfield/get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`add_heightfield(id,x,y,z,rows,cols,sx,sy,sz,heights)` 加静态地形高度场（行主序 `rows×cols`，固定体，可被射线/动态刚体碰撞）；`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
+| `physics3d` | `add_heightfield/add_cells/get_velocity/set_position/events/raycast/overlap` | 3D 物理查询：`add_heightfield(id,x,y,z,rows,cols,sx,sy,sz,heights)` 加静态地形高度场（行主序 `rows×cols`，固定体，可被射线/动态刚体碰撞）；`add_cells(id,opts)` 把 `cells3d` 那张位图并块成少量 Cuboid 挂成固定刚体（见上文 `cells3d` 小节）；`get_velocity(id)`→`{x,y,z}`；`events()`→碰撞事件数组 `{a,b,started}`；`raycast(ox,oy,oz,dx,dy,dz,max[,groups])`→命中实体 id 或 nil；`overlap(cx,cy,cz,r[,groups])`→实体 id 数组。可选尾参 `groups = {layer=N, mask=N}` 按碰撞分组过滤（缺省全收，见下文"物理查询的分组过滤"） |
 
 3D 组件在 `instantiate_scene` 时从场景字符串解析为 World 组件；`camera.set_active` 与 `light.set_active` 由宿主渲染器每帧读取。3D pass 在**选中的是透视相机**时用它，否则回退到排序序第一台启用的透视相机；2D 视图在**选中的是正交相机**时用它（宿主采用它的载荷作为 2D 取景基准），否则保持现状。`enabled=false` 的相机不参与选择（选中它会告警并回退）。
 
@@ -324,6 +324,62 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
 再否则默认相机）与视口回填进来，因此"点中哪个"和"画了哪个"用的是同一台相机。脚本在
 **首帧渲染之前**调用这些接口会明确报错，而不是拿一台默认相机去猜。
 
+### `cells3d` 逐格体素网格（P3-R213 / docs/24）
+
+此前 Lua 侧没有任何「运行期造几何」的通路：3D 网格只有两个来源——磁盘上的 `.glb`，和渲染器自己
+合成的 `__terrain__` / `__water__` / `__ground_plane__` 哨兵。巢穴「挖一格就少一格」在脚本里无法表达。
+现在有一张把格子位图编进 mesh path 的几何，位图只存实心格，面只出外露面：
+
+| 接口 | 说明 |
+| --- | --- |
+| `cells3d.build(opts)` | `{cell, x, y, z, w, h, d, double_sided, solids}` → 规范化的 `__cells__?...&bits=...` 路径。`solids` 是 0 基下标数组，省略 = 全空区域 |
+| `cells3d.dig(path, index)` | 把下标那格挖空，返回**新路径**；下标非整数/越界报错，不夹取 |
+| `cells3d.fill(path, index)` | 同上，填成实心 |
+| `cells3d.count(path)` | 返回 `实心格数, 面数` 两个值——面数随表面积走，是「挖了多少」最省事的读数 |
+| `cells3d.bounds(path)` | 返回区域 AABB 六个数（`min_x, min_y, min_z, max_x, max_y, max_z`），不含逐格取舍，偏保守 |
+| `cells3d.solid_at(path, x, y, z)` | 该格是否实心，参数是**格坐标**不是世界坐标 |
+| `cells3d.index(path, x, y, z)` | 格坐标 → 0 基下标；区域外返回 `nil`（沿边界扫邻居是常态调用） |
+
+拿到新路径后赋给实体的 `MeshRenderer.mesh` 才会换网格：渲染器按**路径串**缓存，同一串只合成一次。
+上限：单轴 ≤64 格、总格数 ≤32 768、`cell` ∈ 0.05..=64 米。默认单面（`double_sided = true` 才双面）；
+实测封闭体素从外面看永远是正面，所以双面位只在相机埋进实体时才可见，P3-R211 那条强制双面档
+对逐格几何没有活可干。
+
+参照尺寸（Myrmex 的巢体已接到这张 API，见其 docs/02 §21.500）：0.5 m 一格、21×9×21 = 3969 格的区域里，
+满格外表面只有 2×(21×9 + 21×21 + 9×21) = 1638 面，而不是 6×3969 = 23814 面；从中剖出一间 3×3×3 腔体，
+面数按腔体自己的表面积再加 54 面（3942 格 / 1692 面），规范化路径 727 字节，其中位图恒为 ⌈3969/8⌉ = 497 字节。
+这组数由 `cargo test -q -p rustlua-render --lib cellmesh` 的 `myrmex_sized_nest_stays_within_limits` 钉住
+（`--nocapture` 读数 `cells=3942 faces=1692 path_bytes=727`），它同时回答「游戏侧那套画法规格会不会顶到上面的上限」——
+改规格要重跑那条门，别只信这里抄下来的数。
+
+**逐格几何的碰撞体（P3-R215）**：`physics3d.add_cells(id, opts)` 吃的是**同一张 opts**
+（`cell/x/y/z/w/h/d/solids` 七个字段同名同义），先把位图贪心并块成尽量少的轴对齐长方体，
+再作为同一个固定刚体上的多个 `Cuboid` 插进物理 ⇒ 渲染与物理同源，不会出现「画出来一堵墙、
+实体却穿过去」。碰撞体个数只跟块状程度走，不跟格数走：实测 3888 格的整块并成 4 个长方体，
+且覆盖格数守恒（门里读数 `voxel_merge_reading: cells=3888 boxes=4 cells_covered=3888`）。
+返回值就是并块后的个数。**语义是替换**：Lua 侧没有 physics 的 remove 通路，而「挖一格」的
+唯一做法是重建位图，所以实体已有刚体时先删旧的——重复调用不叠加碰撞体。
+下标越界/重复、单轴与总格越限都报错，不夹取（与 `cells3d` 同一口径）。
+**销毁是延迟的（P3-R217）**：`entity.destroy(id)` 只把实体记进待摘表，3D 刚体（含 `add_cells`
+并出来的那批 `Cuboid`）要等**下一次 `step_physics`** 才由 `drain_pending_physics_removals` 统一摘掉
+⇒ 销毁那一帧的射线仍然会撞上一个已经销毁的巢。门用三步读数钉住「延迟」这个语义本身：
+`added 1 true` → `destroyed true` → `after_step false`
+（`cargo test -q -p rustlua-scripting --lib destroying_the_owner`）。只测最后一步的话，
+「立刻摘」和「延迟摘」都绿。
+
+**`__cells__` 走的是 `mesh.set` 这条路（P3-R218）**：逐格巢体在真运行里的入口是
+`mesh.set(id, cells3d.build(opts))`，它先到 `mesh3d::validate_mesh_path` 过一遍校验再交给渲染器。
+那段此前只放行 `__ground_plane__` / `__terrain__` / `__water__` 三张哨兵串，`__cells__` 会掉到
+「按普通项目路径查扩展名」那一步而报 `unsupported MeshRenderer mesh extension` ⇒ lupa 桩门整条
+看不见（桩里的 `mesh.set` 是 no-op），真引擎则一个实体也建不出来。
+门：`cargo test -q -p rustlua-render --lib cells_sentinel`，对照=摘掉这段，红在 `.unwrap()` 那行。
+
+
+那条上限（单轴 ≤64、总格 ≤32 768、`cell` ∈ 0.05..=64）在物理侧**又写了一遍**：
+`rustlua-physics::voxel` 不依赖 `rustlua-render::cellmesh`，两份常数与 `index` 公式都是
+靠注释钉住的同式复制，**没有跨 crate 的门**——改任何一边的数字或下标公式，另一边不会红，
+必须手工同步（这是已知缺口，不是已验证的一致性）。
+
 ### `particles` 发射参数（WP4）
 
 `particles.burst(x, y, count [, opts])`。**此前速度/寿命/颜色被写死在引擎里**（120 / 0.6 / 橙色），
@@ -445,7 +501,8 @@ end
   这些表操作"自己"。
 - **一个文件一份 Lua 状态、实体是实例**：同文件的所有实体共享顶层局部变量，每实体状态请写成上面
   那种以 `id` 为键的表（或放在实体组件里）。这样上万实体不会变成上万份 Lua 状态。
-- 钩子名与工程级脚本**不重名**：工程级仍是 `on_create()` / `update()` / `on_destroy()`。
+- 钩子名与工程级脚本**不重名**：工程级仍是 `on_create()` / `update()` / `on_frame(dt)` /
+  `on_destroy()`（`on_frame` 每渲染帧一次，见 [docs/22 §5](22-使用手册.md)）。
 - 钩子里报错会带上脚本路径与钩子名，运行时会中止当步并报出来，不静默吞掉。
 - `enabled=false` 的 `Script` 组件既不加载也不调用；文件缺失或编译失败在**场景加载期**报错。
 - 热重载：`RuntimeScene::reload_scripts()` 同时处理工程级脚本与每实体脚本，返回
@@ -531,4 +588,4 @@ cargo test -p engine_core --all-features
 cargo run -p game_runner --example lua_api_demo --release
 lua_api_demo_ok update=lua-api-ok quit=false
 ```
-| `render` | `set_fog/.../set_exposure/set_ripple` | 运行期雾/云/闪电/水体/画质/地面积雪湿润/曝光/涟漪：`set_exposure(-4..=4)`、`set_ripple(x,z)`、`set_post_fx(vignette,grain)`、`stats()`；其余同前，宿主每帧应用，非法值返回 `(false, 原因)`。 |
+| `render` | `set_fog/.../set_exposure/set_ripple` | 运行期雾/云/闪电/水体/画质/地面积雪湿润/曝光/涟漪/剖切封口深度：`set_exposure(-4..=4)`、`set_ripple(x,z)`、`set_post_fx(vignette,grain)`、`set_clip_cap(depth 米，0..=128，0 = 关档)`（P3-R210，配合会话裁剪平面 `camera.set_clip_plane`）、`set_clip_cap_both_sides(bool)`（P3-R211：让封口也吃到单面网格，只在真挂了裁剪平面的帧生效，非布尔值返回 `(false, 原因)`，不调就用宿主启动档）、`stats()`；其余同前，宿主每帧应用，非法值返回 `(false, 原因)`。 |

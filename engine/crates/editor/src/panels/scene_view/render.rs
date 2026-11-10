@@ -227,6 +227,7 @@ impl EditorApp {
                     mesh_handle: None,
                     model,
                     palette: Vec::new(),
+                    instances: Vec::new(),
                     bounds: Scene3dBounds {
                         local_aabb: rustlua_math::math3d::Aabb3 {
                             min: Vec3::new(-0.5, -0.5, -0.5),

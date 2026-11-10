@@ -33,6 +33,26 @@ pub struct ParticleEmitter {
     pub gravity_z: f32,
     /// 浮力（单位/秒²）：按剩余寿命比例向上推（新粒子更热/更轻），默认 `0`。
     pub buoyancy: f32,
+    /// 逐粒子颤动幅度（速度，单位/秒）：每颗粒子用自己稳定的随机相位在 x/y/z 上摆动，
+    /// 同类粒子不再像一整块随风平移。默认 `0`：不进入该分支，旧粒子逐位不变。
+    pub flutter: f32,
+    /// 逐粒子颤动频率（Hz，`0..=20`）。与 `flutter` 一起生效。
+    pub flutter_hz: f32,
+    /// 沿寿命的路径弯曲（角速度，弧度/秒）：水平面 (x,y) 上每秒把速度方向转过这么多，
+    /// 转角按剩余寿命比例衰减（新颗粒转得最快，`buoyancy` 同一 ramp 口径）。
+    /// 只转方向不改速率，因此弧线不会把粒子甩成轨道。默认 `0`：旧粒子逐位不变。
+    pub curve: f32,
+    /// 程序化 curl 噪声风场强度（速度，单位/秒）。
+    ///
+    /// 场取三维势函数 `Ψ=(sin a·cos b, sin b·cos c, sin c·cos a)` 的旋度，因此**严格无散**
+    /// （`∇·w = 0`）：局部只有旋转与剪切、没有源和汇，粒子不会被吸进几个点或从点里喷出。
+    /// 相位 `a/b/c` 由世界坐标乘空间频率再叠时间推进，所以相邻粒子共享方向（空间相干），
+    /// 整片流场会随时间翻滚。默认 `0`：不进入该分支，旧粒子逐位不变。
+    pub curl: f32,
+    /// curl 噪声的空间频率（1/世界单位）：涡旋尺度约 `2π/scale`。
+    pub curl_scale: f32,
+    /// curl 噪声的时间频率（Hz）：涡旋翻滚的速度。
+    pub curl_hz: f32,
     /// Z 轴初速绝对值上限（单位/秒）。默认 `0`：不抽 Z 随机数，旧序列不变。
     pub speed_z: f32,
     /// 出生点 Z 抖动半径（单位）。默认 `0`：不抽随机数。
@@ -194,6 +214,12 @@ impl Default for ParticleEmitter {
             gravity: Vec2::zero(),
             gravity_z: 0.0,
             buoyancy: 0.0,
+            flutter: 0.0,
+            flutter_hz: 0.0,
+            curve: 0.0,
+            curl: 0.0,
+            curl_scale: 0.3,
+            curl_hz: 0.5,
             speed_z: 0.0,
             spread_z: 0.0,
             spawn_area: [0.0; 3],
@@ -240,6 +266,12 @@ impl ParticleEmitter {
             &self.gravity.y,
             &self.gravity_z,
             &self.buoyancy,
+            &self.flutter,
+            &self.flutter_hz,
+            &self.curve,
+            &self.curl,
+            &self.curl_scale,
+            &self.curl_hz,
             &self.speed_z,
             &self.spread_z,
             &self.spawn_area[0],
@@ -256,6 +288,24 @@ impl ParticleEmitter {
         }
         if self.buoyancy < 0.0 {
             return Err("particle buoyancy must be >= 0".to_owned());
+        }
+        if self.flutter < 0.0 {
+            return Err("particle flutter must be >= 0".to_owned());
+        }
+        if !(0.0..=20.0).contains(&self.flutter_hz) {
+            return Err("particle flutter_hz must be 0..=20".to_owned());
+        }
+        if !(-12.0..=12.0).contains(&self.curve) {
+            return Err("particle curve must be -12..=12".to_owned());
+        }
+        if !(0.0..=50.0).contains(&self.curl) {
+            return Err("particle curl must be 0..=50".to_owned());
+        }
+        if !(0.0..=4.0).contains(&self.curl_scale) {
+            return Err("particle curl_scale must be 0..=4".to_owned());
+        }
+        if !(0.0..=5.0).contains(&self.curl_hz) {
+            return Err("particle curl_hz must be 0..=5".to_owned());
         }
         if self.spawn_area.iter().any(|value| *value < 0.0) {
             return Err("particle spawn_area must be >= 0".to_owned());
@@ -575,6 +625,15 @@ pub struct Particle {
     pub gravity_z: f32,
     /// 浮力（单位/秒²），随剩余寿命比例衰减。
     pub buoyancy: f32,
+    /// 逐粒子颤动幅度/频率（单位/秒、Hz）；`0` = 不颤动。
+    pub flutter: f32,
+    pub flutter_hz: f32,
+    /// 沿寿命的路径弯曲（弧度/秒）；`0` = 直线。
+    pub curve: f32,
+    /// 程序化 curl 噪声风场：强度（单位/秒）、空间频率、时间频率；`curl=0` = 关。
+    pub curl: f32,
+    pub curl_scale: f32,
+    pub curl_hz: f32,
     pub drag: f32,
     pub rotation: f32,
     pub rotation_speed: f32,
@@ -639,6 +698,8 @@ pub struct ParticleSystem {
     wind_sources: [WindSource; MAX_WIND_SOURCES],
     /// 风场时钟（秒）；只用于全局湍流相位，CPU/GPU 对齐。
     time: f32,
+    /// 网格体积风场 + 温度浮力场（P3-R233）；`None` 时逐粒子积分逐位不变。
+    wind_grid: Option<crate::particle_wind_grid::WindGrid>,
 }
 
 /// 一个局部风源，坐标与 `particles.burst3d` 一致：`x`/`y` 是水平面（`y`=高度），
@@ -675,6 +736,7 @@ impl ParticleSystem {
             wind_gust_hz: 0.0,
             wind_sources: [WindSource::default(); MAX_WIND_SOURCES],
             time: 0.0,
+            wind_grid: None,
         }
     }
 
@@ -776,6 +838,27 @@ impl ParticleSystem {
         &self.wind_sources
     }
 
+    /// 安装/替换网格体积风场（P3-R233）。此后每步先推进场、再让粒子按所在格采样。
+    pub fn set_wind_grid(&mut self, grid: crate::particle_wind_grid::WindGrid) {
+        self.wind_grid = Some(grid);
+    }
+
+    /// 移除网格风场，回到无场行为（逐粒子积分逐位不变）。
+    pub fn clear_wind_grid(&mut self) {
+        self.wind_grid = None;
+    }
+
+    /// 可变借用当前风场，用来注入速度/温度或改系数；无场时 `None`。
+    pub fn wind_grid_mut(&mut self) -> Option<&mut crate::particle_wind_grid::WindGrid> {
+        self.wind_grid.as_mut()
+    }
+
+    /// 只读借用当前风场。
+    #[must_use]
+    pub fn wind_grid(&self) -> Option<&crate::particle_wind_grid::WindGrid> {
+        self.wind_grid.as_ref()
+    }
+
     /// 风场在 `(x, height)` 处的倍率；CPU 与 GPU 共用这一条公式。
     ///
     /// 高度剪切 + 一条空间正弦阵风；结果下限 0，避免反向风把粒子吹得比无风还慢。
@@ -871,6 +954,12 @@ impl ParticleSystem {
                 gravity: emitter.gravity,
                 gravity_z: emitter.gravity_z,
                 buoyancy: emitter.buoyancy,
+                flutter: emitter.flutter,
+                flutter_hz: emitter.flutter_hz,
+                curve: emitter.curve,
+                curl: emitter.curl,
+                curl_scale: emitter.curl_scale,
+                curl_hz: emitter.curl_hz,
                 drag: emitter.drag,
                 rotation: emitter.rotation,
                 rotation_speed: emitter.rotation_speed,
@@ -901,6 +990,12 @@ impl ParticleSystem {
         let wind_z = self.wind_z;
         let (shear, gust, gust_hz) = (self.wind_shear, self.wind_gust, self.wind_gust_hz);
         let sources = self.wind_sources;
+        // 网格风场每池步只推进一次（在所有粒子采样之前），随后只读共享给各并行块——
+        // 采样不改场，故串/并行仍逐位一致。无场时 `None`，逐粒子积分逐位不变。
+        if let Some(grid) = self.wind_grid.as_mut() {
+            grid.step(delta_seconds);
+        }
+        let grid = self.wind_grid.as_ref();
         let particles = &mut self.particles;
         let threads = parallelism.effective_threads(particles.len());
         if threads < 2 {
@@ -915,6 +1010,7 @@ impl ParticleSystem {
                     &sources,
                     time,
                     delta_seconds,
+                    grid,
                 );
             }
             particles.retain(|particle| particle.life > 0.0);
@@ -935,6 +1031,7 @@ impl ParticleSystem {
                             &sources,
                             time,
                             delta_seconds,
+                            grid,
                         );
                     }
                 });
@@ -956,6 +1053,7 @@ fn step_particle(
     sources: &[WindSource; MAX_WIND_SOURCES],
     time: f32,
     delta_seconds: f32,
+    grid: Option<&crate::particle_wind_grid::WindGrid>,
 ) {
     // 与 GPU compute 同一公式：高度剪切 + 空间正弦阵风。粒子坐标系是
     // (x, height) 平面 + position_z 深度，所以高度取 `position.y`。
@@ -998,8 +1096,46 @@ fn step_particle(
         }
         wind.y += source.lift * falloff;
     }
+    // 程序化 curl 噪声：势函数 `Ψ=(sin a·cos b, sin b·cos c, sin c·cos a)` 的旋度，
+    // 严格无散（∇·w = 0）——局部只有旋转/剪切，没有源汇。a/b/c 由世界坐标 × 空间频率
+    // 叠时间推进：相邻粒子共享方向（空间相干），整片场随时间翻滚。除以 k 归一化后
+    // 每个分量幅度 ≤ `curl`，所以强度就是"涡旋风速上限"。
+    if particle.curl > 0.0 {
+        let k = particle.curl_scale.max(0.001);
+        let w = time * TAU * particle.curl_hz;
+        let a = particle.position.x * k + w;
+        let b = height * k + w * 0.7;
+        let c = particle.position_z * k + w * 1.3;
+        wind.x += particle.curl * b.sin() * c.sin();
+        wind.y += particle.curl * c.cos() * a.sin();
+        wind_z += particle.curl * a.sin() * b.sin();
+    }
     // 浮力按剩余寿命比例向上推：新粒子最热，随 life 衰减到 0。
     let buoyancy = particle.buoyancy * (particle.life / particle.max_life).max(0.0);
+    // 逐粒子颤动：相位来自粒子自己的稳定随机量（寿命/尺寸抖动），CPU 与 GPU 同一公式。
+    // 全局湍流强度取决于 gust（无风时为零），这条不依赖风，让同类粒子各自走出微弯路径。
+    if particle.flutter > 0.0 {
+        // 相位只做乘加与取小数：不经过 sin 的大倍数放大，GPU 与 CPU 的 sin 精度差
+        // 不会被放大成整相位跳变（对拍门的 1e-4 要求下必须逐位同相）。
+        let phase = (particle.max_life * 0.37 + particle.size_start * 0.61).fract();
+        let wave = time * TAU * particle.flutter_hz + phase * TAU;
+        wind.x += particle.flutter * wave.sin();
+        wind_z += particle.flutter * (wave * 0.87 - phase * TAU * 1.7).cos();
+        wind.y += particle.flutter * 0.45 * (wave * 1.13 + phase * TAU * 0.6).sin();
+    }
+    // 网格体积风场 + 温度浮力（P3-R233）：按粒子世界位置三线性采样成加速度，与 wind/curl
+    // 同口径直接叠加。场已在本次 step 开头推进过；无场（None）时这一整块跳过，逐位不变。
+    // 采样点 y 取世界高度（与 wind_sources 的 dy 一致），x/z 取平面与深度。
+    if let Some(grid) = grid {
+        let sample = grid.sample_accel(rustlua_math::math3d::Vec3::new(
+            particle.position.x,
+            height,
+            particle.position_z,
+        ));
+        wind.x += sample.x;
+        wind.y += sample.y;
+        wind_z += sample.z;
+    }
     particle.velocity = particle.velocity + (particle.gravity + wind) * delta_seconds;
     particle.velocity_z += (particle.gravity_z + wind_z + buoyancy) * delta_seconds;
     if particle.drag > 0.0 {
@@ -1007,6 +1143,15 @@ fn step_particle(
         let damp = (1.0 - particle.drag * delta_seconds).max(0.0);
         particle.velocity = particle.velocity * damp;
         particle.velocity_z *= damp;
+    }
+    if particle.curve != 0.0 {
+        // 沿寿命弯曲：与 `buoyancy` 同一 ramp（新颗粒转得最快）。只转水平面 (x, y)
+        // 的速度方向、不改速率，所以累计转角有限、不会绕成轨道；z 是竖直轴，不参与。
+        let ramp = (particle.life / particle.max_life.max(1e-6)).clamp(0.0, 1.0);
+        let angle = particle.curve * ramp * delta_seconds;
+        let (sin, cos) = angle.sin_cos();
+        let v = particle.velocity;
+        particle.velocity = Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
     }
     particle.position = particle.position + particle.velocity * delta_seconds;
     particle.position_z += particle.velocity_z * delta_seconds;
@@ -1083,6 +1228,97 @@ mod tests {
             parallel.step_with_parallelism(0.016, parallel_degree);
         }
         assert_eq!(sequential.particles(), parallel.particles());
+    }
+
+    /// P3-R233：无网格风场时逐粒子积分逐位不变（新字段/新参数不能动旧路径）。
+    #[test]
+    fn wind_grid_absent_is_bit_identical_to_baseline() {
+        let emitter = ParticleEmitter::new(256, 8.0, 2.0, [1.0, 0.5, 0.25, 1.0]);
+        let mut baseline = ParticleSystem::new();
+        let mut cleared = ParticleSystem::new();
+        baseline.burst_with_3d([1.0, 2.0, 3.0], &emitter);
+        cleared.burst_with_3d([1.0, 2.0, 3.0], &emitter);
+        // 装了又清空，回到无场——与从未装过逐位一致。
+        cleared.set_wind_grid(
+            crate::particle_wind_grid::WindGrid::new(
+                [4, 4, 4],
+                rustlua_math::math3d::Vec3::ZERO,
+                1.0,
+            )
+            .unwrap(),
+        );
+        cleared.clear_wind_grid();
+        assert!(cleared.wind_grid().is_none());
+        for _ in 0..60 {
+            baseline.step(0.016);
+            cleared.step(0.016);
+        }
+        assert_eq!(baseline.particles(), cleared.particles());
+    }
+
+    /// P3-R233：均匀速度网格给粒子精确加上那份加速度（无重力/无其它风的受控场景）。
+    #[test]
+    fn wind_grid_accelerates_particles_by_sampled_field() {
+        use crate::particle_wind_grid::WindGrid;
+        use rustlua_math::math3d::Vec3;
+        let mut system = ParticleSystem::new();
+        system.burst_with_3d(
+            [0.5, 0.5, 0.5],
+            &ParticleEmitter::new(1, 0.0, 4.0, [1.0; 4]),
+        );
+        let mut grid = WindGrid::new([2, 2, 2], Vec3::ZERO, 1.0).unwrap();
+        // 全格速度 (4, 0, 2)，无扩散/衰减/浮力 ⇒ 采样恒为 (4,0,2)。
+        for x in 0..2 {
+            for y in 0..2 {
+                for z in 0..2 {
+                    grid.add_velocity(x, y, z, Vec3::new(4.0, 0.0, 2.0))
+                        .unwrap();
+                }
+            }
+        }
+        system.set_wind_grid(grid);
+        system.step(0.5);
+        let p = system.particles()[0];
+        assert!(
+            (p.velocity.x - 2.0).abs() < 1e-5,
+            "vx = 4*0.5, got {}",
+            p.velocity.x
+        );
+        assert!(
+            (p.velocity_z - 1.0).abs() < 1e-5,
+            "vz = 2*0.5, got {}",
+            p.velocity_z
+        );
+        assert!(p.velocity.y.abs() < 1e-5);
+    }
+
+    /// P3-R233：装了网格风场后，串/并行仍逐位一致（场在 step 开头推进一次、之后只读共享）。
+    #[test]
+    fn wind_grid_parallel_step_matches_sequential_bit_for_bit() {
+        use crate::particle_wind_grid::WindGrid;
+        use rustlua_math::math3d::Vec3;
+        let make_grid = || {
+            let mut grid = WindGrid::new([6, 6, 6], Vec3::new(-3.0, -3.0, -3.0), 1.0).unwrap();
+            grid.set_params(0.08, 0.5, 1.0, 4.0, 2).unwrap();
+            grid.set_temperature(3, 1, 3, 20.0).unwrap();
+            grid.add_velocity(2, 2, 2, Vec3::new(3.0, 0.0, -2.0))
+                .unwrap();
+            grid
+        };
+        let emitter = ParticleEmitter::new(4000, 10.0, 3.0, [1.0, 0.5, 0.25, 1.0]);
+        let mut sequential = ParticleSystem::new();
+        let mut parallel = ParticleSystem::new();
+        sequential.burst_with_3d([0.0, 0.0, 0.0], &emitter);
+        parallel.burst_with_3d([0.0, 0.0, 0.0], &emitter);
+        sequential.set_wind_grid(make_grid());
+        parallel.set_wind_grid(make_grid());
+        let degree = rustlua_infra::par::Parallelism::with_threads(4);
+        for _ in 0..100 {
+            sequential.step(0.016);
+            parallel.step_with_parallelism(0.016, degree);
+            assert_eq!(sequential.particles(), parallel.particles());
+        }
+        assert_eq!(sequential.wind_grid(), parallel.wind_grid());
     }
 
     #[test]
@@ -1801,5 +2037,205 @@ mod tests {
         assert_eq!(burst_only.accumulator, 0.0);
         assert_eq!(scene.take_steps(f32::NAN), 0);
         assert_eq!(scene.take_steps(0.0), 0);
+    }
+
+    /// 逐粒子颤动：`flutter=0` 时同一 burst 的两颗粒子同位同速（旧行为不变）；
+    /// 开启后各自相位走出不同路径，同 seed 复跑逐位相同。
+    #[test]
+    fn flutter_sways_particles_independently() {
+        let emitter = ParticleEmitter {
+            count: 2,
+            speed: 0.0,
+            life: 2.0,
+            seed: Some(7),
+            flutter: 1.5,
+            flutter_hz: 1.0,
+            ..ParticleEmitter::default()
+        };
+        assert!(emitter.validate().is_ok());
+
+        let mut still = ParticleSystem::new();
+        still.burst_with(
+            Vec2::zero(),
+            &ParticleEmitter {
+                flutter: 0.0,
+                flutter_hz: 0.0,
+                ..emitter
+            },
+        );
+        still.step(0.5);
+        assert_eq!(still.particles[0].position, still.particles[1].position);
+        assert_eq!(still.particles[0].velocity, still.particles[1].velocity);
+
+        let mut sway = ParticleSystem::new();
+        sway.burst_with(Vec2::zero(), &emitter);
+        sway.step(0.5);
+        let dx = (sway.particles[0].position.x - sway.particles[1].position.x).abs();
+        let dy = (sway.particles[0].position.y - sway.particles[1].position.y).abs();
+        assert!(
+            dx > 1e-3 || dy > 1e-3,
+            "两颗粒子应有不同位移：dx={dx} dy={dy}"
+        );
+
+        let mut again = ParticleSystem::new();
+        again.burst_with(Vec2::zero(), &emitter);
+        again.step(0.5);
+        assert_eq!(again.particles[0].position, sway.particles[0].position);
+        assert_eq!(again.particles[1].position, sway.particles[1].position);
+    }
+
+    #[test]
+    fn curve_bends_the_horizontal_path() {
+        let emitter = ParticleEmitter {
+            count: 1,
+            speed: 100.0,
+            life: 200.0,
+            gravity: Vec2::zero(),
+            curve: 2.0,
+            ..ParticleEmitter::default()
+        };
+        let mut sys = ParticleSystem::new();
+        sys.burst_with(Vec2::zero(), &emitter);
+        let start = sys.particles()[0].velocity;
+        let start_speed = start.length();
+        for _ in 0..30 {
+            sys.step(1.0 / 60.0);
+        }
+        let particle = &sys.particles()[0];
+        let speed = particle.velocity.length();
+        assert!(
+            (speed - start_speed).abs() < 1e-2,
+            "弯曲只转方向、不该改速率：start={start_speed} now={speed}",
+        );
+        let cos_turn = start.dot(particle.velocity) / (start_speed * speed);
+        assert!(cos_turn < 0.99, "0.5 s 后方向应被转过一截：cos={cos_turn}",);
+        assert_eq!(particle.velocity_z, 0.0, "z 是竖直轴，弯曲不许漏进去");
+
+        let mut straight = ParticleSystem::new();
+        straight.burst_with(
+            Vec2::zero(),
+            &ParticleEmitter {
+                curve: 0.0,
+                ..emitter
+            },
+        );
+        let straight_start = straight.particles()[0].velocity;
+        for _ in 0..30 {
+            straight.step(1.0 / 60.0);
+        }
+        assert_eq!(straight.particles()[0].velocity, straight_start);
+    }
+
+    #[test]
+    fn curve_rejects_out_of_range() {
+        let mut emitter = ParticleEmitter {
+            curve: 13.0,
+            ..ParticleEmitter::default()
+        };
+        assert!(emitter.validate().is_err());
+        emitter.curve = -12.0;
+        assert!(emitter.validate().is_ok());
+        emitter.curve = f32::NAN;
+        assert!(emitter.validate().is_err());
+    }
+
+    #[test]
+    fn flutter_rejects_invalid_range() {
+        let mut emitter = ParticleEmitter {
+            flutter: -0.1,
+            ..ParticleEmitter::default()
+        };
+        assert!(emitter.validate().is_err());
+        emitter.flutter = 1.0;
+        emitter.flutter_hz = 20.1;
+        assert!(emitter.validate().is_err());
+        emitter.flutter_hz = 20.0;
+        assert!(emitter.validate().is_ok());
+        emitter.flutter = f32::NAN;
+        assert!(emitter.validate().is_err());
+    }
+
+    /// curl 噪声场：真的推粒子、近邻同向（空间相干）、半个波长反向，
+    /// 且**严格无散**（数值中央差分；有源汇时这一条必红）。
+    #[test]
+    fn curl_field_is_coherent_and_divergence_free() {
+        let emitter = ParticleEmitter {
+            count: 1,
+            speed: 0.0,
+            life: 5.0,
+            gravity: Vec2::zero(),
+            curl: 50.0,
+            curl_scale: 0.3,
+            curl_hz: 0.0,
+            ..ParticleEmitter::default()
+        };
+        assert!(emitter.validate().is_ok());
+        // 单步 1 ms：位移可忽略，速度 ≈ 场矢量 × dt（所有采样同一 time）。
+        let sample = |position: [f32; 3]| {
+            let mut sys = ParticleSystem::new();
+            sys.burst_with_3d(position, &emitter);
+            sys.step(1e-3);
+            let p = &sys.particles()[0];
+            [p.velocity.x, p.velocity.y, p.velocity_z]
+        };
+        let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+        let norm = |u: [f32; 3]| dot(u, u).sqrt();
+        let cos_between = |u: [f32; 3], v: [f32; 3]| dot(u, v) / (norm(u) * norm(v));
+
+        let center = sample([0.7, 0.3, 0.4]);
+        assert!(norm(center) > 1e-3, "curl 场应真的产生速度：{center:?}");
+        let near = sample([0.9, 0.3, 0.4]);
+        assert!(
+            cos_between(center, near) > 0.99,
+            "近邻应共享方向（空间相干）：{}",
+            cos_between(center, near)
+        );
+        let far = sample([0.7 + std::f32::consts::PI / 0.3, 0.3, 0.4]);
+        assert!(
+            cos_between(center, far) < -0.9,
+            "半个波长应反向：{}",
+            cos_between(center, far)
+        );
+
+        let h = 0.05;
+        let div = (sample([0.7 + h, 0.3, 0.4])[0] - sample([0.7 - h, 0.3, 0.4])[0]
+            + sample([0.7, 0.3 + h, 0.4])[1]
+            - sample([0.7, 0.3 - h, 0.4])[1]
+            + sample([0.7, 0.3, 0.4 + h])[2]
+            - sample([0.7, 0.3, 0.4 - h])[2])
+            / (2.0 * h);
+        assert!(div.abs() < 1e-4, "curl 噪声应无源汇：div={div}");
+
+        let mut off = ParticleSystem::new();
+        off.burst_with_3d(
+            [0.7, 0.3, 0.4],
+            &ParticleEmitter {
+                curl: 0.0,
+                ..emitter
+            },
+        );
+        off.step(1e-3);
+        assert_eq!(off.particles()[0].velocity, Vec2::zero(), "curl=0 不许动");
+        assert_eq!(off.particles()[0].velocity_z, 0.0);
+    }
+
+    #[test]
+    fn curl_rejects_out_of_range() {
+        let mut emitter = ParticleEmitter {
+            curl: 50.1,
+            ..ParticleEmitter::default()
+        };
+        assert!(emitter.validate().is_err());
+        emitter.curl = 50.0;
+        assert!(emitter.validate().is_ok());
+        emitter.curl_scale = 4.1;
+        assert!(emitter.validate().is_err());
+        emitter.curl_scale = 4.0;
+        emitter.curl_hz = 5.1;
+        assert!(emitter.validate().is_err());
+        emitter.curl_hz = 5.0;
+        assert!(emitter.validate().is_ok());
+        emitter.curl = f32::NAN;
+        assert!(emitter.validate().is_err());
     }
 }

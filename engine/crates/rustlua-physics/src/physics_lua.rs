@@ -7,7 +7,7 @@
 //! 更危险（理由见原 `script/api/physics.rs` 的注释，已随搬迁保留在下面的宏上）。
 //!
 //! 与相机域（⑤-8）相比多一个依赖面：这里既要 `Handle<PhysicsState>`（模拟世界与回写队列），
-//! 也要 `Handle<World>`（`require_alive`、`positions_in_radius` 的 ECS 扫描、`set_position`
+//! 也要 `Handle<World>`（`require_alive`、`positions_in_radius` 的 ECS 遍历、`set_position`
 //! 之后把 `Transform` 对齐）。两者都是句柄，因此**不会**互相借住 `&mut` 的状态。
 
 use crate::physics_state::PhysicsState;
@@ -18,11 +18,6 @@ use rustlua_ecs::world::World;
 use rustlua_lua_api::{Handle, api_error};
 use rustlua_math::math2d::Vec2;
 use rustlua_math::math3d::Vec3;
-
-/// `WorldError` → Lua 错误（每个领域绑定各留三行，避免把 `WorldError` 塞进叶子契约层）。
-fn world_error(error: rustlua_ecs::world::WorldError) -> mlua::Error {
-    api_error(error.to_string())
-}
 
 /// Lua 侧实体 id → 实体句柄。错误串与脚本层逐字相同（负数与"句柄形态不对"分开报）。
 fn entity_from_lua(value: i64) -> LuaResult<EntityId> {
@@ -93,112 +88,120 @@ fn world3d_mut(physics: &mut PhysicsState) -> &mut crate::physics3d::PhysicsWorl
     physics.world3d_mut()
 }
 
-/// 装 `physics`（2D）与 `physics3d` 两张全局表。
-pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>) -> LuaResult<()> {
-    // P2-②：2D/3D 结构完全同形的绑定收敛成宏（ccd 对、events、debug_draw、set_velocity），
-    // 两条路径不再各抄一份——修一处即两边生效。
-    macro_rules! bind_ccd_pair {
-        ($table:expr, $access:expr) => {{
-            let p = physics.clone();
-            let w = world.clone();
-            let access = $access;
-            $table.set(
-                "set_ccd",
-                lua.create_function(move |_, (id, enabled): (i64, bool)| {
-                    let id = entity_from_lua(id)?;
-                    {
-                        let world = w.borrow()?;
-                        require_alive(&world, id)?;
-                    }
+// P2-②：2D/3D 结构完全同形的绑定收敛成宏（ccd 对、events、debug_draw、set_velocity），
+// 两条路径不再各抄一份——修一处即两边生效。
+// M81：宏从 install 函数体提到模块级——install_3d 拆出去后仍要共用这同一份。
+// macro_rules 的局部变量卫生性按**定义点**解析，裸写 physics/world/lua 会找不到值；
+// 因此把三个名字作为 ident 参数从调用点传入（两个函数的参数同名同型）。宏体里再
+// `let lua = $lua;` 落回裸名：docgen 的绑定点正则只认裸 lua 句柄的字面调用形状。
+macro_rules! bind_ccd_pair {
+    ($table:expr, $access:expr, $physics:ident, $world:ident, $lua:ident) => {{
+        let lua = $lua;
+        let p = $physics.clone();
+        let w = $world.clone();
+        let access = $access;
+        $table.set(
+            "set_ccd",
+            lua.create_function(move |_, (id, enabled): (i64, bool)| {
+                let id = entity_from_lua(id)?;
+                {
+                    let world = w.borrow()?;
+                    require_alive(&world, id)?;
+                }
+                let mut physics = p.borrow_mut()?;
+                access(&mut physics)
+                    .set_ccd(id, enabled)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(())
+            })?,
+        )?;
+        let p = $physics.clone();
+        let w = $world.clone();
+        let access = $access;
+        $table.set(
+            "get_ccd",
+            lua.create_function(move |_, id: i64| {
+                let id = entity_from_lua(id)?;
+                {
+                    let world = w.borrow()?;
+                    require_alive(&world, id)?;
+                }
+                let mut physics = p.borrow_mut()?;
+                access(&mut physics)
+                    .ccd_enabled(id)
+                    .map_err(|error| api_error(error.to_string()))
+            })?,
+        )?;
+    }};
+}
+macro_rules! bind_events {
+    ($table:expr, $access:expr, $physics:ident, $lua:ident) => {{
+        let lua = $lua;
+        let p = $physics.clone();
+        let access = $access;
+        $table.set(
+            "events",
+            lua.create_function(move |lua, ()| {
+                let events = {
                     let mut physics = p.borrow_mut()?;
-                    access(&mut physics)
-                        .set_ccd(id, enabled)
-                        .map_err(|error| api_error(error.to_string()))?;
-                    Ok(())
-                })?,
-            )?;
-            let p = physics.clone();
-            let w = world.clone();
-            let access = $access;
-            $table.set(
-                "get_ccd",
-                lua.create_function(move |_, id: i64| {
-                    let id = entity_from_lua(id)?;
-                    {
-                        let world = w.borrow()?;
-                        require_alive(&world, id)?;
-                    }
-                    let mut physics = p.borrow_mut()?;
-                    access(&mut physics)
-                        .ccd_enabled(id)
-                        .map_err(|error| api_error(error.to_string()))
-                })?,
-            )?;
-        }};
-    }
-    macro_rules! bind_events {
-        ($table:expr, $access:expr) => {{
-            let p = physics.clone();
-            let access = $access;
-            $table.set(
-                "events",
-                lua.create_function(move |lua, ()| {
-                    let events = {
-                        let mut physics = p.borrow_mut()?;
-                        access(&mut physics).drain_contacts()
-                    };
-                    let result = lua.create_table()?;
-                    for (index, contact) in events.into_iter().enumerate() {
-                        let entry = lua.create_table()?;
-                        entry.set("a", entity_to_lua(contact.a))?;
-                        entry.set("b", entity_to_lua(contact.b))?;
-                        entry.set("started", contact.started)?;
-                        result.set(index + 1, entry)?;
-                    }
-                    Ok(result)
-                })?,
-            )?;
-        }};
-    }
-    macro_rules! bind_debug_draw {
-        ($table:expr, $request:ident) => {{
-            let p = physics.clone();
-            $table.set(
-                "debug_draw",
-                lua.create_function(move |_, enabled: bool| {
-                    let mut physics = p.borrow_mut()?;
-                    Ok(physics.$request(enabled))
-                })?,
-            )?;
-        }};
-    }
-    // P2-② 尾款（`docs/60` §5.2）：`set_velocity` 这一对 2D/3D 绑定**逐字同形**（都是
-    // entity_from_lua → require_alive → 转发到物理世界），只有**分量数**不同，用分量重复合成
-    // 一处。其余三对逐行复核**并非同形**（overlap/raycast/set_position 的返回形与组件类型不同），
-    // 宏只能靠"再加几个参数"盖住差异——那是把差异藏起来，比留两份更危险。
-    macro_rules! bind_set_velocity_pair {
-        ($table:expr, $access:expr, ($($component:ident),+)) => {{
-            let p = physics.clone();
-            let w = world.clone();
-            let access = $access;
-            $table.set(
-                "set_velocity",
-                lua.create_function(move |_, (id $(, $component)+)| {
-                    let id = entity_from_lua(id)?;
-                    {
-                        let world = w.borrow()?;
-                        require_alive(&world, id)?;
-                    }
-                    let mut physics = p.borrow_mut()?;
-                    access(&mut physics)
-                        .set_velocity(id $(, $component)+)
-                        .map_err(|error| api_error(error.to_string()))?;
-                    Ok(())
-                })?,
-            )?;
-        }};
-    }
+                    access(&mut physics).drain_contacts()
+                };
+                let result = lua.create_table()?;
+                for (index, contact) in events.into_iter().enumerate() {
+                    let entry = lua.create_table()?;
+                    entry.set("a", entity_to_lua(contact.a))?;
+                    entry.set("b", entity_to_lua(contact.b))?;
+                    entry.set("started", contact.started)?;
+                    result.set(index + 1, entry)?;
+                }
+                Ok(result)
+            })?,
+        )?;
+    }};
+}
+macro_rules! bind_debug_draw {
+    ($table:expr, $request:ident, $physics:ident, $lua:ident) => {{
+        let lua = $lua;
+        let p = $physics.clone();
+        $table.set(
+            "debug_draw",
+            lua.create_function(move |_, enabled: bool| {
+                let mut physics = p.borrow_mut()?;
+                Ok(physics.$request(enabled))
+            })?,
+        )?;
+    }};
+}
+// P2-② 尾款（`docs/60` §5.2）：`set_velocity` 这一对 2D/3D 绑定**逐字同形**（都是
+// entity_from_lua → require_alive → 转发到物理世界），只有**分量数**不同，用分量重复合成
+// 一处。其余三对逐行复核**并非同形**（overlap/raycast/set_position 的返回形与组件类型不同），
+// 宏只能靠"再加几个参数"盖住差异——那是把差异藏起来，比留两份更危险。
+macro_rules! bind_set_velocity_pair {
+    ($table:expr, $access:expr, ($($component:ident),+), $physics:ident, $world:ident, $lua:ident) => {{
+        let lua = $lua;
+        let p = $physics.clone();
+        let w = $world.clone();
+        let access = $access;
+        $table.set(
+            "set_velocity",
+            lua.create_function(move |_, (id $(, $component)+)| {
+                let id = entity_from_lua(id)?;
+                {
+                    let world = w.borrow()?;
+                    require_alive(&world, id)?;
+                }
+                let mut physics = p.borrow_mut()?;
+                access(&mut physics)
+                    .set_velocity(id $(, $component)+)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(())
+            })?,
+        )?;
+    }};
+}
 
+/// 装 `physics`（2D）基底全局表（M81：`physics3d` 拆去 [`install_3d`]）。
+pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>) -> LuaResult<()> {
     let table = lua.create_table()?;
     // 场景空间**宽相**：按实体 `Transform` 位置做圆查询。它与 `physics.overlap`（碰撞体查询）
     // 是**两件事**，因此有各自的名字——`docs/54` §8-⑥ 的"查询契约统一"。
@@ -215,15 +218,20 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
                 let world = w.borrow()?;
                 let result = lua.create_table()?;
                 let mut n = 1;
-                for id in world.entities_with::<Transform>() {
-                    if let Some(t) = world.get::<Transform>(id).map_err(world_error)? {
-                        let dx = t.position.x - x;
-                        let dy = t.position.y - y;
-                        if dx * dx + dy * dy <= radius * radius {
-                            result.set(n, entity_to_lua(id))?;
+                let mut failure = None;
+                world.for_each::<Transform>(|id, transform| {
+                    let dx = transform.position.x - x;
+                    let dy = transform.position.y - y;
+                    if failure.is_none() && dx * dx + dy * dy <= radius * radius {
+                        if let Err(error) = result.set(n, entity_to_lua(id)) {
+                            failure = Some(error);
+                        } else {
                             n += 1;
                         }
                     }
+                });
+                if let Some(error) = failure {
+                    return Err(error);
                 }
                 Ok(result)
             })?,
@@ -292,7 +300,7 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
             )?,
         )?;
     }
-    bind_set_velocity_pair!(table, world2d_mut, (x, y));
+    bind_set_velocity_pair!(table, world2d_mut, (x, y), physics, world, lua);
     {
         let p = physics.clone();
         let w = world.clone();
@@ -352,15 +360,24 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
             })?,
         )?;
     }
-    bind_ccd_pair!(table, world2d_mut);
-    bind_events!(table, world2d_mut);
-    bind_debug_draw!(table, request_debug_draw);
+    bind_ccd_pair!(table, world2d_mut, physics, world, lua);
+    bind_events!(table, world2d_mut, physics, lua);
+    bind_debug_draw!(table, request_debug_draw, physics, lua);
     lua.globals().set("physics", table)?;
+    Ok(())
+}
 
+/// M81：3D 包的 `physics3d` 表。领域 crate 不带 feature，由组合根 `register_all`
+/// 在 `3d` 开启时才调用（2D 构建的 Lua 面没有这张表）。
+pub fn install_3d(
+    lua: &Lua,
+    physics: &Handle<PhysicsState>,
+    world: &Handle<World>,
+) -> LuaResult<()> {
     // 3D physics (M9-02): same shape as `physics`, but bodies are created from
     // scene `Collider3d` components and positions sync to `Transform3D`.
     let table = lua.create_table()?;
-    bind_set_velocity_pair!(table, world3d_mut, (x, y, z));
+    bind_set_velocity_pair!(table, world3d_mut, (x, y, z), physics, world, lua);
     {
         let p = physics.clone();
         let w = world.clone();
@@ -419,9 +436,9 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
             })?,
         )?;
     }
-    bind_events!(table, world3d_mut);
-    bind_ccd_pair!(table, world3d_mut);
-    bind_debug_draw!(table, request_debug_draw_3d);
+    bind_events!(table, world3d_mut, physics, lua);
+    bind_ccd_pair!(table, world3d_mut, physics, world, lua);
+    bind_debug_draw!(table, request_debug_draw_3d, physics, lua);
     {
         let p = physics.clone();
         let w = world.clone();
@@ -486,6 +503,67 @@ pub fn install(lua: &Lua, physics: &Handle<PhysicsState>, world: &Handle<World>)
                     Ok(())
                 },
             )?,
+        )?;
+    }
+    {
+        let p = physics.clone();
+        let wc = world.clone();
+        table.set(
+            "add_cells",
+            lua.create_function(move |_, (id, opts): (i64, Table)| {
+                // docs/18 的 `cells3d.build(opts)` 同一张 opts：Myrmex 只要把同一个表分别交给
+                // 渲染与物理，两边看到的是同一份位图，不存在"画出来一堵墙、物理里没有"。
+                let id = entity_from_lua(id)?;
+                let cell: f32 = opts
+                    .get("cell")
+                    .map_err(|_| api_error("physics3d.add_cells needs a numeric cell"))?;
+                let x: f32 = opts
+                    .get("x")
+                    .map_err(|_| api_error("physics3d.add_cells needs a numeric x"))?;
+                let y: f32 = opts
+                    .get("y")
+                    .map_err(|_| api_error("physics3d.add_cells needs a numeric y"))?;
+                let z: f32 = opts
+                    .get("z")
+                    .map_err(|_| api_error("physics3d.add_cells needs a numeric z"))?;
+                let axis = |name: &str| -> mlua::Result<usize> {
+                    let value: i64 = opts.get(name).map_err(|_| {
+                        api_error(format!("physics3d.add_cells needs an integer {name}"))
+                    })?;
+                    if value <= 0 || value > crate::voxel::MAX_AXIS as i64 {
+                        return Err(api_error(format!(
+                            "physics3d.add_cells {name} must be 1..=64, got {value}"
+                        )));
+                    }
+                    Ok(value as usize)
+                };
+                let dims = [axis("w")?, axis("h")?, axis("d")?];
+                let total = dims[0] * dims[1] * dims[2];
+                let raw: Vec<i64> = opts
+                    .get::<Table>("solids")
+                    .map_err(|_| api_error("physics3d.add_cells needs a solids array"))?
+                    .sequence_values::<i64>()
+                    .collect::<mlua::Result<Vec<i64>>>()?;
+                let mut solids: Vec<usize> = Vec::with_capacity(raw.len());
+                for value in raw {
+                    if value < 0 || value as usize >= total {
+                        return Err(api_error(format!(
+                            "physics3d.add_cells cell index {value} is outside 0..{total}"
+                        )));
+                    }
+                    solids.push(value as usize);
+                }
+                {
+                    let world = wc.borrow()?;
+                    require_alive(&world, id)?;
+                }
+                let count = p
+                    .borrow_mut()?
+                    .world3d_mut()
+                    .add_cells(id, Vec3::new(x, y, z), cell, dims, &solids)
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(count as i64)
+            })?,
         )?;
     }
     {
@@ -576,10 +654,12 @@ mod tests {
         let physics = PhysicsState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &physics, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &physics, &world).unwrap();
         (lua, physics, world)
     }
 
-    /// 19 个函数一个不少（两张表的**清单**，少一个脚本就会静默拿到 nil）。
+    /// 21 个函数一个不少（两张表的**清单**，少一个脚本就会静默拿到 nil）。
     #[test]
     fn every_physics_function_is_installed() {
         let (lua, _physics, _world) = harness();
@@ -588,7 +668,7 @@ mod tests {
             let table: Table = lua.globals().get(table).unwrap();
             total += table.pairs::<mlua::Value, mlua::Value>().count();
         }
-        assert_eq!(total, 20, "physics + physics3d 合计 20 个函数");
+        assert_eq!(total, 21, "physics + physics3d 合计 21 个函数");
     }
 
     /// `debug_draw` 只登记请求、按维数分开，且取走即清空。
@@ -629,6 +709,9 @@ mod tests {
             format!(
                 "return physics3d.add_heightfield({dead}, 0, 0, 0, 2, 2, 1, 1, 1, {{0,0,0,0}})"
             ),
+            format!(
+                "return physics3d.add_cells({dead}, {{cell=1, x=0, y=0, z=0, w=2, h=1, d=1, solids={{0,1}}}})"
+            ),
         ] {
             let message = lua
                 .load(call)
@@ -636,6 +719,66 @@ mod tests {
                 .expect_err("死句柄必须报错")
                 .to_string();
             assert!(message.contains("invalid entity id"), "{message}");
+        }
+    }
+
+    /// Lua 面的 `add_cells`：opts 就是渲染侧 `cells3d.build` 的那张表，返回值是并块后的
+    /// 碰撞体个数，第二次调用是**替换**（同实体不叠加），挖掉的那一格真的不再挡射线。
+    #[test]
+    fn add_cells_binding_merges_and_replaces_through_lua() {
+        let (lua, _physics, world) = harness();
+        let id = world.with_mut(|world| world.spawn()).to_lua_i64();
+        let region = "cell = 1, x = 0, y = 0, z = 0, w = 4, h = 1, d = 1";
+        let script = format!(
+            r#"
+            local n = physics3d.add_cells({id}, {{ {region}, solids = {{ 0, 1, 2, 3 }} }})
+            assert(n == 1, "4 cells in a row must merge into 1 collider, got " .. tostring(n))
+            assert(physics3d.raycast(2.0, 3.0, 0.5, 0.0, -1.0, 0.0, 5.0) == {id}, "wall must block")
+            n = physics3d.add_cells({id}, {{ {region}, solids = {{ 0, 2, 3 }} }})
+            assert(n == 2, "replace must not stack colliders, got " .. tostring(n))
+            assert(physics3d.raycast(1.5, 3.0, 0.5, 0.0, -1.0, 0.0, 5.0) == nil, "dug cell must open")
+            assert(physics3d.raycast(2.5, 3.0, 0.5, 0.0, -1.0, 0.0, 5.0) == {id}, "邻居还得挡")
+            "#,
+            region = region
+        );
+        lua.load(script).exec().unwrap();
+        // 四类非法 opts 都要在碰到 Rapier 之前报错，并且文案指名坏掉的是哪一个。
+        // 第一条排在最前是有意的：去掉单轴上限后它会**算术溢出 panic**（绑定里 `total = w*h*d`
+        // 先于 validate 算），红因就是溢出本身，而不是后面那句文案对不上。
+        for (call, needle) in [
+            (
+                // 三条轴各 4e9 时 `w*h*d` 在 debug 会溢出 panic（release 会绕回一个小数，
+                // 于是越界下标反而合法）——单轴上限必须在算 total 之前就拦住。
+                "physics3d.add_cells(1, { cell = 1, x = 0, y = 0, z = 0, w = 4000000000, \
+                 h = 4000000000, d = 4000000000, solids = { 0 } })"
+                    .to_owned(),
+                "w must be 1..=64",
+            ),
+            (
+                format!("physics3d.add_cells({id}, {{ {region}, solids = {{ 0, 4 }} }})"),
+                "outside 0..4",
+            ),
+            (
+                format!("physics3d.add_cells({id}, {{ {region}, w = 65, solids = {{ 0 }} }})"),
+                "w must be 1..=64",
+            ),
+            (
+                "physics3d.add_cells(1, { cell = 0, x = 0, y = 0, z = 0, w = 2, h = 1, d = 1, \
+                 solids = { 0 } })"
+                    .to_owned(),
+                "0.05..=64",
+            ),
+            (
+                format!("physics3d.add_cells({id}, {{ {region}, solids = {{ 0, 0 }} }})"),
+                "listed twice",
+            ),
+        ] {
+            let message = lua
+                .load(call)
+                .exec()
+                .expect_err("非法 opts 必须报错")
+                .to_string();
+            assert!(message.contains(needle), "{needle} 没出现在 {message}");
         }
     }
 

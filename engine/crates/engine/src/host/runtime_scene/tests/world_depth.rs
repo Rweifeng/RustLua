@@ -3,7 +3,7 @@
 //! - `world_sprite_depth_moves_world_text_into_the_world_channel`
 //! - `world_sprite_depth_moves_tilemaps_into_the_world_channel`
 //! - `world_sprite_depth_flag_switches_between_overlay_and_world_vertices`
-//! - `world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content`
+//! - `mixed_world_channel_uses_the_3d_view_frustum_instead_of_the_2d_camera`
 //! - `scene_declared_emitter_emits_continuously_through_the_step_pipeline`
 //! - `gpu_mode_emitters_run_on_cpu_and_report_their_fallback`
 
@@ -200,13 +200,13 @@ fn world_sprite_depth_flag_switches_between_overlay_and_world_vertices() {
     assert!(back.world_sprites.is_empty());
 }
 
-/// docs/54 §8-④：世界通道的可见域是**宿主声明的世界视图**，不是 2D 相机。
+/// docs/54 §8-④：混合场景的世界通道按实际 3D 主视图视锥剔除，而不是套用无关的 2D 相机。
 ///
 /// 回归背景（`wp0_mixed_golden` 抓到的真实误丢）：2D 相机活在设计分辨率像素空间
 /// （默认中心 (640,360)），而 3D 世界视图里 `(-40, 0)` 这类坐标清晰可见。场景里有 3D 内容时
 /// 宿主会声明 3D 主视图，此时若仍按 2D 相机裁剪，世界内容会被**静默丢掉**。
 #[test]
-fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() {
+fn mixed_world_channel_uses_the_3d_view_frustum_instead_of_the_2d_camera() {
     let root = game_root();
     let mut scene = Scene::new("world-view-cull");
     let sprite = rustlua_scene::scene::SceneEntityId(1);
@@ -233,7 +233,7 @@ fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() 
         "纯 2D 画面应继续按 2D 视口剔除视口外的精灵"
     );
 
-    // ② 同一个精灵 + 一个网格：世界视图变成 3D，世界通道不得再按 2D 相机剔除。
+    // ② 3D 相机看向 2D 相机视口以外的精灵；它应保留，同时不应依赖 2D 相机坐标。
     let wall = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(wall, "Wall", None).unwrap();
     let entity = scene.entities.get_mut(&wall).unwrap();
@@ -244,6 +244,23 @@ fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() 
     entity
         .components
         .insert("MeshRenderer".into(), "mesh=__ground_plane__".into());
+    entity.components.insert(
+        "Camera".into(),
+        "projection=perspective;position=-40,0,5;target=-40,0,0;fov=60;near=0.1;far=100".into(),
+    );
+    let offscreen = rustlua_scene::scene::SceneEntityId(3);
+    scene
+        .add_entity(offscreen, "OffscreenSprite", None)
+        .unwrap();
+    let entity = scene.entities.get_mut(&offscreen).unwrap();
+    entity.components.insert(
+        "Transform".into(),
+        "position=40,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
+    );
+    entity.components.insert(
+        "Sprite".into(),
+        "texture=assets/textures/red-1x1.png;size=2x2;pivot=0.5,0.5;z=0".into(),
+    );
     let mut mixed = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("mixed");
     mixed.set_world_sprite_depth(true);
     assert!(
@@ -254,7 +271,7 @@ fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() 
     assert_eq!(
         mixed_mesh.world_sprites.len(),
         6,
-        "有 3D 视图时世界内容不得被 2D 相机剔除（这正是被 golden 抓到的误丢）"
+        "视锥内的世界精灵应被保留"
     );
 }
 
@@ -342,6 +359,9 @@ fn scene_declared_emitter_uses_the_world_z_for_3d_particles() {
         "count=2;rate=60;speed=0;life=0.5;size=2;color=1,1,1,1;gravity_z=-1".into(),
     );
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
+    // Verify z propagation independently of frustum culling; this emitter lies beyond the default
+    // camera's far plane.
+    runtime.set_sprite_culling(false);
     let input = rustlua_input::input::InputSnapshot::default();
     runtime
         .run_script_steps(1, 1.0 / 60.0, &input)

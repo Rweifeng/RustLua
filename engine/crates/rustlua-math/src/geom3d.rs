@@ -214,10 +214,15 @@ impl Frustum {
     /// Conservative: touching the boundary counts as visible, so culling never
     /// removes geometry that could be on screen.
     pub fn contains_sphere(self, center: Vec3, radius: f32) -> bool {
+        Self::contains_sphere_with_planes(&self.planes(), center, radius)
+    }
+
+    /// Sphere test using planes precomputed once for a batch of objects.
+    pub fn contains_sphere_with_planes(planes: &[Plane; 6], center: Vec3, radius: f32) -> bool {
         if !radius.is_finite() || radius < 0.0 {
             return true;
         }
-        for plane in self.planes() {
+        for plane in planes {
             if plane.signed_distance(center) < -radius {
                 return false;
             }

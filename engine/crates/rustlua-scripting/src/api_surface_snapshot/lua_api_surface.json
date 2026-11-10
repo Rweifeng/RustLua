@@ -115,6 +115,18 @@
     },
     {
       "funcs": [
+        "bounds",
+        "build",
+        "count",
+        "dig",
+        "fill",
+        "index",
+        "solid_at"
+      ],
+      "name": "cells3d"
+    },
+    {
+      "funcs": [
         "add",
         "now",
         "pause",
@@ -301,9 +313,14 @@
     },
     {
       "funcs": [
+        "batch_count",
+        "batch_pose",
         "clear",
+        "clear_batch",
         "get",
         "set",
+        "set_batch",
+        "set_batch_range",
         "set_material"
       ],
       "name": "mesh"
@@ -344,10 +361,12 @@
         "burst",
         "burst3d",
         "clear_streams3d",
+        "clear_wind_grid",
         "clear_wind_sources",
         "count",
         "set_wind",
         "set_wind3d",
+        "set_wind_grid",
         "set_wind_profile",
         "set_wind_source",
         "stop_stream3d",
@@ -355,6 +374,13 @@
         "stream_count",
         "wind",
         "wind3d",
+        "wind_grid_add_velocity",
+        "wind_grid_heat",
+        "wind_grid_info",
+        "wind_grid_params",
+        "wind_grid_push",
+        "wind_grid_sample",
+        "wind_grid_set_temperature",
         "wind_profile"
       ],
       "name": "particles"
@@ -376,6 +402,7 @@
     },
     {
       "funcs": [
+        "add_cells",
         "add_heightfield",
         "debug_draw",
         "events",
@@ -410,6 +437,8 @@
     },
     {
       "funcs": [
+        "set_clip_cap",
+        "set_clip_cap_both_sides",
         "set_cloud_base",
         "set_cloud_coverage",
         "set_cloud_shadow_strength",
@@ -422,6 +451,7 @@
         "set_quality",
         "set_ripple",
         "set_surface_cover",
+        "set_water_refract_steps",
         "set_water_tint",
         "stats"
       ],

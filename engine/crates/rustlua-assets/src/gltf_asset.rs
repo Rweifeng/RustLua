@@ -130,6 +130,78 @@ pub struct GltfMaterial {
     pub alpha_mode: GltfAlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// P3-R162：KHR_materials_clearcoat 因子；扩展缺失时为 0（无清漆）。
+    /// gltf 1.4 crate 没有这个扩展的 typed API，经 `extensions()` 的原始 JSON 读取。
+    pub clearcoat_factor: f32,
+    pub clearcoat_roughness_factor: f32,
+    /// P3-R164：KHR_materials_iridescence；扩展缺失时 0 / KHR 默认 ior 1.3 / 100–400nm。
+    pub iridescence_factor: f32,
+    pub iridescence_ior: f32,
+    pub iridescence_thickness_min: f32,
+    pub iridescence_thickness_max: f32,
+    /// P3-R163：SSS 近似，走厂商扩展 `RUSTLUA_materials_sss { strength, thickness }`。
+    ///
+    /// 为什么不映射 KHR_materials_diffuse_transmission：那个扩展的语义是**折射透射**
+    /// （能看穿物体），本引擎的 SSS 是 wrap 漫反射 + 背向透光的**不透光**近似；
+    /// 把玻璃资产解释成半透甲壳是错的语义，所以宁可用厂商扩展也不借标准名。
+    pub sss_strength: f32,
+    pub sss_thickness: f32,
+    /// P3-R165：KHR_materials_sheen（绒毛/布面光泽瓣）；扩展缺失时颜色全 0 = 关闭。
+    pub sheen_color: [f32; 3],
+    pub sheen_roughness_factor: f32,
+}
+
+/// 从 glTF 材质的原始扩展 JSON 里取一个数值因子（缺失/类型不对 ⇒ `fallback`）。
+///
+/// gltf 1.4 crate 没有 clearcoat/iridescence 的 typed API，`extensions()` 给的是
+/// serde_json 值；这里只读因子（不读扩展贴图），非有限数按缺失处理——导入层
+/// 与 `.material` 解析器共用同一套"非法值不放行"的纪律。
+fn extension_number(
+    extensions: Option<&serde_json::Map<String, serde_json::Value>>,
+    name: &str,
+    field: &str,
+    fallback: f32,
+) -> f32 {
+    extensions
+        .and_then(|extensions| extensions.get(name))
+        .and_then(|extension| extension.get(field))
+        .and_then(|value| value.as_f64())
+        .map_or(fallback, |value| value as f32)
+        .clamp(0.0, f32::MAX)
+        .min(f32::MAX)
+}
+
+/// 同上，但取一个三通道颜色因子（`sheenColorFactor` 这类）。
+///
+/// 逐通道夹到 0..=1：KHR 的因子语义就是 0..1，超界的资产不该把能量放大到
+/// 材质瓣之外（`.material` 解析器对同一批键也是这个口径）。
+fn extension_vec3(
+    extensions: Option<&serde_json::Map<String, serde_json::Value>>,
+    name: &str,
+    field: &str,
+    fallback: [f32; 3],
+) -> [f32; 3] {
+    let Some(values) = extensions
+        .and_then(|extensions| extensions.get(name))
+        .and_then(|extension| extension.get(field))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return fallback;
+    };
+    if values.len() != 3 {
+        return fallback;
+    }
+    let mut out = [0.0; 3];
+    for (slot, value) in out.iter_mut().zip(values) {
+        let Some(number) = value.as_f64() else {
+            return fallback;
+        };
+        if !number.is_finite() {
+            return fallback;
+        }
+        *slot = (number as f32).clamp(0.0, 1.0);
+    }
+    out
 }
 
 impl GltfAsset {
@@ -226,6 +298,66 @@ impl GltfAsset {
                     alpha_mode,
                     alpha_cutoff: material.alpha_cutoff().unwrap_or(0.5),
                     double_sided: material.double_sided(),
+                    clearcoat_factor: extension_number(
+                        material.extensions(),
+                        "KHR_materials_clearcoat",
+                        "clearcoatFactor",
+                        0.0,
+                    ),
+                    clearcoat_roughness_factor: extension_number(
+                        material.extensions(),
+                        "KHR_materials_clearcoat",
+                        "clearcoatRoughnessFactor",
+                        0.0,
+                    ),
+                    iridescence_factor: extension_number(
+                        material.extensions(),
+                        "KHR_materials_iridescence",
+                        "iridescenceFactor",
+                        0.0,
+                    ),
+                    iridescence_ior: extension_number(
+                        material.extensions(),
+                        "KHR_materials_iridescence",
+                        "iridescenceIor",
+                        1.3,
+                    ),
+                    iridescence_thickness_min: extension_number(
+                        material.extensions(),
+                        "KHR_materials_iridescence",
+                        "iridescenceThicknessMinimum",
+                        100.0,
+                    ),
+                    iridescence_thickness_max: extension_number(
+                        material.extensions(),
+                        "KHR_materials_iridescence",
+                        "iridescenceThicknessMaximum",
+                        400.0,
+                    ),
+                    sss_strength: extension_number(
+                        material.extensions(),
+                        "RUSTLUA_materials_sss",
+                        "strength",
+                        0.0,
+                    ),
+                    sss_thickness: extension_number(
+                        material.extensions(),
+                        "RUSTLUA_materials_sss",
+                        "thickness",
+                        0.0,
+                    ),
+                    sheen_color: extension_vec3(
+                        material.extensions(),
+                        "KHR_materials_sheen",
+                        "sheenColorFactor",
+                        [0.0; 3],
+                    ),
+                    sheen_roughness_factor: extension_number(
+                        material.extensions(),
+                        "KHR_materials_sheen",
+                        "sheenRoughnessFactor",
+                        0.0,
+                    ),
                 }
             })
             .collect();
@@ -548,6 +680,76 @@ mod tests {
         assert_eq!(asset.nodes[0].mesh, Some(0));
     }
 
+    /// P3-R162/R163/R164：KHR_materials_clearcoat、KHR_materials_iridescence 与厂商扩展
+    /// RUSTLUA_materials_sss 的因子经 `extensions()` 原始 JSON 读入；没有扩展的材质取 0 / KHR 默认值。
+    #[test]
+    fn imports_clearcoat_and_iridescence_extension_factors() {
+        let path =
+            std::env::temp_dir().join(format!("rustlua-clearcoat-{}.gltf", std::process::id()));
+        fs::write(
+            &path,
+            r#"{
+  "asset": { "version": "2.0" },
+  "materials": [
+    {
+      "name": "chitin",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.2, 0.1, 0.05, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.42
+      },
+      "extensions": {
+        "KHR_materials_clearcoat": {
+          "clearcoatFactor": 0.35,
+          "clearcoatRoughnessFactor": 0.08
+        },
+        "KHR_materials_iridescence": {
+          "iridescenceFactor": 0.6,
+          "iridescenceIor": 1.8,
+          "iridescenceThicknessMinimum": 90.0,
+          "iridescenceThicknessMaximum": 520.0
+        },
+        "RUSTLUA_materials_sss": {
+          "strength": 0.3,
+          "thickness": 0.7
+        },
+        "KHR_materials_sheen": {
+          "sheenColorFactor": [0.8, 1.4, 0.7],
+          "sheenRoughnessFactor": 0.55
+        }
+      }
+    },
+    { "name": "plain" }
+  ]
+}"#,
+        )
+        .unwrap();
+        let asset = GltfAsset::load(&path).expect("minimal gltf must import");
+        let chitin = &asset.materials[0];
+        assert_eq!(chitin.clearcoat_factor, 0.35);
+        assert_eq!(chitin.clearcoat_roughness_factor, 0.08);
+        assert_eq!(chitin.iridescence_factor, 0.6);
+        assert_eq!(chitin.iridescence_ior, 1.8);
+        assert_eq!(chitin.iridescence_thickness_min, 90.0);
+        assert_eq!(chitin.iridescence_thickness_max, 520.0);
+        assert_eq!(chitin.sss_strength, 0.3);
+        assert_eq!(chitin.sss_thickness, 0.7);
+        // 超界通道夹到 1：KHR 的因子语义是 0..1，导入层不把额外能量放进绒毛瓣。
+        assert_eq!(chitin.sheen_color, [0.8, 1.0, 0.7]);
+        assert_eq!(chitin.sheen_roughness_factor, 0.55);
+        let plain = &asset.materials[1];
+        assert_eq!(plain.clearcoat_factor, 0.0);
+        assert_eq!(plain.iridescence_factor, 0.0);
+        assert_eq!(plain.iridescence_ior, 1.3);
+        assert_eq!(plain.iridescence_thickness_min, 100.0);
+        assert_eq!(plain.iridescence_thickness_max, 400.0);
+        assert_eq!(plain.sss_strength, 0.0);
+        assert_eq!(plain.sss_thickness, 0.0);
+        assert_eq!(plain.sheen_color, [0.0; 3]);
+        assert_eq!(plain.sheen_roughness_factor, 0.0);
+        let _ = fs::remove_file(&path);
+    }
+
     #[test]
     fn rejects_invalid_glb_with_path_context() {
         let path =
@@ -555,7 +757,7 @@ mod tests {
         fs::write(&path, b"not a glb").unwrap();
         let error = GltfAsset::load(&path).unwrap_err().to_string();
         assert!(error.contains("invalid-gltf") && error.contains("cannot import glTF"));
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
     }
 
     fn skin_asset_path() -> PathBuf {

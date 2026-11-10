@@ -47,6 +47,7 @@ scene.set_script_error_policy(ScriptErrorPolicy::Contain);
 | 槽位 | 键 | 说明 |
 |---|---|---|
 | 工程级 `update()` | `update()` | `scripts/main.lua` 的 `update` |
+| 工程级 `on_frame()` | `on_frame()` | 每个渲染帧一次；与 `update()` 分开计数——表现层炸掉不该连带停逻辑回调 |
 | UI 点击分发 | `ui.click` | `UiEvents` 绑定的任意 Lua 函数；一个按钮的函数写错不会连带后面排队的按钮 |
 | 每实体钩子 | `entity:<index>:g<generation>:on_spawn` / `:on_update` | 按 `EntityId` 各一份；某个实体的 `on_update` 报错只跳过它自己 |
 

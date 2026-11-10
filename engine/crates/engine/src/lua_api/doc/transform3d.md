@@ -8,7 +8,7 @@
 
 ## `transform3d.attach(id: i64)`
 
-> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:435`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:441`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `transform3d.get(id: i64)`
 
-> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:449`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:455`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `transform3d.move(id: i64, dx: f32, dy: f32, dz: f32)`
 
-> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:531`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:537`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -53,7 +53,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `transform3d.set(((id, x, y, z, rx, ry, rz, rw, sx, sy, sz): Transform3dSetArgs))`
 
-> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:491`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:497`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -64,7 +64,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `transform3d.world(id: i64)`
 
-> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:549`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ecs/src/transform_lua.rs:555`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

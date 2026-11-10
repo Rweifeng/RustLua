@@ -12,7 +12,7 @@
 
 ## `camera.get(id: i64)`
 
-> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:172`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:184`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -23,7 +23,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `camera.get_active()`
 
-> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:164`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:176`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -34,7 +34,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `camera.set(id: i64, x: f32, y: f32, z: f32, tx: f32, ty: f32, tz: f32, fov: Option<f32>)`
 
-> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:204`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:216`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -45,7 +45,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `camera.set_active(id: i64)`
 
-> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:141`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-camera/src/camera_lua.rs:153`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

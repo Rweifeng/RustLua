@@ -70,6 +70,23 @@ impl FixedTimeStep {
         self
     }
 
+    /// 确定性档：忽略墙钟，恰好推进 `steps` 个固定步。
+    ///
+    /// 墙钟档里「同一帧号」对应的模拟步数会随机器快慢抖动（0/1/2 步），两次运行到
+    /// 同一帧号的世界状态可能不同 ⇒ 像素对账无从谈起。本方法让帧号与模拟步一一对应：
+    /// 每帧恰好 `steps` 步、每步 `fixed_delta_seconds`，与墙钟档的每步取值逐位相同。
+    pub fn advance_fixed(&mut self, steps: u32) -> StepReport {
+        self.total_steps += u64::from(steps);
+        StepReport {
+            steps,
+            delta_seconds: self.fixed_delta_seconds as f32,
+            accumulator_seconds: 0.0,
+            dropped_steps: 0,
+            total_dropped_steps: self.total_dropped_steps,
+            total_steps: self.total_steps,
+        }
+    }
+
     /// Advances the scheduler by wall-clock time and reports fixed updates to run.
     pub fn advance(&mut self, elapsed_seconds: f64) -> StepReport {
         self.accumulator_seconds += elapsed_seconds.max(0.0);
@@ -192,6 +209,28 @@ mod tests {
         // 负容差按 0 处理（不会意外放宽）。
         let mut clock = FixedTimeStep::new(60, 8).unwrap().with_step_tolerance(-1.0);
         assert_eq!(clock.advance(1.0 / 60.0 - 1e-12).steps, 0);
+    }
+
+    /// 确定性档：帧号与模拟步一一对应 ⇒ 同一帧号的世界状态可复现。
+    #[test]
+    fn advance_fixed_keeps_frame_index_and_step_bijective() {
+        let mut clock = FixedTimeStep::new(60, 8).unwrap();
+        for frame in 1..=120u64 {
+            let report = clock.advance_fixed(1);
+            assert_eq!(report.steps, 1);
+            assert_eq!(report.total_steps, frame);
+            assert_eq!(report.dropped_steps, 0);
+            // 每步时长与墙钟档逐位相同（否则模拟结果与正常跑不一致）。
+            assert_eq!(report.delta_seconds, clock.fixed_delta_seconds());
+            assert_eq!(report.accumulator_seconds, 0.0);
+        }
+        // 墙钟读数完全不影响确定性档的推进量（墙钟自己吃掉几步是墙钟的事）。
+        let mut clock = FixedTimeStep::new(60, 8).unwrap();
+        clock.advance(3.7);
+        let report = clock.advance_fixed(1);
+        assert_eq!(report.steps, 1);
+        assert_eq!(report.dropped_steps, 0);
+        assert_eq!(report.accumulator_seconds, 0.0);
     }
 
     #[test]

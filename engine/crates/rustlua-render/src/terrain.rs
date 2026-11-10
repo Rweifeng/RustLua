@@ -35,6 +35,9 @@ pub const TERRAIN_MIN_RES: u32 = 4;
 pub const TERRAIN_MAX_RES: u32 = 192;
 /// P3-R48：逐像素四通道 splat 权重图分辨率。
 pub const SPLAT_MAP_RES: u32 = 512;
+/// P3-R166：剖面封口用的高度图分辨率（RG 双通道打包 16 位定点）。
+/// 512² 覆盖 480 单位地形 = 0.94 单位/texel，切口轮廓够用且与 splat 图同量级。
+pub const SECTION_HEIGHT_MAP_RES: u32 = 512;
 pub const TERRAIN_MAX_AMPLITUDE: f32 = 200.0;
 /// Maximum local edits carried by one terrain spec string.
 pub const TERRAIN_MAX_EDITS: usize = 32;
@@ -124,6 +127,12 @@ pub struct TerrainSpec {
     pub chunk_size: f32,
     /// P3-R147：分块裙边向下延伸的深度；0 = 无裙边。
     pub chunk_skirt: f32,
+    /// P3-R166：剖面封口开关（`sect=1`）。开启后沙箱渲染器会在相机裁剪平面
+    /// 生效时，用本地形的高度图把切面封成实体土壤；不开启则完全保持旧行为。
+    pub section: bool,
+    /// P3-R203：廉价细节档（`cheap=1`）。跳过近细节（2 步视差 + 裂缝 AO + 5 步太阳
+    /// 微阴影），图集颜色/法线与 splat 混合不变；缺省 false = 旧行为逐字节不变。
+    pub cheap: bool,
 }
 
 impl Default for TerrainSpec {
@@ -144,6 +153,8 @@ impl Default for TerrainSpec {
             chunk_origin: [0.0, 0.0],
             chunk_size: 0.0,
             chunk_skirt: 0.0,
+            section: false,
+            cheap: false,
         }
     }
 }
@@ -182,6 +193,22 @@ impl TerrainSpec {
                 "cz" => spec.chunk_origin[1] = parse_number(raw, key)?,
                 "cs" => spec.chunk_size = parse_number(raw, key)?,
                 "sk" => spec.chunk_skirt = parse_number(raw, key)?,
+                // 只认 0/1：布尔用数字写进 spec，未知语义不悄悄当开。
+                "sect" => {
+                    let value = parse_number(raw, key)?;
+                    if value != 0.0 && value != 1.0 {
+                        return Err(TerrainSpecError::MalformedField(field.to_owned()));
+                    }
+                    spec.section = value == 1.0;
+                }
+                // P3-R203：只认 0/1，与 `sect` 同规则。
+                "cheap" => {
+                    let value = parse_number(raw, key)?;
+                    if value != 0.0 && value != 1.0 {
+                        return Err(TerrainSpecError::MalformedField(field.to_owned()));
+                    }
+                    spec.cheap = value == 1.0;
+                }
                 "seed" => {
                     let value: f32 = parse_number(raw, key)?;
                     if !value.is_finite() || value.fract() != 0.0 || value < 0.0 {
@@ -269,6 +296,12 @@ impl TerrainSpec {
         }
         if self.chunk_skirt > 0.0 {
             path.push_str(&format!("&sk={}", self.chunk_skirt));
+        }
+        if self.section {
+            path.push_str("&sect=1");
+        }
+        if self.cheap {
+            path.push_str("&cheap=1");
         }
         for edit in self.edits.iter().take(usize::from(self.edit_count)) {
             path.push_str(&format!(
@@ -558,6 +591,57 @@ impl TerrainSpec {
         }
     }
 
+    /// P3-R166：归一化高度区间 `(min_y, span)`，网格 UV、包围盒与剖面高度图共用。
+    #[must_use]
+    pub fn height_range(&self) -> (f32, f32) {
+        let mut min_y = -(self.amplitude + self.river_depth + self.tributary_depth);
+        let mut max_y = self.amplitude;
+        for edit in self.edits.iter().take(usize::from(self.edit_count)) {
+            if edit.delta < 0.0 {
+                min_y += edit.delta;
+            } else {
+                max_y += edit.delta;
+            }
+        }
+        (min_y, (max_y - min_y).max(1e-4))
+    }
+
+    /// P3-R166：剖面封口高度图（RGBA8，R = 高 8 位、G = 低 8 位，16 位定点）。
+    ///
+    /// 相机裁剪平面生效时，Tonemap 用这张图判断"切面点是否在地表以下"，
+    /// 因此高度必须与可见网格同源（`height()`，含河床与局部 edit）。
+    /// **分块地形也烘整张 `size` 范围**：分块只改几何细分与实体平移、不改高度公式，
+    /// 各块因此拿到同一份世界高度场（渲染侧用块中心把世界坐标折回整张地形的局部坐标）。
+    /// 世界 xz 映射与 splat 图一致：`u = x/size + 0.5`、`v = z/size + 0.5`。
+    #[must_use]
+    pub fn height_map(&self) -> Option<GltfTextureImage> {
+        if !self.section {
+            return None;
+        }
+        let res = SECTION_HEIGHT_MAP_RES;
+        let (min_y, span) = self.height_range();
+        let mut rgba = vec![0u8; (res * res * 4) as usize];
+        for row in 0..res {
+            for col in 0..res {
+                let u = (col as f32 + 0.5) / res as f32;
+                let v = (row as f32 + 0.5) / res as f32;
+                let x = (u - 0.5) * self.size;
+                let z = (v - 0.5) * self.size;
+                let value = ((self.height(x, z) - min_y) / span).clamp(0.0, 1.0);
+                let fixed = (value * 65535.0).round() as u32;
+                let index = ((row * res + col) * 4) as usize;
+                rgba[index] = (fixed >> 8) as u8;
+                rgba[index + 1] = (fixed & 0xFF) as u8;
+                rgba[index + 3] = 255;
+            }
+        }
+        Some(GltfTextureImage {
+            width: res,
+            height: res,
+            rgba,
+        })
+    }
+
     /// 逐像素 splat 权重图（512² RGBA8，R/G/B/A = 草/苔/落叶/裸土）。
     ///
     /// 与顶点权重同一个 [`Self::splat_weights`] 采样函数，世界坐标映射到
@@ -591,22 +675,21 @@ impl TerrainSpec {
     #[must_use]
     pub fn build_mesh(&self) -> MeshAsset {
         let res = self.resolution.max(TERRAIN_MIN_RES);
-        let span_size = if self.chunk_size > 0.0 { self.chunk_size } else { self.size };
-        let origin = if self.chunk_size > 0.0 { self.chunk_origin } else { [0.0, 0.0] };
+        let span_size = if self.chunk_size > 0.0 {
+            self.chunk_size
+        } else {
+            self.size
+        };
+        let origin = if self.chunk_size > 0.0 {
+            self.chunk_origin
+        } else {
+            [0.0, 0.0]
+        };
         let step = span_size / res as f32;
         let half = span_size * 0.5;
         let stride = res as usize + 1;
         let mut vertices = Vec::with_capacity(stride * stride);
-        let mut min_y = -(self.amplitude + self.river_depth + self.tributary_depth);
-        let mut max_y = self.amplitude;
-        for edit in self.edits.iter().take(usize::from(self.edit_count)) {
-            if edit.delta < 0.0 {
-                min_y += edit.delta;
-            } else {
-                max_y += edit.delta;
-            }
-        }
-        let span = (max_y - min_y).max(1e-4);
+        let (min_y, span) = self.height_range();
         for row in 0..=res {
             let z = -half + row as f32 * step;
             for col in 0..=res {
@@ -653,7 +736,7 @@ impl TerrainSpec {
             for row in [0usize, res as usize] {
                 edge_starts.push(vertices.len() as u32);
                 for col in 0..=res as usize {
-                    let base = vertices[row * stride as usize + col];
+                    let base = vertices[row * stride + col];
                     vertices.push(MeshVertex {
                         position: [base.position[0], base.position[1] - skirt, base.position[2]],
                         normal: base.normal,
@@ -667,7 +750,7 @@ impl TerrainSpec {
             for col in [0usize, res as usize] {
                 edge_starts.push(vertices.len() as u32);
                 for row in 0..=res as usize {
-                    let base = vertices[row * stride as usize + col];
+                    let base = vertices[row * stride + col];
                     vertices.push(MeshVertex {
                         position: [base.position[0], base.position[1] - skirt, base.position[2]],
                         normal: base.normal,
@@ -690,7 +773,7 @@ impl TerrainSpec {
                         let base = (i as usize * stride + col) as u32;
                         (base, base + stride as u32)
                     };
-                    let sa = start + i as u32;
+                    let sa = start + i;
                     let sb = sa + 1;
                     indices.extend_from_slice(&[a, sa, b, b, sa, sb]);
                 }
@@ -762,16 +845,8 @@ impl TerrainSpec {
     #[must_use]
     pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         let half = self.size * 0.5;
-        let mut min_y = -(self.amplitude + self.river_depth + self.tributary_depth);
-        let mut max_y = self.amplitude;
-        for edit in self.edits.iter().take(usize::from(self.edit_count)) {
-            if edit.delta < 0.0 {
-                min_y += edit.delta;
-            } else {
-                max_y += edit.delta;
-            }
-        }
-        ([-half, min_y, -half], [half, max_y, half])
+        let (min_y, span) = self.height_range();
+        ([-half, min_y, -half], [half, min_y + span, half])
     }
 }
 
@@ -882,17 +957,19 @@ mod tests {
                 .iter()
                 .map(|value| u32::from(*value))
                 .sum();
-            assert!((sum as i32 - 255).abs() <= 3, "splat sum {sum} at {col},{row}");
+            assert!(
+                (sum as i32 - 255).abs() <= 3,
+                "splat sum {sum} at {col},{row}"
+            );
             // Decoded texel must match the same CPU splat function used by vertices.
             let u = (col as f32 + 0.5) / SPLAT_MAP_RES as f32;
             let v = (row as f32 + 0.5) / SPLAT_MAP_RES as f32;
             let expected = spec.splat_weights((u - 0.5) * spec.size, (v - 0.5) * spec.size);
-            for channel in 0..4 {
+            for (channel, &expected_channel) in expected.iter().enumerate() {
                 let actual = f32::from(map.rgba[index + channel]) / 255.0;
                 assert!(
-                    (actual - expected[channel]).abs() < 0.02,
-                    "channel {channel} at {col},{row}: {actual} vs {}",
-                    expected[channel]
+                    (actual - expected_channel).abs() < 0.02,
+                    "channel {channel} at {col},{row}: {actual} vs {expected_channel}"
                 );
             }
         }
@@ -1273,8 +1350,18 @@ mod tests {
         };
         let mesh = chunk.build_mesh();
         let primitive = &mesh.primitives[0];
-        assert!(primitive.vertices.iter().all(|v| v.position[0].abs() <= 30.0 + 1e-4));
-        assert!(primitive.vertices.iter().all(|v| v.position[2].abs() <= 30.0 + 1e-4));
+        assert!(
+            primitive
+                .vertices
+                .iter()
+                .all(|v| v.position[0].abs() <= 30.0 + 1e-4)
+        );
+        assert!(
+            primitive
+                .vertices
+                .iter()
+                .all(|v| v.position[2].abs() <= 30.0 + 1e-4)
+        );
         let center = &primitive.vertices[2 * 5 + 2];
         assert!((center.position[1] - base.height(60.0, -20.0)).abs() < 1e-4);
         let path = chunk.mesh_path();
@@ -1300,5 +1387,112 @@ mod tests {
         assert!(mesh.materials[0].double_sided);
         let skirt = &primitive.vertices[25];
         assert!((skirt.position[1] + 2.0 - primitive.vertices[0].position[1]).abs() < 1e-4);
+    }
+
+    fn decode_height_map(
+        image: &GltfTextureImage,
+        min_y: f32,
+        span: f32,
+        col: u32,
+        row: u32,
+    ) -> f32 {
+        let index = ((row * image.width + col) * 4) as usize;
+        let fixed = u32::from(image.rgba[index]) * 256 + u32::from(image.rgba[index + 1]);
+        min_y + f32::from(fixed as u16) / 65535.0 * span
+    }
+
+    #[test]
+    fn section_flag_round_trips_and_height_map_matches_surface() {
+        let spec = TerrainSpec::parse("__terrain__?size=200&res=6&amp=3&seed=11&sect=1")
+            .expect("section spec parses");
+        assert!(spec.section);
+        let path = spec.mesh_path();
+        assert!(path.contains("&sect=1"), "{path}");
+        assert!(TerrainSpec::parse(&path).expect("round-trip").section);
+        // 只认 0/1：其它值明确报错，避免拼错时静默关掉剖面。
+        assert!(TerrainSpec::parse("__terrain__?size=200&res=6&sect=2").is_err());
+
+        let image = spec
+            .height_map()
+            .expect("section terrain bakes a height map");
+        assert_eq!(image.width, SECTION_HEIGHT_MAP_RES);
+        let (min_y, span) = spec.height_range();
+        // 中心 texel 必须还原到 height()（16 位定点误差 < span/65535）。
+        let center = SECTION_HEIGHT_MAP_RES / 2;
+        let u = (center as f32 + 0.5) / SECTION_HEIGHT_MAP_RES as f32;
+        let x = (u - 0.5) * spec.size;
+        let expected = spec.height(x, x);
+        let decoded = decode_height_map(&image, min_y, span, center, center);
+        assert!(
+            (decoded - expected).abs() <= span / 65535.0 + 1e-6,
+            "decoded {decoded} vs height {expected}"
+        );
+        // 高度图与网格同源：局部 edit 必须进图。
+        let mut edited = spec;
+        edited
+            .push_edit(TerrainEdit {
+                x: 0.0,
+                z: 0.0,
+                radius: 30.0,
+                delta: 1.5,
+            })
+            .expect("edit fits");
+        let edited_image = edited.height_map().expect("edited map");
+        let (edited_min, edited_span) = edited.height_range();
+        let edited_center =
+            decode_height_map(&edited_image, edited_min, edited_span, center, center);
+        assert!(edited_center > decoded + 1.0);
+    }
+
+    #[test]
+    fn height_map_is_opt_in_and_bakes_the_whole_field_for_chunks() {
+        let plain = TerrainSpec::default();
+        assert!(plain.height_map().is_none());
+        // 分块规格也烘整张地形：高度公式只吃世界 xz，块中心由渲染侧折算。
+        let chunked = TerrainSpec {
+            section: true,
+            chunk_origin: [60.0, -20.0],
+            chunk_size: 60.0,
+            ..TerrainSpec::default()
+        };
+        let image = chunked.height_map().expect("chunked section still bakes");
+        assert_eq!(image.width, SECTION_HEIGHT_MAP_RES);
+        // 中心 texel 仍是整张地形（世界原点附近）的高度，而不是块中心。
+        let center = SECTION_HEIGHT_MAP_RES / 2;
+        let (min_y, span) = chunked.height_range();
+        let u = (center as f32 + 0.5) / SECTION_HEIGHT_MAP_RES as f32;
+        let x = (u - 0.5) * chunked.size;
+        let decoded = decode_height_map(&image, min_y, span, center, center);
+        let expected = chunked.height(x, x);
+        assert!(
+            (decoded - expected).abs() <= span / 65535.0 + 1e-6,
+            "decoded {decoded} vs height {expected}"
+        );
+    }
+
+    /// P3-R203：`cheap=1` 解析进 spec、随 `mesh_path()` 往返；非法值报错。
+    #[test]
+    fn cheap_detail_flag_parses_and_round_trips() {
+        let spec = TerrainSpec::parse("__terrain__?size=10&res=8&amp=0.5&seed=3&cheap=1")
+            .expect("cheap=1 parses");
+        assert!(spec.cheap);
+        let path = spec.mesh_path();
+        assert!(
+            path.contains("&cheap=1"),
+            "往返路径必须保留 cheap=1：{path}"
+        );
+        assert!(TerrainSpec::parse(&path).expect("round-trip").cheap);
+        let off = TerrainSpec::parse("__terrain__?size=10&res=8&amp=0.5&seed=3&cheap=0")
+            .expect("cheap=0 parses");
+        assert!(!off.cheap);
+        assert!(
+            !off.mesh_path().contains("cheap"),
+            "cheap=0 不写回路径：{}",
+            off.mesh_path()
+        );
+        assert!(
+            TerrainSpec::parse("__terrain__?cheap=2").is_err(),
+            "只认 0/1"
+        );
     }
 }

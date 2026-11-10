@@ -686,6 +686,14 @@ fn decode_collider3d(value: &str) -> Result<Collider3dFields, InspectorError> {
             fields.half_height = half_height;
             fields.radius = radius;
         }
+        // 场景串没有高度场词汇表（`ColliderDesc3d::from_component_str` 只认
+        // ball/cuboid/capsule），高度场只由运行期 `physics3d.add_heightfield` 产生 ⇒ 走到这里
+        // 说明上游让运行期形状进了面板。报错而不是落回球：落回球会让保存把地形碰撞体写成一颗球。
+        ColliderShape3d::Heightfield { rows, cols, .. } => {
+            return Err(InspectorError::InvalidCollider3d(format!(
+                "heightfield colliders are runtime-only, not a scene shape ({rows}x{cols})"
+            )));
+        }
     }
     Ok(fields)
 }

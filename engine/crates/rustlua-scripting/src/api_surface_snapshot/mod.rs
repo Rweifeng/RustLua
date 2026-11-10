@@ -18,7 +18,15 @@ use crate::script::LuaRuntime;
 
 /// 基线随源码提交（不放 `baselines/`——那个目录整体被 `.gitignore` 排除，
 /// CI 拿不到文件，门就不成其为门）。
+///
+/// M81：基线按**本次构建的维度**选择——全量构建（默认 `3d`）对全量面，
+/// `--no-default-features` 的 2D 构建对 2D 面。两份基线都由 `dump_lua_api` 在对应
+/// 维度下 `--write` 生成，写回路径同样按构建维度选择，因此"基线与构建维度错位"
+/// 在工具链上不可表达。
+#[cfg(feature = "3d")]
 const BASELINE: &str = include_str!("lua_api_surface.json");
+#[cfg(not(feature = "3d"))]
+const BASELINE: &str = include_str!("lua_api_surface_2d.json");
 
 /// 探针输出 → `模块名 → 排序后的函数名列表`。
 fn surface_tables(value: &serde_json::Value) -> BTreeMap<String, Vec<String>> {
@@ -77,7 +85,7 @@ fn lua_api_surface_matches_baseline() {
         issues.is_empty(),
         "Lua API 面与基线不一致（基线 {baseline_total} 个函数 / 当前 {current_total} 个）：\n  - {}\n\
          拆分与搬运不得改变 API 面；确属有意增删时跑\ncargo run -p engine --example dump_lua_api -- --write\
-         并说明理由",
+         （2D 基线：同命令加 --no-default-features）并说明理由",
         issues.join("\n  - ")
     );
     assert_eq!(

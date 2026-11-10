@@ -257,6 +257,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
             mesh_handle: Some(AssetHandle::new(0, 1)),
             model: mesh_model,
             palette: Vec::new(),
+            instances: Vec::new(),
             bounds: rustlua_render::frame::Scene3dBounds {
                 local_aabb: rustlua_math::math3d::Aabb3 {
                     min: Vec3::new(-4.0, -4.0, -0.1),

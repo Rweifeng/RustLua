@@ -44,7 +44,7 @@ return {
         label = "Sprite + Quad + Mesh",
         summary = "同一份场景同时表达 2D、3D 与两种投影相机",
         modules = { "camera", "mesh", "light", "sprite", "quad", "particles", "world_text" },
-        steps = 6,
+        steps = 7,
     },
     {
         scene = "api_3d",
@@ -53,8 +53,8 @@ return {
         title = "3D Rendering",
         label = "PBR / IBL / Skinning / Body",
         summary = "材质球、环境光、骨骼剪辑、3D 物理查询与 XZ 平面导航",
-        modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera" },
-        steps = 9,
+        modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera", "particles" },
+        steps = 12,
     },
     {
         scene = "api_gameplay",
@@ -94,7 +94,7 @@ return {
         label = "Panel / Grid / VList / IME",
         summary = "动态面板与文本、背包网格、模态层、拖拽、焦点、滚动、虚拟列表、富文本、输入与导航栈",
         modules = { "ui" },
-        steps = 12,
+        steps = 13,
     },
     {
         scene = "ui_test",
@@ -114,7 +114,7 @@ return {
         label = "on_spawn / on_update",
         summary = "每实体 Script 钩子与稳定实体 ID",
         modules = { "entity", "transform" },
-        steps = 5,
+        steps = 6,
     },
     {
         scene = "api_prefab",
@@ -133,8 +133,8 @@ return {
         title = "Core Runtime",
         label = "Entity / Event / Save / Scene",
         summary = "生命周期、事件总线、存档、数据 schema 与工程根",
-        modules = { "log", "time", "entity", "event", "tag", "health", "asset", "scene", "save", "app", "data" },
-        steps = 7,
+        modules = { "log", "time", "entity", "event", "tag", "health", "asset", "scene", "save", "app", "data", "render" },
+        steps = 8,
     },
     {
         scene = "demo3d",

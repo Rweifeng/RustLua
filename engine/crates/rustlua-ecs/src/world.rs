@@ -26,9 +26,16 @@ pub enum WorldError {
 trait ComponentStorage: Any {
     fn remove_entity(&mut self, entity: EntityId);
     fn contains_entity(&self, entity: EntityId) -> bool;
+    fn len(&self) -> usize;
     fn entity_ids(&self) -> Vec<EntityId>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+fn is_spatial_type(type_id: TypeId) -> bool {
+    type_id == TypeId::of::<crate::hierarchy::Parent>()
+        || type_id == TypeId::of::<crate::transform::Transform>()
+        || type_id == TypeId::of::<crate::transform::Transform3D>()
 }
 
 // 测试专用：有序索引的重排次数。`TypedStorage` 的契约是「稳态帧零重排」，而重排产出的 `order`
@@ -115,6 +122,10 @@ impl<T: 'static> ComponentStorage for TypedStorage<T> {
         self.dense.contains(entity)
     }
 
+    fn len(&self) -> usize {
+        self.dense.len()
+    }
+
     fn entity_ids(&self) -> Vec<EntityId> {
         self.ensure_order();
         self.order.borrow().clone()
@@ -140,6 +151,10 @@ pub struct World {
     /// P0-②：组件结构修订号——每次 `insert` / `remove` / `despawn` 递增。缓存方
     /// （如每实体脚本请求表）以它为失效键，无需每帧全量重扫即可确认"没变化"。
     revision: u64,
+    component_revisions: HashMap<TypeId, u64>,
+    /// 层级传播输入的修订号。可变借用空间组件或删除实体时递增，以便缓存安全跳过静态帧；
+    /// 删除任意实体也可能改变 Parent 边的有效性。
+    spatial_revision: u64,
 }
 
 impl fmt::Debug for World {
@@ -170,8 +185,10 @@ impl World {
             return Err(WorldError::InvalidEntity(entity));
         }
         self.revision = self.revision.wrapping_add(1);
+        self.spatial_revision = self.spatial_revision.wrapping_add(1);
         if let Some(types) = self.entity_components.remove(&entity) {
             for type_id in types {
+                self.bump_component_revision(type_id);
                 if let Some(storage) = self.components.get_mut(&type_id) {
                     storage.remove_entity(entity);
                 }
@@ -184,6 +201,21 @@ impl World {
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// 修订层级传播输入的计数器；可变访问也会使其失效。
+    #[must_use]
+    pub fn spatial_revision(&self) -> u64 {
+        self.spatial_revision
+    }
+
+    /// 修订 T 组件结构或可变访问的计数器。
+    #[must_use]
+    pub fn component_revision<T: 'static>(&self) -> u64 {
+        self.component_revisions
+            .get(&TypeId::of::<T>())
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Returns whether an entity handle is currently alive in this world.
@@ -205,24 +237,30 @@ impl World {
         component: T,
     ) -> Result<Option<T>, WorldError> {
         self.ensure_alive(entity)?;
-        let storage = self
-            .components
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(TypedStorage::<T>::new()));
-        let typed = storage
-            .as_any_mut()
-            .downcast_mut::<TypedStorage<T>>()
-            .expect("component storage type id must match its concrete storage");
-        let previous = typed.dense.insert(entity, component);
-        self.revision = self.revision.wrapping_add(1);
-        if previous.is_none() {
-            // 新增（或替换了同槽位的上一世代条目）⇒ 有序索引失效。
-            typed.order_dirty.set(true);
-            let types = self.entity_components.entry(entity).or_default();
-            let type_id = TypeId::of::<T>();
-            if !types.contains(&type_id) {
-                types.push(type_id);
+        let previous = {
+            let storage = self
+                .components
+                .entry(TypeId::of::<T>())
+                .or_insert_with(|| Box::new(TypedStorage::<T>::new()));
+            let typed = storage
+                .as_any_mut()
+                .downcast_mut::<TypedStorage<T>>()
+                .expect("component storage type id must match its concrete storage");
+            let previous = typed.dense.insert(entity, component);
+            if previous.is_none() {
+                typed.order_dirty.set(true);
+                let types = self.entity_components.entry(entity).or_default();
+                let type_id = TypeId::of::<T>();
+                if !types.contains(&type_id) {
+                    types.push(type_id);
+                }
             }
+            previous
+        };
+        self.revision = self.revision.wrapping_add(1);
+        self.bump_component_revision(TypeId::of::<T>());
+        if is_spatial_type(TypeId::of::<T>()) {
+            self.spatial_revision = self.spatial_revision.wrapping_add(1);
         }
         Ok(previous)
     }
@@ -240,9 +278,20 @@ impl World {
     /// Mutably reads a component attached to an entity.
     pub fn get_mut<T: 'static>(&mut self, entity: EntityId) -> Result<Option<&mut T>, WorldError> {
         self.ensure_alive(entity)?;
+        let type_id = TypeId::of::<T>();
+        let exists = self
+            .components
+            .get(&type_id)
+            .is_some_and(|storage| storage.contains_entity(entity));
+        if exists && is_spatial_type(type_id) {
+            self.spatial_revision = self.spatial_revision.wrapping_add(1);
+        }
+        if exists {
+            self.bump_component_revision(type_id);
+        }
         Ok(self
             .components
-            .get_mut(&TypeId::of::<T>())
+            .get_mut(&type_id)
             .and_then(|storage| storage.as_any_mut().downcast_mut::<TypedStorage<T>>())
             .and_then(|storage| storage.dense.get_mut(entity)))
     }
@@ -261,6 +310,10 @@ impl World {
         if removed.is_some() {
             storage.order_dirty.set(true);
             self.revision = self.revision.wrapping_add(1);
+            self.bump_component_revision(TypeId::of::<T>());
+            if is_spatial_type(TypeId::of::<T>()) {
+                self.spatial_revision = self.spatial_revision.wrapping_add(1);
+            }
             if let Some(types) = self.entity_components.get_mut(&entity) {
                 types.retain(|type_id| *type_id != TypeId::of::<T>());
             }
@@ -315,9 +368,20 @@ impl World {
 
     /// Iterates all live entities with component `T` mutably in sorted entity order.
     pub fn for_each_mut<T: 'static>(&mut self, mut f: impl FnMut(EntityId, &mut T)) {
+        let type_id = TypeId::of::<T>();
+        let component_count = self
+            .components
+            .get(&type_id)
+            .map_or(0, |storage| storage.len());
+        if component_count > 0 && is_spatial_type(type_id) {
+            self.spatial_revision = self.spatial_revision.wrapping_add(1);
+        }
+        if component_count > 0 {
+            self.bump_component_revision(type_id);
+        }
         let Some(storage) = self
             .components
-            .get_mut(&TypeId::of::<T>())
+            .get_mut(&type_id)
             .and_then(|storage| storage.as_any_mut().downcast_mut::<TypedStorage<T>>())
         else {
             return;
@@ -332,6 +396,11 @@ impl World {
             }
         }
         *storage.order.borrow_mut() = order;
+    }
+
+    fn bump_component_revision(&mut self, type_id: TypeId) {
+        let revision = self.component_revisions.entry(type_id).or_default();
+        *revision = revision.wrapping_add(1);
     }
 
     /// Iterates all live entities that have both components `T` and `U`.
@@ -431,6 +500,35 @@ mod tests {
         );
         assert!(!world.has::<Position>(entity).unwrap());
         assert_eq!(world.get::<Position>(entity).unwrap(), None);
+    }
+
+    #[test]
+    fn spatial_revision_tracks_structural_and_mutable_accesses() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        let initial = world.spatial_revision();
+        world.insert(entity, Position { x: 0.0, y: 0.0 }).unwrap();
+        assert_eq!(world.spatial_revision(), initial);
+
+        world
+            .insert(
+                entity,
+                crate::transform::Transform {
+                    position: crate::transform::Vec2::new(0.0, 0.0),
+                    rotation: 0.0,
+                    scale: crate::transform::Vec2::new(1.0, 1.0),
+                },
+            )
+            .unwrap();
+        let after_insert = world.spatial_revision();
+        world
+            .get_mut::<crate::transform::Transform>(entity)
+            .unwrap()
+            .unwrap()
+            .position
+            .x = 2.0;
+        assert!(world.spatial_revision() > after_insert);
+        assert_eq!(world.component_revision::<crate::transform::Transform>(), 2);
     }
 
     #[test]

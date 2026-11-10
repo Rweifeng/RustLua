@@ -88,7 +88,7 @@ pub fn registry() -> Rc<Registry> {
 #[must_use]
 pub fn registry_with_audio() -> (Rc<Registry>, Handle<AudioSystem>) {
     let audio = Handle::new(AudioSystem::default(), "audio");
-    let mut registry = Registry::new();
+    let mut registry = crate::new_lua_api_registry();
     let settings: Rc<dyn SettingsPort> = Rc::new(FileAudioSettings::new(registry.root_cell()));
     let installer = audio.clone();
     registry.add("audio", move |lua| lua::install(lua, &installer, &settings));

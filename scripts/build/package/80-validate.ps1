@@ -7,6 +7,50 @@
 # -----------------------------------------------------------------------------
 
     # ---------------------------------------------------------------- 平台产物校验
+    # M81 批 3：2D 发布的面探针复核（全平台）。PC 在下面 Invoke-PackagedCheck 的输出里断言；
+    # web/微信没有 game.exe，用同一份 feature 链的 dump_lua_api 样例现跑运行期 `_G` 探针对
+    # 2D 基线——它证明的是"这条 feature 链编出来的面就是 2D 面"，不是产物字节本身（P1 二进制
+    # 不裁剪，产物里的 3D 代码仍在，面由注册层决定）。
+    if ($ApiDimension -eq "2d") {
+        $savedEap = $ErrorActionPreference
+        try {
+            # 探针的 JSON 只走 stdout：cargo 的编译告警（dead_code 等）走 stderr，若用 `2>&1`
+            # 并进同一份缓冲，代码帧里的 `{` 会被 IndexOf('{') 当成 JSON 起点、尾部中文摘要行
+            # 又会被 Substring 一并吃进来 ⇒ ConvertFrom-Json 报"应为 : 或 }"（实测：面探针明明
+            # 打出 39/314 却整段解析失败）。分文件捕获，再从 stdout 里取最外层配平的 `{...}`。
+            $probeStdout = Join-Path ([IO.Path]::GetTempPath()) ("m81-api-surface-probe-" + [Guid]::NewGuid() + ".json")
+            $probeStderr = "$probeStdout.err"
+            $ErrorActionPreference = "Continue"
+            try {
+                cargo run -q -p engine --example dump_lua_api --no-default-features 1> $probeStdout 2> $probeStderr
+            }
+            finally {
+                $ErrorActionPreference = $savedEap
+            }
+            if ($LASTEXITCODE -ne 0) { throw "2D API surface probe failed (dump_lua_api --no-default-features)." }
+            $probeText = Get-Content -LiteralPath $probeStdout -Raw -Encoding UTF8
+            Remove-Item -LiteralPath $probeStdout, $probeStderr -Force -ErrorAction SilentlyContinue
+            $jsonStart = $probeText.IndexOf('{')
+            $jsonEnd = $probeText.LastIndexOf('}')
+            if ($jsonStart -lt 0 -or $jsonEnd -le $jsonStart) {
+                throw "2D API surface probe produced no JSON object (stdout: $($probeText.Substring(0, [Math]::Min(200, $probeText.Length))))"
+            }
+            $probeJson = $probeText.Substring($jsonStart, $jsonEnd - $jsonStart + 1) | ConvertFrom-Json
+            $probeTables = @($probeJson.tables).Count
+            $probeFuncs = ($probeJson.tables | ForEach-Object { @($_.funcs).Count } | Measure-Object -Sum).Sum
+        }
+        finally {
+            $ErrorActionPreference = $savedEap
+        }
+        $baselinePath = Join-Path $workspaceRoot "engine\crates\rustlua-scripting\src\api_surface_snapshot\lua_api_surface_2d.json"
+        $baseline = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $expectedTables = @($baseline.tables).Count
+        $expectedFuncs = ($baseline.tables | ForEach-Object { @($_.funcs).Count } | Measure-Object -Sum).Sum
+        if ($probeTables -ne $expectedTables -or $probeFuncs -ne $expectedFuncs) {
+            throw "2D API surface probe mismatch: baseline $expectedTables/$expectedFuncs, probe $probeTables/$probeFuncs"
+        }
+        Write-Host "api_surface_2d_probe_ok tables=$probeTables funcs=$probeFuncs" -ForegroundColor Green
+    }
     if ($Platform -eq "wechat-minigame") {
         # 骨架的位置随形态变：manifest.txt / project.toml 都在首屏清单里，所以分包形态下
         # 它们已经被搬到 mainpack/，pack/ 里**不该**再有同名副本（有就说明切分漏了）。
@@ -222,5 +266,21 @@
             throw "Release package did not report packaged=true: $packRootsLine"
         }
         Write-Host "Release package player data roots: $packRootsLine" -ForegroundColor DarkGray
+        # M81 批 3：发布后 2D 面探针复核——game.exe --check 现在报 lua_api_surface 行，
+        # api = "2d" 的包必须是 2D 基线那份面（39 表 / 314 函数，事实源 lua_api_surface_2d.json）。
+        # 读基线而不是写死数字：API 表演进时基线会先红（快照门），这里跟着基线走。
+        $surfaceLine = $packCheck.Output | Where-Object { $_ -match "^lua_api_surface " } | Select-Object -First 1
+        if (-not $surfaceLine) { throw "Release package check did not report lua_api_surface." }
+        if ($ApiDimension -eq "2d") {
+            $baselinePath = Join-Path $workspaceRoot "engine\crates\rustlua-scripting\src\api_surface_snapshot\lua_api_surface_2d.json"
+            $baseline = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $expectedTables = @($baseline.tables).Count
+            $expectedFuncs = ($baseline.tables | ForEach-Object { @($_.funcs).Count } | Measure-Object -Sum).Sum
+            $expected = "lua_api_surface tables=$expectedTables funcs=$expectedFuncs"
+            if ($surfaceLine.Trim() -ne $expected) {
+                throw "2D release API surface mismatch: expected '$expected', got '$($surfaceLine.Trim())'"
+            }
+        }
+        Write-Host "Release package API surface: $surfaceLine (api=$ApiDimension)" -ForegroundColor DarkGray
     }
 

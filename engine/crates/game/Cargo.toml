@@ -6,9 +6,19 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# M81：2D 基底 + 3D 可插包。`3d` 默认开；2D 发布 = --no-default-features。
+# 叶子出口：透传到 engine/scripting/gameplay，链上每条边都显式断默认。
+default = ["3d"]
+3d = ["engine/3d", "rustlua-scripting/3d", "rustlua-gameplay/3d"]
+
 [dependencies]
-engine.workspace = true
-winit = "0.30"
+# M81：feature 链上的边必须显式断默认，否则 feature 统一会把 3d 悄悄开回来。
+engine = { path = "../engine", default-features = false }
+winit = { version = "0.30", features = ["android-native-activity"] }
 tracing.workspace = true
 # 下列依赖仅被 examples/（独立 GPU demo）使用，主二进制通过 engine 间接使用。
 bytemuck.workspace = true
@@ -21,14 +31,14 @@ rustlua-assets-import = { path = "../rustlua-assets-import" }
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
-rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-gameplay = { path = "../rustlua-gameplay", default-features = false }
 rustlua-gpu.workspace = true
 rustlua-infra = { path = "../rustlua-infra" }
 rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-render = { path = "../rustlua-render" }
 rustlua-scene = { path = "../rustlua-scene" }
-rustlua-scripting = { path = "../rustlua-scripting" }
+rustlua-scripting = { path = "../rustlua-scripting", default-features = false }
 rustlua-ui = { path = "../rustlua-ui" }
 
 # 早期启动图走 GDI（`src/boot_splash.rs`）：GPU 渲染器就绪前的那 ~2.5 s 也必须有画面。

@@ -93,6 +93,7 @@ struct Params {
     color_start: vec4<f32>,
     color_end: vec4<f32>,
     buoyancy_pad: vec4<f32>,
+    curl_pad: vec4<f32>,
 };
 
 "#
@@ -169,6 +170,30 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         wind.y = wind.y + strength.y * falloff;
     }
+    // 程序化 curl 噪声：与 CPU `step_particle` 同一势函数旋度、同一相位来源。
+    // 严格无散（∇·w = 0），所以只有旋转/剪切、没有源汇；除以 k 归一化后每分量 ≤ curl。
+    let curl = params.curl_pad.x;
+    if (curl > 0.0) {
+        let k = max(params.curl_pad.y, 0.001);
+        let w = params.time * 6.283185307179586 * params.curl_pad.z;
+        let a = state.position.x * k + w;
+        let b = state.position.y * k + w * 0.7;
+        let c = state.position_z * k + w * 1.3;
+        wind.x = wind.x + curl * sin(b) * sin(c);
+        wind.y = wind.y + curl * cos(c) * sin(a);
+        wind_z = wind_z + curl * sin(a) * sin(b);
+    }
+    // 逐粒子颤动：与 CPU `step_particle` 同一公式与同一相位来源（寿命/尺寸抖动的纯算术哈希）。
+    // 必须在 state.velocity 积分之前修改 wind，否则 x/y 分量会被丢掉。
+    if (params.buoyancy_pad.y > 0.0) {
+        let phase = fract(state.max_life * 0.37 + state.size_start * 0.61);
+        let wave = params.time * 6.283185307179586 * params.buoyancy_pad.z
+            + phase * 6.283185307179586;
+        wind.x = wind.x + params.buoyancy_pad.y * sin(wave);
+        wind_z = wind_z + params.buoyancy_pad.y * cos(wave * 0.87 - phase * 6.283185307179586 * 1.7);
+        wind.y = wind.y + params.buoyancy_pad.y * 0.45
+            * sin(wave * 1.13 + phase * 6.283185307179586 * 0.6);
+    }
     state.velocity = state.velocity + (params.gravity + wind) * dt;
     let buoyancy = params.buoyancy_pad.x * clamp(state.life / max(state.max_life, 1e-6), 0.0, 1.0);
     state.velocity_z = state.velocity_z + (state.gravity_z + wind_z + buoyancy) * dt;
@@ -176,6 +201,17 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
         let damp = max(1.0 - params.drag * dt, 0.0);
         state.velocity = state.velocity * damp;
         state.velocity_z = state.velocity_z * damp;
+    }
+    if (params.buoyancy_pad.w != 0.0) {
+        // 沿寿命弯曲：与 CPU `step_particle` 同一 ramp（剩余寿命比例）与同一旋转公式，
+        // 只转水平面 (x, y) 的方向、不改速率；z 是竖直轴，不参与。
+        let ramp = clamp(state.life / max(state.max_life, 1e-6), 0.0, 1.0);
+        let angle = params.buoyancy_pad.w * ramp * dt;
+        let cs = cos(angle);
+        let sn = sin(angle);
+        let vx = state.velocity.x;
+        let vy = state.velocity.y;
+        state.velocity = vec2<f32>(vx * cs - vy * sn, vx * sn + vy * cs);
     }
     state.position = state.position + state.velocity * dt;
     state.position_z = state.position_z + state.velocity_z * dt;
@@ -185,6 +221,96 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#
 );
+
+/// 网格体积风/温度浮力场的 GPU 声明段（P3-R234）：`GridMeta` uniform + 只读存储格阵 +
+/// 三线性采样函数。`grid_data` 每格一个 `vec4`（xyz=速度，w=温度），线性顺序与 CPU
+/// `WindGrid::index(x,y,z)=x+dims[0]*(y+dims[1]*z)` 逐格对应。采样逐式复刻 CPU
+/// `particle_wind_grid::sample_accel`/`sample_coords`（盒外 clamp-to-edge、`+y` 浮力）。
+const GPU_GRID_DECLS: &str = r#"
+
+struct GridMeta {
+    dims: vec4<u32>,
+    origin_cell: vec4<f32>,
+    buoyancy_pad: vec4<f32>,
+};
+
+@group(0) @binding(1) var<uniform> grid_meta: GridMeta;
+@group(0) @binding(3) var<storage, read> grid_data: array<vec4<f32>>;
+
+fn grid_index(cx: u32, cy: u32, cz: u32) -> u32 {
+    return cx + grid_meta.dims.x * (cy + grid_meta.dims.y * cz);
+}
+
+fn sample_grid_accel(point: vec3<f32>) -> vec3<f32> {
+    let dims = grid_meta.dims.xyz;
+    let cell = grid_meta.origin_cell.w;
+    let origin = grid_meta.origin_cell.xyz;
+    let local = (point - origin) / cell;
+    let max_x = dims.x - 1u;
+    let gx = clamp(local.x, 0.0, f32(max_x));
+    let bx = u32(floor(gx));
+    let c0x = min(bx, max_x);
+    let hix = min(bx + 1u, max_x);
+    let fx = gx - f32(bx);
+    let max_y = dims.y - 1u;
+    let gy = clamp(local.y, 0.0, f32(max_y));
+    let by = u32(floor(gy));
+    let c0y = min(by, max_y);
+    let hiy = min(by + 1u, max_y);
+    let fy = gy - f32(by);
+    let max_z = dims.z - 1u;
+    let gz = clamp(local.z, 0.0, f32(max_z));
+    let bz = u32(floor(gz));
+    let c0z = min(bz, max_z);
+    let hiz = min(bz + 1u, max_z);
+    let fz = gz - f32(bz);
+    var vel = vec3<f32>(0.0);
+    var temp = 0.0;
+    for (var iz: u32 = 0u; iz < 2u; iz = iz + 1u) {
+        let cz = select(c0z, hiz, iz == 1u);
+        let wz = select(1.0 - fz, fz, iz == 1u);
+        for (var iy: u32 = 0u; iy < 2u; iy = iy + 1u) {
+            let cy = select(c0y, hiy, iy == 1u);
+            let wy = select(1.0 - fy, fy, iy == 1u);
+            for (var ix: u32 = 0u; ix < 2u; ix = ix + 1u) {
+                let cx = select(c0x, hix, ix == 1u);
+                let wx = select(1.0 - fx, fx, ix == 1u);
+                let w = wx * wy * wz;
+                let cellv = grid_data[grid_index(cx, cy, cz)];
+                vel = vel + cellv.xyz * w;
+                temp = temp + cellv.w * w;
+            }
+        }
+    }
+    return vel + vec3<f32>(0.0, grid_meta.buoyancy_pad.x * temp, 0.0);
+}
+"#;
+
+/// 注入到积分前的采样块：与 CPU `step_particle` 同一落点（curl/flutter/风源之后、
+/// `state.velocity` 积分之前），把网格加速度叠进 `wind`/`wind_z`。
+const GPU_GRID_SAMPLE: &str = r#"    let grid_accel = sample_grid_accel(vec3<f32>(state.position.x, state.position.y, state.position_z));
+    wind.x = wind.x + grid_accel.x;
+    wind.y = wind.y + grid_accel.y;
+    wind_z = wind_z + grid_accel.z;
+"#;
+
+/// 有网格时的 compute 变体：**从 [`GPU_PARTICLE_SHADER`] 派生**而非另写一份——共享段
+/// （状态声明 + 全部风/湍流/积分逻辑）逐字节同一份，不可能分叉。只在两处锚点插入网格
+/// 声明与采样块。无网格时宿主仍用原 [`GPU_PARTICLE_SHADER`]，默认路径逐位不变。
+///
+/// 锚点失配会让 `replace` 静默 no-op，[`tests::gpu_grid_shader_derives_from_base`] 钉住
+/// "派生真的发生了"（变体含采样函数且比基段长）。
+fn gpu_particle_grid_shader() -> &'static str {
+    static GRID_SHADER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    GRID_SHADER.get_or_init(|| {
+        const PARAMS_BINDING: &str = "@group(0) @binding(2) var<uniform> params: Params;";
+        const INTEGRATION: &str =
+            "    state.velocity = state.velocity + (params.gravity + wind) * dt;";
+        let with_decls = GPU_PARTICLE_SHADER
+            .replace(PARAMS_BINDING, &format!("{PARAMS_BINDING}{GPU_GRID_DECLS}"));
+        with_decls.replace(INTEGRATION, &format!("{GPU_GRID_SAMPLE}{INTEGRATION}"))
+    })
+}
 
 /// draw 段：4 顶点 triangle strip 的**实例化** quad。
 ///
@@ -410,6 +536,18 @@ struct GpuParticleParams {
     color_start: [f32; 4],
     color_end: [f32; 4],
     buoyancy_pad: [f32; 4],
+    curl_pad: [f32; 4],
+}
+
+/// 网格风场的 GPU 元数据（与 WGSL `GridMeta` 逐字节对应，48 字节）。全 `vec4` 避开
+/// uniform 里 `vec3` 的 16 字节对齐陷阱：`dims.xyz`/`origin_cell.xyz` 是网格维度与世界
+/// 原点，`origin_cell.w` 是节点间距，`buoyancy_pad.x` 是温度浮力增益。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct GpuGridMeta {
+    dims: [u32; 4],
+    origin_cell: [f32; 4],
+    buoyancy_pad: [f32; 4],
 }
 
 /// 渲染器持有的一组 GPU 粒子系统（空 = 没启用，一个 pass 都不产生）。
@@ -453,6 +591,19 @@ pub(super) struct GpuParticleStream {
     accumulator: f32,
     origin: [f32; 3],
     sampler: ParticleSystem,
+}
+
+/// 渲染器持有的网格风场显存副本（P3-R234）。场本身在 CPU 侧 `WindGrid` 推进（宿主每帧
+/// `particles.step` 里），这里只存上传后的格阵 + 元数据，供 compute 三线性采样。
+///
+/// `data_buffer`/`meta_buffer` 的句柄在格数不变时**保持稳定**（每帧只 `write_buffer` 内容），
+/// 这样按 `(pipeline_key, system_key)` 缓存的绑定组不会引用到旧缓冲。格数变化（重建网格）
+/// 时重分配并剔除所有粒子绑定组缓存。`staging` 复用同一块打包内存，避免逐帧分配。
+pub(super) struct GpuParticleGrid {
+    data_buffer: wgpu::Buffer,
+    meta_buffer: wgpu::Buffer,
+    cell_count: u32,
+    staging: Vec<f32>,
 }
 
 /// 连续粒子流的创建参数。
@@ -1081,6 +1232,19 @@ impl Renderer {
         }
         self.gpu_particle_time += delta_seconds;
         let mut failed = None;
+        // 网格风场是全局一份（宿主每帧从 CPU `WindGrid` 上传）：句柄克隆成局部 owned，
+        // 结束对 `self` 的借用，循环里再按系统拼绑定。无网格 ⇒ 用原 shader、原两条绑定，
+        // 默认路径逐位不变；有网格 ⇒ 派生变体 + binding1/3 两条额外绑定。
+        let grid_buffers = self
+            .gpu_particle_grid
+            .as_ref()
+            .map(|grid| (grid.meta_buffer.clone(), grid.data_buffer.clone()));
+        let grid_binding_refs = grid_buffers.as_ref();
+        let shader = if grid_binding_refs.is_some() {
+            gpu_particle_grid_shader()
+        } else {
+            GPU_PARTICLE_SHADER
+        };
         for index in 0..self.gpu_particles.len() {
             if self.gpu_particles[index].stream.is_some() {
                 self.spawn_stream_particles(index, delta_seconds);
@@ -1103,21 +1267,37 @@ impl Renderer {
             let state_buffer = system.state_buffer.clone();
             let params_buffer = system.params_buffer.clone();
             let bind_group_key = system.bind_group_key;
+            // 无网格时 binding1/3 用现成句柄占位，但被切片排除：不进 layout、不被校验。
+            let (grid_meta_buffer, grid_data_buffer) = match grid_binding_refs {
+                Some((meta, data)) => (meta, data),
+                None => (&params_buffer, &state_buffer),
+            };
+            let bindings = [
+                ComputeBinding::Storage {
+                    binding: 0,
+                    buffer: &state_buffer,
+                    read_only: false,
+                },
+                ComputeBinding::Uniform {
+                    binding: 2,
+                    buffer: &params_buffer,
+                },
+                ComputeBinding::Uniform {
+                    binding: 1,
+                    buffer: grid_meta_buffer,
+                },
+                ComputeBinding::Storage {
+                    binding: 3,
+                    buffer: grid_data_buffer,
+                    read_only: true,
+                },
+            ];
+            let binding_count = if grid_binding_refs.is_some() { 4 } else { 2 };
             let request = ComputeRequest {
                 label: "rustlua-gpu-particles-step",
-                shader: GPU_PARTICLE_SHADER,
+                shader,
                 entry_point: "step",
-                bindings: &[
-                    ComputeBinding::Storage {
-                        binding: 0,
-                        buffer: &state_buffer,
-                        read_only: false,
-                    },
-                    ComputeBinding::Uniform {
-                        binding: 2,
-                        buffer: &params_buffer,
-                    },
-                ],
+                bindings: &bindings[..binding_count],
                 workgroups: [workgroups, 1, 1],
                 bind_group_key: Some(bind_group_key),
             };
@@ -1343,6 +1523,102 @@ impl Renderer {
         ]
     }
 
+    /// 把 CPU 侧网格风场同步给 GPU 粒子后端（P3-R234）。
+    ///
+    /// 场本身在 CPU 侧推进（宿主每帧 `particles.step` 里 `WindGrid::step`），这里只上传
+    /// 一份显存副本供 compute 三线性采样——**单一模拟源**，CPU/GPU 采样的是同一份场。
+    /// `None` = 无场 ⇒ GPU 走原 shader（无网格绑定），逐位不变。
+    ///
+    /// 格数不变时缓冲句柄保持稳定（每帧只写内容），绑定组缓存不失效；格数变了才重分配，
+    /// 并剔除所有粒子绑定组缓存——否则缓存里的绑定组还指着旧缓冲，场会"读到自己上一世"。
+    pub fn set_gpu_particle_wind_grid(
+        &mut self,
+        grid: Option<&rustlua_ecs::particle_wind_grid::WindGrid>,
+    ) {
+        let Some(grid) = grid else {
+            if self.gpu_particle_grid.take().is_some() {
+                self.retire_gpu_particle_bind_groups();
+            }
+            return;
+        };
+        // 没有 compute 的设备（WebGL2）根本走不到 GPU 粒子，别为它建存储缓冲。
+        if !self.compute_enabled() {
+            return;
+        }
+        let cell_count = grid.cell_count();
+        let dims = grid.dims();
+        let needs_new_buffer = self
+            .gpu_particle_grid
+            .as_ref()
+            .is_none_or(|current| current.cell_count as usize != cell_count);
+        if needs_new_buffer {
+            let data_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-gpu-particle-grid"),
+                size: (cell_count * std::mem::size_of::<[f32; 4]>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let meta_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-gpu-particle-grid-meta"),
+                size: std::mem::size_of::<GpuGridMeta>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.gpu_particle_grid = Some(GpuParticleGrid {
+                data_buffer,
+                meta_buffer,
+                cell_count: cell_count as u32,
+                staging: vec![0.0; cell_count * 4],
+            });
+            self.retire_gpu_particle_bind_groups();
+        }
+        let Some(current) = self.gpu_particle_grid.as_mut() else {
+            return;
+        };
+        // 打包：每格 `vec4` = (vx, vy, vz, 温度)；线性顺序与 CPU `WindGrid::index` 逐格对应。
+        let velocity = grid.velocity_data();
+        let temperature = grid.temperature_data();
+        for (index, (v, &t)) in velocity.iter().zip(temperature.iter()).enumerate() {
+            let base = index * 4;
+            current.staging[base] = v.x;
+            current.staging[base + 1] = v.y;
+            current.staging[base + 2] = v.z;
+            current.staging[base + 3] = t;
+        }
+        let meta = GpuGridMeta {
+            dims: [dims[0] as u32, dims[1] as u32, dims[2] as u32, 0],
+            origin_cell: [
+                grid.origin().x,
+                grid.origin().y,
+                grid.origin().z,
+                grid.cell(),
+            ],
+            buoyancy_pad: [grid.buoyancy(), 0.0, 0.0, 0.0],
+        };
+        self.queue.write_buffer(
+            &current.data_buffer,
+            0,
+            bytemuck::cast_slice(&current.staging),
+        );
+        self.queue
+            .write_buffer(&current.meta_buffer, 0, bytemuck::bytes_of(&meta));
+    }
+
+    /// 剔除池里所有粒子系统的绑定组缓存。
+    ///
+    /// 绑定组缓存键是 `(管线 key, 系统 id)`，**不含缓冲身份**——网格缓冲换了句柄后，
+    /// 缓存里的绑定组还指着旧缓冲。网格重建（格数变化）时必须整体失效一次。
+    fn retire_gpu_particle_bind_groups(&mut self) {
+        let keys: Vec<u64> = self
+            .gpu_particles
+            .iter()
+            .map(|system| system.bind_group_key)
+            .collect();
+        for key in keys {
+            self.compute_state.retire_bind_group(key);
+        }
+    }
+
     fn gpu_particle_params(
         emitter: &ParticleEmitter,
         dt: f32,
@@ -1379,7 +1655,13 @@ impl Renderer {
             source_b,
             color_start: emitter.color_start,
             color_end: emitter.color_end,
-            buoyancy_pad: [emitter.buoyancy, 0.0, 0.0, 0.0],
+            buoyancy_pad: [
+                emitter.buoyancy,
+                emitter.flutter,
+                emitter.flutter_hz,
+                emitter.curve,
+            ],
+            curl_pad: [emitter.curl, emitter.curl_scale, emitter.curl_hz, 0.0],
         }
     }
 
@@ -1446,19 +1728,16 @@ impl Renderer {
             });
         }
         // P3-R107：深度只作为 group3 纹理；本 pass 不再挂深度附件，片元里手动比较/软边。
-        let depth_bind_group = self
-            .gpu_particle_depth_layout
-            .as_ref()
-            .map(|layout| {
-                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("rustlua-gpu-particles-depth-bind-group"),
-                    layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(depth_view),
-                    }],
-                })
-            });
+        let depth_bind_group = self.gpu_particle_depth_layout.as_ref().map(|layout| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rustlua-gpu-particles-depth-bind-group"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
+                }],
+            })
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("rustlua-gpu-particles-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1490,9 +1769,9 @@ impl Renderer {
                 continue;
             }
             pass.set_bind_group(2, &system.draw_bind_group, &[]);
-        if let Some(group) = &depth_bind_group {
-            pass.set_bind_group(3, group, &[]);
-        }
+            if let Some(group) = &depth_bind_group {
+                pass.set_bind_group(3, group, &[]);
+            }
             pass.draw(0..QUAD_VERTEX_COUNT, 0..system.capacity);
             record_instanced_quad_draw(metrics, system.capacity);
         }
@@ -1501,18 +1780,19 @@ impl Renderer {
 
     /// 取（必要时编译）instanced 粒子管线。
     ///
-    /// 缓存的是 `(格式, 管线)` 一条：HDR 帧与 LDR 帧交替出现时各编译一次，之后恒命中。
-    /// 之所以延迟到第一次绘制才编译——启动预算（`compile_ms`）不该为"没配 GPU 粒子"的
+    /// 缓存按**目标格式**分条：HDR 与 LDR 是两条真实变体，切换时各编译一次、之后恒命中。
+    /// 默认仍是延迟到第一次绘制才编译——启动预算（`compile_ms`）不该为"没配 GPU 粒子"的
     /// 进程付一条管线的钱，这与 P3-R02 的 PBR 延迟补编译是同一个理由。
+    /// P3-R243 另给了 [`Self::prewarm_gpu_particles`]：显式要求的宿主把这份钱挪到启动期。
     fn ensure_gpu_particle_pipeline(
         &mut self,
         format: wgpu::TextureFormat,
     ) -> &wgpu::RenderPipeline {
-        let stale = match &self.gpu_particle_pipeline {
-            Some((cached, _)) => *cached != format,
-            None => true,
-        };
-        if stale {
+        if !self
+            .gpu_particle_pipelines
+            .iter()
+            .any(|(cached, _)| *cached == format)
+        {
             let module = self
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1531,13 +1811,46 @@ impl Renderer {
                 format,
                 "rustlua-gpu-particles-pipeline",
             );
-            self.gpu_particle_pipeline = Some((format, pipeline));
+            self.gpu_particle_pipelines.push((format, pipeline));
         }
         let (_, pipeline) = self
-            .gpu_particle_pipeline
-            .as_ref()
+            .gpu_particle_pipelines
+            .iter()
+            .find(|(cached, _)| *cached == format)
             .expect("上面的分支刚刚写入过管线");
         pipeline
+    }
+
+    /// P3-R243：把 instanced 粒子管线在两种目标格式上先编好，返回本次新编的条数。
+    ///
+    /// 动机：管线默认延迟到第一次画 GPU 粒子才编译（`compile_ms` 的启动预算），于是第一股
+    /// 连续流出现的那一帧要付一次管线编译——雨/雪/酸雾一开场就开流，尖峰落在玩家已经看得
+    /// 见的帧上。宿主显式要求预热时（game 宿主的 `--prewarm-particles`），这份钱挪到启动期。
+    ///
+    /// `0` = 没有可编的（设备没有存储缓冲 ⇒ 没有 GPU 粒子管线布局）；HDR 变体只在设备
+    /// `hdr_usable()` 时编，对不支持的格式建管线会被 wgpu 校验拒绝。两种格式都缓存后，
+    /// HDR/LDR 之间切换也不再重编。
+    pub fn prewarm_gpu_particles(&mut self) -> u32 {
+        if self.gpu_particle_pipeline_layout.is_none() {
+            return 0;
+        }
+        let ldr = self.config.format;
+        let mut formats = vec![ldr];
+        if self.capabilities.hdr_usable() && ldr != wgpu::TextureFormat::Rgba16Float {
+            formats.push(wgpu::TextureFormat::Rgba16Float);
+        }
+        let mut built = 0;
+        for format in formats {
+            let known = self
+                .gpu_particle_pipelines
+                .iter()
+                .any(|(cached, _)| *cached == format);
+            if !known {
+                self.ensure_gpu_particle_pipeline(format);
+                built += 1;
+            }
+        }
+        built
     }
 }
 
@@ -1550,13 +1863,88 @@ mod tests {
     #[test]
     fn gpu_layouts_match_wgsl_sizes() {
         assert_eq!(std::mem::size_of::<GpuParticleState>(), 48);
-        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 224);
+        assert_eq!(std::mem::size_of::<GpuParticleParams>(), 240);
+        assert_eq!(std::mem::size_of::<GpuGridMeta>(), 48);
+    }
+
+    /// P3-R234：网格变体必须真的从基段**派生**出来，且派生不是静默 no-op。
+    ///
+    /// `replace` 锚点失配时什么都不改——那样"网格版"会退化成基段，compute 照样跑、粒子
+    /// 照样动，只是场永远不生效。这条门钉住三件事：变体含采样函数；把两处插入剥掉后
+    /// 与基段**逐字节相等**（共享段不可能分叉）；基段本身不含网格（无场时默认路径不变）。
+    #[test]
+    fn gpu_grid_shader_derives_from_base() {
+        let grid = gpu_particle_grid_shader();
+        assert!(
+            grid.contains("fn sample_grid_accel"),
+            "网格变体没有采样函数：派生锚点失配（replace 静默 no-op）"
+        );
+        assert!(grid.contains("struct GridMeta"));
+        assert!(grid.contains("var<storage, read> grid_data"));
+        assert!(grid.contains("let grid_accel = sample_grid_accel"));
+        assert!(
+            grid.contains("    state.velocity = state.velocity + (params.gravity + wind) * dt;"),
+            "网格变体丢了积分行"
+        );
+        let stripped = grid
+            .replace(GPU_GRID_DECLS, "")
+            .replace(GPU_GRID_SAMPLE, "");
+        assert_eq!(stripped, GPU_PARTICLE_SHADER, "共享段与基段分叉了");
+        assert!(
+            !GPU_PARTICLE_SHADER.contains("grid_data"),
+            "基段不该含网格：无场时必须逐位不变"
+        );
     }
 
     #[test]
+    fn gpu_flutter_is_packed_into_buoyancy_pad() {
+        let emitter = ParticleEmitter {
+            flutter: 1.5,
+            flutter_hz: 2.0,
+            buoyancy: 0.75,
+            curve: 0.3,
+            ..ParticleEmitter::default()
+        };
+        let params = Renderer::gpu_particle_params(
+            &emitter,
+            0.5,
+            [0.0, 0.0],
+            0.0,
+            [0.0, 0.0, 0.0],
+            [[0.0; 7]; 4],
+            1.0,
+        );
+        assert_eq!(params.buoyancy_pad, [0.75, 1.5, 2.0, 0.3]);
+    }
+
+    #[test]
+    fn gpu_curl_is_packed_into_curl_pad() {
+        let emitter = ParticleEmitter {
+            curl: 1.25,
+            curl_scale: 0.4,
+            curl_hz: 0.75,
+            ..ParticleEmitter::default()
+        };
+        let params = Renderer::gpu_particle_params(
+            &emitter,
+            0.5,
+            [0.0, 0.0],
+            0.0,
+            [0.0, 0.0, 0.0],
+            [[0.0; 7]; 4],
+            1.0,
+        );
+        assert_eq!(params.curl_pad, [1.25, 0.4, 0.75, 0.0]);
+    }
+    #[test]
     fn gpu_wind_is_packed_into_the_existing_uniform() {
         let emitter = ParticleEmitter::new(4, 10.0, 1.0, [1.0; 4]);
-        let sources = [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], [0.0; 7], [0.0; 7], [0.0; 7]];
+        let sources = [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            [0.0; 7],
+            [0.0; 7],
+            [0.0; 7],
+        ];
         let params = Renderer::gpu_particle_params(
             &emitter,
             0.5,

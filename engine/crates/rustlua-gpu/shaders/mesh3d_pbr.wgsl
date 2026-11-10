@@ -12,6 +12,8 @@ struct Camera {
     surface: vec4<f32>,
     // 另外两圈涟漪：packed0, age0, packed1, age1
     ripple2: vec4<f32>,
+    // P3-R209：剖面封口深度。x = 从裁剪面向内多远仍然画实体截面（米，0 = 旧的 0.08 薄带），yzw 预留
+    cap: vec4<f32>,
 };
 struct ShadowCameras { view_projection: array<mat4x4<f32>, 4> };
 struct PointShadow {
@@ -35,6 +37,14 @@ struct Material {
     flags: vec4<f32>,
     // x=1 内建水面（顶点涟 + 边缘软边）；x=2 内建地形（高 坡度配色）
     animation: vec4<f32>,
+    // P3-R162：清漆层。x = factor（0 = 关闭），y = 清漆粗糙度
+    clearcoat: vec4<f32>,
+    // P3-R163：SSS 近似。x = strength（0 = 关闭），y = wrap/厚度（0..1）
+    sss: vec4<f32>,
+    // P3-R164：薄膜虹彩。x = factor，y = ior，z/w = 厚度区间（nm）
+    iridescence: vec4<f32>,
+    // P3-R165：绒毛/布面光泽瓣。xyz = sheen 颜色（全 0 = 关闭），w = 粗糙度
+    sheen: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> light: Light;
@@ -310,6 +320,60 @@ fn visibility_smith_correlated(n_dot_v: f32, n_dot_l: f32, alpha: f32) -> f32 {
 fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     let f = pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
     return f0 + (vec3<f32>(1.0) - f0) * f;
+}
+
+// P3-R162：清漆瓣（KHR clearcoat 模型）。返回 rgb = 清漆高光 × N·L，
+// w = 基层衰减（1 − factor·F_cc）。F0 恒 0.04（清漆是介电质）。
+// factor = 0 时 rgb = 0、w = 1 ⇒ 调用点逐字节等价于旧路径。
+fn clearcoat_lobe(n_dot_l: f32, n_dot_v: f32, n_dot_h: f32, v_dot_h: f32) -> vec4<f32> {
+    let factor = material.clearcoat.x;
+    let cc_fresnel = fresnel_schlick(v_dot_h, vec3<f32>(DIELECTRIC_F0)).r * factor;
+    let attenuation = 1.0 - cc_fresnel;
+    if (factor <= 0.0 || n_dot_l <= 0.0 || n_dot_v <= 0.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, attenuation);
+    }
+    let cc_roughness = clamp(material.clearcoat.y, MIN_ROUGHNESS, 1.0);
+    let cc_alpha = cc_roughness * cc_roughness;
+    let spec = distribution_ggx(n_dot_h, cc_alpha)
+        * visibility_smith_correlated(n_dot_v, n_dot_l, cc_alpha)
+        * cc_fresnel;
+    return vec4<f32>(vec3<f32>(spec * n_dot_l), attenuation);
+}
+
+// P3-R164：薄膜干涉近似（复眼/甲壳虹彩）。光程差 OPD = 2·ior·thickness·cos(膜内角)
+// （Snell 折射），按 RGB 三个代表波长 650/510/475nm 取 cos 相位 ⇒ 视角相关彩虹 F0。
+// 不是光谱积分，是美术可调的廉价近似；factor = 0 时调用点 mix 原样退回基础 F0。
+fn iridescent_f0(f0: vec3<f32>, n_dot_v: f32) -> vec3<f32> {
+    let ior = max(material.iridescence.y, 1.0);
+    // 无厚度贴图：取区间上限（KHR 语义里 max 是"最厚处"的干涉色）
+    let thickness = max(material.iridescence.w, material.iridescence.z);
+    let sin2 = (1.0 - n_dot_v * n_dot_v) / (ior * ior);
+    let film_cos = sqrt(max(1.0 - sin2, 0.0));
+    let phase = 2.0 * ior * thickness * film_cos * (2.0 * PI)
+        / vec3<f32>(650.0, 510.0, 475.0);
+    let film = vec3<f32>(0.5) + 0.5 * cos(phase);
+    // 介电质：彩虹色直接做 F0（强度由调用点 factor 控制）；金属：调制原有 F0 色调
+    return f0 * (0.5 + film) + film * DIELECTRIC_F0;
+}
+
+// P3-R165：绒毛瓣（Estevez–Kulla 的 ASA/Charlie 分布，与 glTF Sample Viewer 同式）。
+// 返回 rgb = 绒毛高光 × N·L，w = 基层衰减（1 − max(sheen_color)）。
+// 与清漆相反：D 在 sin²θ 上取幂，n·h≈1 处为 0，能量全在掠射角——这正是刚毛
+// （setae）在轮廓处的逆光绒边。sheen_color 全 0 时 rgb = 0、w = 1 ⇒ 调用点
+// 逐字节等价于旧路径。
+fn sheen_lobe(n_dot_l: f32, n_dot_v: f32, n_dot_h: f32) -> vec4<f32> {
+    let color = clamp(material.sheen.xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    let attenuation = 1.0 - max(color.r, max(color.g, color.b));
+    let inv_roughness = 1.0 / max(material.sheen.w, 1e-4);
+    let sin2_h = max(1.0 - n_dot_h * n_dot_h, 0.0078125);
+    let distribution = (2.0 + inv_roughness) * pow(sin2_h, inv_roughness * 0.5) / (2.0 * PI);
+    // 分母全部夹到 ≥1e-4：两侧都背对时 visibility 不许炸成 inf（0×inf 会把整条光路变 NaN）
+    let visibility = 1.0 / (4.0 * max(n_dot_l + n_dot_v - n_dot_l * n_dot_v, 1e-4));
+    // 单出口：正入射/背向用掩码归零，不写早退。实测（2026-11-07，swiftshader 回退适配器）
+    // 同一表达式改成 `if (attenuation >= 1.0 || …) return` 的早退版本会让整帧渲成纯黑，
+    // 单出口版逐字节正常；改回早退前先跑 `material_lobes`。
+    let facing = clamp(n_dot_l * 1e6, 0.0, 1.0) * clamp(n_dot_v * 1e6, 0.0, 1.0);
+    return vec4<f32>(color * (distribution * visibility * n_dot_l * facing), attenuation);
 }
 
 //  Y 轴旋转（标准右手系）。环境绕 +Y  θ 等价于采样时把方向转 -θ
@@ -612,7 +676,10 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         if (clip_distance < 0.0) {
             // P3-R54：切面封口。双面材质的背面在切面附近时输出实体土壤截面色，
             // 让 X-ray/剖面看到“实心切面”而不是空壳；更深的背面仍然丢弃。
-            if (!front_facing && clip_distance > -0.08) {
+            // P3-R209：封口深度可配。`camera.cap.x = 0` 时带宽就是旧的 0.08（默认像素逐字节
+            // 不变），> 0 时切得再深也一路画实体截面，而不是露出空壳内壁。
+            let band = select(0.08, camera.cap.x, camera.cap.x > 0.0);
+            if (!front_facing && clip_distance > -band) {
                 let section = mix(vec3<f32>(0.24, 0.18, 0.12), base_rgb, 0.35);
                 return vec4<f32>(section, 1.0);
             }
@@ -662,9 +729,12 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
             // 多步视差与裂缝 AO 只在近处（lod < 1，纹素足迹仍小）执行；远景 mip 已经
             // 平均掉细节，继续采 24 次高度只会烧带宽。P3-R60 的自适应门。
             let near_detail = lod < 1.0;
+            // P3-R203：地形廉价细节档（`__terrain__?cheap=1` 或宿主 --terrain-cheap）：
+            // 跳过下面的 2 步视差 + 裂缝 AO + 5 步太阳微阴影，图集颜色/法线不变。
+            let terrain_cheap = material.animation.x > 1.5 && material.animation.w > 0.5;
             var local_p = local;
             var crevice = 0.0;
-            if (near_detail) {
+            if (near_detail && !terrain_cheap) {
                 let view = safe_normalize(camera.position.xyz - world_position);
                 let step_dir = view.xz / max(view.y, 0.25) * 0.035;
                 for (var i: i32 = 0; i < 2; i = i + 1) {
@@ -902,6 +972,11 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         let scaled = vec3<f32>(sampled.x * material.params.w, sampled.y * material.params.w, sampled.z);
         n = safe_normalize(t * scaled.x + b * scaled.y + geometric_normal * scaled.z);
     }
+    // P3-R197：水面廉价光照档（`__water__?cheap=1` 或宿主 --water-cheap）。
+    // 只砍 SH9 漫反射、点光循环与级联阴影采样，保留直射阳光、镜面 IBL 与天空反射。
+    // 缺省 false，分支整帧相干（uniform 驱动），对非水面材质零影响。
+    let water_cheap = material.animation.x > 0.5 && material.animation.x < 1.5
+        && material.animation.z > 0.5;
     let l = safe_normalize(-light.direction.xyz);
     let v = safe_normalize(camera.position.xyz - world_position);
     let h = safe_normalize(l + v);
@@ -916,7 +991,30 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     let roughness = clamp(material.surface.y * metallic_roughness.g * cover_roughness, MIN_ROUGHNESS, 1.0);
     let metallic = clamp(material.surface.x * metallic_roughness.b, 0.0, 1.0);
     let alpha = roughness * roughness;
-    let f0 = mix(vec3<f32>(DIELECTRIC_F0), base_rgb, vec3<f32>(metallic));
+    let base_f0 = mix(vec3<f32>(DIELECTRIC_F0), base_rgb, vec3<f32>(metallic));
+    // P3-R164：虹彩按 factor 混入薄膜 F0（0 ⇒ 原样）
+    // P3-R183：`mix` 会把两侧都求值，而 `iridescent_f0` 里有 3 次 cos + 一次 sqrt。
+    // factor 来自 uniform ⇒ 分支对整个 draw 相干、代价为零，未启用虹彩的材质一条三角函数都不付。
+    var f0 = base_f0;
+    if (material.iridescence.x > 0.0) {
+        f0 = mix(base_f0, iridescent_f0(base_f0, n_dot_v), material.iridescence.x);
+    }
+
+    // P3-R163：SSS 近似。① wrap 漫反射（柔化终止线，只改漫反射项）；
+    // ② 背向透光（视线逆光时提亮，albedo 染色）——逆光像素 n_dot_l=0，
+    // 必须放在直射 if 之外。strength = 0 时两项精确退化为 0。
+    var sss_transmission = vec3<f32>(0.0);
+    if (material.sss.x > 0.0 && n_dot_v > 0.0) {
+        let trans_l = safe_normalize(l + n * 0.35);
+        let trans_dot = pow(clamp(dot(v, -trans_l), 0.0, 1.0), 3.0);
+        sss_transmission = base_rgb * trans_dot * material.sss.x * (1.0 - metallic);
+    }
+
+    // P3-R183：瓣的启用位。`material` 是 uniform ⇒ 两个 bool 对整个 draw 相干、分支不花钱；
+    // 省下来的是逐像素的 pow（绒毛）与 fresnel（清漆）。跳过时表达式精确等于恒等：
+    // 清漆 factor=0 ⇒ coat = (0, 1)，绒毛 color=0 ⇒ fuzz = (0, 1)，两处都是 `direct*1+0`。
+    let has_coat = material.clearcoat.x > 0.0;
+    let has_sheen = max(material.sheen.x, max(material.sheen.y, material.sheen.z)) > 0.0;
 
     var direct = vec3<f32>(0.0);
     if (n_dot_l > 0.0 && n_dot_v > 0.0) {
@@ -925,17 +1023,37 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         let kd = (vec3<f32>(1.0) - fresnel) * (1.0 - metallic);
         let diffuse = kd * base_rgb / PI;
         direct = (diffuse + specular) * n_dot_l;
+        // P3-R162：清漆瓣叠加 + 基层能量衰减（factor=0 ⇒ coat.w=1、coat.rgb=0）
+        if (has_coat) {
+            let coat = clearcoat_lobe(n_dot_l, n_dot_v, n_dot_h, v_dot_h);
+            direct = direct * coat.w + coat.rgb;
+        }
+        // P3-R165：绒毛瓣同一口径（颜色全 0 ⇒ fuzz.w=1、fuzz.rgb=0）
+        if (has_sheen) {
+            let fuzz = sheen_lobe(n_dot_l, n_dot_v, n_dot_h);
+            direct = direct * fuzz.w + fuzz.rgb;
+        }
+        if (material.sss.x > 0.0) {
+            let wrap = clamp(material.sss.y, 0.0, 1.0);
+            let wrapped = max((dot(n, l) + wrap) / (1.0 + wrap), 0.0);
+            direct += diffuse * (wrapped - n_dot_l);
+        }
     }
 
     // 点光源：同一 BRDF，衰减用"range 内平方反 × 平滑截断"
     // 前八盏点光可乘六面阴影可见度；其余点光只做直接光
     var point_direct = vec3<f32>(0.0);
-    let point_count = min(u32(light.params.x), 16u);
+    let point_count = select(min(u32(light.params.x), 16u), 0u, water_cheap);
     for (var i = 0u; i < point_count; i = i + 1u) {
         let point = light.points[i];
         let to_light = point.position_range.xyz - world_position;
         let distance = length(to_light);
         if (distance < 1e-4) {
+            continue;
+        }
+        // P3-R186：range 外早退。falloff 在 d>=range 时被 clamp 成精确 0，贡献恒为 0；
+        // 早退让 range 外的像素不再付 BRDF 与 cube 阴影采样（活体 A/B depth_opaque −0.66 ms）。
+        if (distance >= max(point.position_range.w, 1e-4)) {
             continue;
         }
         let point_l = to_light / distance;
@@ -944,7 +1062,8 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
             continue;
         }
         let point_h = safe_normalize(point_l + v);
-        let point_fresnel = fresnel_schlick(max(dot(v, point_h), 0.0), f0);
+        let point_v_dot_h = max(dot(v, point_h), 0.0);
+        let point_fresnel = fresnel_schlick(point_v_dot_h, f0);
         let point_specular = distribution_ggx(max(dot(n, point_h), 0.0), alpha) * visibility_smith_correlated(n_dot_v, point_n_dot_l, alpha) * point_fresnel;
         let point_kd = (vec3<f32>(1.0) - point_fresnel) * (1.0 - metallic);
         let point_diffuse = point_kd * base_rgb / PI;
@@ -955,15 +1074,35 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
         if (shadow_slot >= 0) {
             point_visibility = point_shadow_visibility(world_position, u32(shadow_slot));
         }
-        point_direct = point_direct + (point_diffuse + point_specular) * point_n_dot_l * attenuation * point.color_intensity.rgb * point.color_intensity.w * point_visibility;
+        // P3-R162：点光同样吃清漆瓣（factor=0 ⇒ w=1、rgb=0，表达式逐字节等价）
+        // P3-R183：这一段在逐灯循环里（盏数上限 16），门控省下的是「灯数 × 每像素」。
+        var point_coat = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        if (has_coat) {
+            point_coat = clearcoat_lobe(
+                point_n_dot_l,
+                n_dot_v,
+                max(dot(n, point_h), 0.0),
+                point_v_dot_h,
+            );
+        }
+        // P3-R165：点光同样吃绒毛瓣（颜色全 0 ⇒ w=1、rgb=0）
+        var point_fuzz = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        if (has_sheen) {
+            point_fuzz = sheen_lobe(point_n_dot_l, n_dot_v, max(dot(n, point_h), 0.0));
+        }
+        let point_lobes = (point_diffuse + point_specular) * point_n_dot_l * point_coat.w + point_coat.rgb;
+        point_direct = point_direct + (point_lobes * point_fuzz.w + point_fuzz.rgb) * attenuation * point.color_intensity.rgb * point.color_intensity.w * point_visibility;
     }
 
-    let shadow_visibility = shadow_visibility_four_cascades(
-        shadow_position,
-        shadow_position_mid,
-        shadow_position_far,
-        shadow_position_ultra,
-    );
+    var shadow_visibility = 1.0;
+    if (!water_cheap) {
+        shadow_visibility = shadow_visibility_four_cascades(
+            shadow_position,
+            shadow_position_mid,
+            shadow_position_far,
+            shadow_position_ultra,
+        );
+    }
 
     let radiance = light.color_intensity.rgb * light.color_intensity.w;
     // 环境遮蔽只作用在间接项（当前是常数环境光）；直接光与阴影沿用 glTF 语义
@@ -974,7 +1113,10 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     }
 //#if IBL_DIFFUSE
     // P3-R03-2：SH9 漫反射。系数含 cosine 卷积，直接乘反照率；金属没有漫反射
-    var indirect = base_rgb * sh_irradiance(rotate_y(n, -environment.params.y)) * environment.params.x * (1.0 - metallic) * occlusion;
+    var indirect = vec3<f32>(0.0);
+    if (!water_cheap) {
+        indirect = base_rgb * sh_irradiance(rotate_y(n, -environment.params.y)) * environment.params.x * (1.0 - metallic) * occlusion;
+    }
 //#else
     //#if IBL_SPECULAR
     // 只有镜面（显式档）：不保留常数环境漫反射，避免和镜面积分重复计入能量
@@ -987,7 +1129,18 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
 //#if IBL_SPECULAR
     // P3-R03-3：预过滤镜面 IBL。EnvBRDFApprox 给出 F0/roughness/N·V 的权重，
     // mip  roughness 线性映射；遮蔽只作用在间接项
-    indirect = indirect + sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * environment.params.x * occlusion;
+    // P3-R162：清漆同样反射环境（独立粗糙度瓣），基层镜面按清漆菲涅耳衰减。
+    // factor=0 ⇒ 衰减 1、清漆瓣 0，表达式逐字节等价于旧路径。
+    let cc_factor = material.clearcoat.x;
+    let cc_env_attenuation = 1.0 - fresnel_schlick(n_dot_v, vec3<f32>(DIELECTRIC_F0)).r * cc_factor;
+    var spec_ibl = sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * cc_env_attenuation;
+    if (cc_factor > 0.0) {
+        let cc_roughness = clamp(material.clearcoat.y, MIN_ROUGHNESS, 1.0);
+        spec_ibl = spec_ibl + sample_environment_specular(n, v, cc_roughness)
+            * env_brdf_approx(vec3<f32>(DIELECTRIC_F0), cc_roughness, n_dot_v)
+            * cc_factor;
+    }
+    indirect = indirect + spec_ibl * environment.params.x * occlusion;
 //#endif
     let emissive = material.emissive.rgb * textureSample(emissive_map, albedo_sampler, uv).rgb;
     // 云影统一在最终颜色上执行（P3-R49）：地形、水面、树冠、蚁巢、蚂蚁都吃同一层，
@@ -995,7 +1148,8 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     let cloud = cloud_shadow(world_position.xz, camera.position.w, camera.cloud.x, camera.cloud.y);
     let cloud_factor = 1.0 - cloud * camera.cloud.w;
     return vec4<f32>(
-        (direct * (1.0 - terrain_shadow * 0.55) * radiance * shadow_visibility + point_direct + indirect * (1.0 - terrain_shadow * 0.25) + emissive) * cloud_factor,
+        // P3-R163：背向透光与直射光同吃方向光阴影（光到不了背面就没有透射）
+        ((direct + sss_transmission) * (1.0 - terrain_shadow * 0.55) * radiance * shadow_visibility + point_direct + indirect * (1.0 - terrain_shadow * 0.25) + emissive) * cloud_factor,
         base_alpha,
     );
 }

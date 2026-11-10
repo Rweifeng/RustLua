@@ -1,7 +1,7 @@
 //! 发布面板：发布参数配置与手动发布入口。
 
 use crate::EditorApp;
-use crate::publish::PublishPlatform;
+use crate::publish::{DEFAULT_ANDROID_APPLICATION_ID, PublishPlatform};
 use eframe::egui;
 
 impl EditorApp {
@@ -54,7 +54,75 @@ impl EditorApp {
                         ui.label(egui::RichText::new(self.publish.message.as_str()).small());
                     }
                 }
-                ui.checkbox(&mut self.publish.compress, "压缩");
+                if self.publish.platform == PublishPlatform::Android {
+                    let (changed, lost_focus) = draw_android_path(
+                        ui,
+                        "applicationId",
+                        &mut self.publish.android_application_id,
+                    );
+                    self.publish.android_application_id_edited |= changed;
+                    if lost_focus {
+                        self.commit_android_application_id();
+                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "默认值 {DEFAULT_ANDROID_APPLICATION_ID}；APK 使用 arm64-v8a。容器资源已启用块压缩。"
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    if !self.publish.message.is_empty() {
+                        ui.label(egui::RichText::new(self.publish.message.as_str()).small());
+                    }
+                    ui.collapsing("Android 构建环境", |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "路径保存在用户级 editor.json。安装包约 1–2 GB；需要网络和接受 Android SDK licenses。",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                        ui.checkbox(
+                            &mut self.publish.android_license_accepted,
+                            "我已阅读并接受 Android SDK licenses（安装时会提交接受）",
+                        );
+                        let fields = [
+                            ("安装目录", &mut self.publish.android_toolchain.install_root),
+                            ("Android SDK", &mut self.publish.android_toolchain.sdk_root),
+                            ("Android NDK", &mut self.publish.android_toolchain.ndk_root),
+                            ("JDK 17", &mut self.publish.android_toolchain.jdk_home),
+                            (
+                                "Gradle",
+                                &mut self.publish.android_toolchain.gradle_executable,
+                            ),
+                        ];
+                        let mut save_settings = false;
+                        let mut lost_focus = false;
+                        for (label, value) in fields {
+                            let (changed, field_lost_focus) = draw_android_path(ui, label, value);
+                            save_settings |= changed;
+                            lost_focus |= field_lost_focus;
+                        }
+                        self.publish.android_toolchain_edited |= save_settings;
+                        if lost_focus {
+                            self.commit_android_toolchain();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.progress.running
+                                    && self.publish.android_license_accepted,
+                                egui::Button::new("下载/安装 Android 打包环境"),
+                            )
+                            .clicked()
+                        {
+                            self.install_android_toolchain();
+                        }
+                    });
+                }
+                ui.add_enabled(
+                    self.publish.platform != PublishPlatform::Android,
+                    egui::Checkbox::new(&mut self.publish.compress, "压缩"),
+                );
                 ui.checkbox(&mut self.publish.encrypt, "加密");
                 ui.separator();
                 if ui
@@ -66,7 +134,19 @@ impl EditorApp {
             });
         if !open {
             self.commit_wechat_appid();
+            self.commit_android_application_id();
+            self.commit_android_toolchain();
         }
         self.publish.show_panel = open && self.publish.show_panel;
     }
+}
+
+fn draw_android_path(ui: &mut egui::Ui, label: &str, value: &mut String) -> (bool, bool) {
+    let response = ui
+        .horizontal(|ui| {
+            ui.label(label);
+            ui.text_edit_singleline(value)
+        })
+        .inner;
+    (response.changed(), response.lost_focus())
 }

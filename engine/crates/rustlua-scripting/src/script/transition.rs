@@ -20,9 +20,14 @@ impl LuaRuntime {
     /// and re-runs the project script's `on_create` so the new level is
     /// initialized with fresh entity handles. Saves and audio persist.
     pub fn process_scene_transition(&mut self) -> Result<(), LuaBridgeError> {
+        self.process_scene_transition_if_pending().map(|_| ())
+    }
+
+    /// Applies a pending transition and reports whether the ECS world was replaced.
+    pub fn process_scene_transition_if_pending(&mut self) -> Result<bool, LuaBridgeError> {
         let pending = self.state.borrow().scene_pending_load.clone();
         let Some(name) = pending else {
-            return Ok(());
+            return Ok(false);
         };
         let root = {
             let state = self.state.borrow();
@@ -156,6 +161,6 @@ impl LuaRuntime {
                 reason: error.to_string(),
             })?;
         tracing::info!(target: "scene", name = %name, entities = instantiated, "[scene] switched");
-        Ok(())
+        Ok(true)
     }
 }

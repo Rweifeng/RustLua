@@ -1,11 +1,13 @@
 pub mod async_loader;
 pub mod atlas;
+pub mod cellmesh;
 pub mod environment;
 pub mod fit;
 pub mod font;
 pub mod font_subset;
 pub mod frame;
 pub mod hinted;
+pub mod instance_batch;
 pub mod layer;
 pub mod light;
 pub mod lod;

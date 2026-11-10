@@ -25,12 +25,16 @@ crate-type = ["cdylib"]
 # 证据 `data-rustlua-gpu` 落进 bundle-summary，`verify.ps1` 改用 `jsHostSkipped + gpuState=presented*`
 # 判非黑屏）今天已经满足，所以这行保持默认开。
 [features]
-default = ["gpu2d"]
+default = ["gpu2d", "3d"]
 gpu2d = ["dep:wgpu", "dep:rustlua-gpu", "wgpu/webgl", "rustlua-gpu/webgl"]
+# M81：2D 基底 + 3D 可插包。`3d` 默认开；2D 发布 = --no-default-features（仍带 gpu2d，
+# 那是渲染宿主不是 API 维度）。叶子出口透传到 engine/scripting/gameplay。
+3d = ["engine/3d", "rustlua-scripting/3d", "rustlua-gameplay/3d"]
 
 [dependencies]
 anyhow.workspace = true
-engine = { path = "../engine" }
+# M81：feature 链上的边必须显式断默认，否则 feature 统一会把 3d 悄悄开回来。
+engine = { path = "../engine", default-features = false }
 rustlua-gpu = { workspace = true, optional = true }
 rustlua-render.workspace = true
 # 每帧输入线格式（`RLFI` 批量 ABI）：布局与键表只有这一份，JS 侧经
@@ -43,11 +47,11 @@ rustlua-infra.workspace = true
 
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
-rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-gameplay = { path = "../rustlua-gameplay", default-features = false }
 rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-scene = { path = "../rustlua-scene" }
-rustlua-scripting = { path = "../rustlua-scripting" }
+rustlua-scripting = { path = "../rustlua-scripting", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]

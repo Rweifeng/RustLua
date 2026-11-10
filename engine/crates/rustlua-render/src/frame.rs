@@ -304,6 +304,11 @@ pub struct Scene3dDrawable {
     pub mesh_handle: Option<rustlua_assets::asset_handle::AssetHandle>,
     pub model: Mat4,
     pub palette: Vec<Mat4>,
+    /// 实例批次的实例矩阵（**世界坐标**，每份一份模型矩阵）。
+    ///
+    /// 空 = 普通 drawable，只画 `model` 那一份；非空 = 这一份 drawable 承载 N 个实例
+    /// （`InstanceBatch3D` 的路径），渲染器逐实例剔除后合进同一次实例化绘制。
+    pub instances: Vec<Mat4>,
     pub bounds: Scene3dBounds,
 }
 

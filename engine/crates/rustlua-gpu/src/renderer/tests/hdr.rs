@@ -13,7 +13,11 @@
 //! 而不是把"没跑"记成通过。
 
 use super::*;
-use rustlua_render::frame::{SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex};
+use rustlua_math::math3d::Aabb3;
+use rustlua_render::frame::{
+    BoundsSource, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH,
+    WorldSpriteVertex,
+};
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::post_process::{PostProcess, Tonemap};
 use rustlua_render::render_settings::{RenderSettings, SceneColorFormat, ToggleMode};
@@ -205,6 +209,89 @@ fn ssr_blur_shader_weights_reflections_by_depth() {
     assert!(source.contains("prev_view_projection"));
     assert!(source.contains("textureSampleLevel(ssr_history"));
     assert!(source.contains("abs(previous_scene_depth - center_depth) > 0.01"));
+}
+
+/// P3-R176：未命中/出屏的反射必须回退到程序化天空的方向渐变，而不是黑。回退用的渐变
+/// 常量必须与 Tonemap 的 `sky_color` 逐字一致——两份硬编码各写一套就是两个天空，
+/// 反射里的地平线会和天上对不上。
+#[test]
+fn ssr_misses_fall_back_to_the_procedural_sky() {
+    let ssr = include_str!("../../../shaders/ssr.wgsl");
+    let tonemap = include_str!("../../../shaders/tonemap.wgsl");
+    let host = include_str!("../passes.rs");
+    assert!(
+        ssr.contains("    sky: vec4<f32>,"),
+        "参数末尾要加 vec4：xyz = 指向太阳，w = 太阳强度（兼天空开关）"
+    );
+    assert!(
+        ssr.contains("return sky_reflection(normal, view, reflected, world);"),
+        "10 步走完还没命中时必须回退天空：这里原来返回 vec4(0.0)，反射只能是黑的"
+    );
+    assert!(
+        ssr.contains("if params.sky.w <= 0.0 || direction.y <= 0.0 {"),
+        "天空关闭（太阳强度 0）或反射线朝下时必须保持零，不能凭空加一层天空色"
+    );
+    assert_eq!(
+        ssr.matches("return vec4<f32>(0.0);").count(),
+        2,
+        "只剩两条「必须黑」的路径：中心像素是天空（depth=1）、天空回退被关闭或射线朝下"
+    );
+    for constant in [
+        "let zenith = vec3<f32>(0.055, 0.14, 0.34);",
+        "let horizon = vec3<f32>(0.55, 0.68, 0.80);",
+        "mix(vec3<f32>(0.34, 0.38, 0.41), color, smoothstep(-0.18, 0.01,",
+    ] {
+        assert!(
+            ssr.contains(constant) && tonemap.contains(constant),
+            "天空回退与 `sky_color` 必须共用同一组渐变常量：{constant}"
+        );
+    }
+    assert!(
+        ssr.contains("pow(height, 0.55)") && host.contains("params[58] = 0.55;"),
+        "渐变指数也要与宿主写给 Tonemap 的 0.55 一致"
+    );
+    assert!(
+        ssr.contains("reflected_color * reflection_weight(normal, view)")
+            && ssr.contains("color * reflection_weight(normal, view)"),
+        "命中与天空回退必须共用同一个菲涅耳权重，否则接缝上反射强度会跳变"
+    );
+    assert!(
+        ssr.contains("const SUN_REFLECTION_CAP: f32 = 0.25;")
+            && ssr.contains("min(sun_term, SUN_REFLECTION_CAP)"),
+        "太阳项必须有上限：1400 次幂的盘心在半分辨率 + 3×3 双边上会摊成白斑"
+    );
+
+    let host = include_str!("../passes.rs");
+    assert!(
+        host.contains("const SKY_SUN_INTENSITY: f32 = 2.4;")
+            && host.contains("params[57] = SKY_SUN_INTENSITY;")
+            && host.contains("params[39] = SKY_SUN_INTENSITY;"),
+        "太阳强度只能有一个真值：Tonemap 与 SSR 回退各写一份就会对不上"
+    );
+    assert!(
+        host.contains("let mut params = [0.0_f32; 44];")
+            && host.contains("params[36] = -direction.x / length;")
+            && host.contains("params[42] = self.clock_secs();"),
+        "SSR uniform 44 槽：36..40 天空方向/强度，40..44 云量/云速/时间/云底；\
+         时间必须取 `clock_secs()` 这个单一取值点（P3-R207），否则测试钉不住时钟"
+    );
+    assert!(
+        ssr.contains("let density = ssr_cloud_density(")
+            && ssr
+                .contains("let t = (clamp(params.clouds.w, 40.0, 200.0) - world.y) / direction.y;"),
+        "回退的云遮挡要按反射线打到云底平面，采样点只能是 world + direction * t"
+    );
+    assert!(
+        ssr.contains("let cloud_lit = mix(") && ssr.contains("+ cloud_lit * density * 0.14;"),
+        "云要回射自己的受光色（P3-R179）：只做透射衰减会让深云区变成比周围更蓝的洞；\
+         回射权重 0.14 必须小于遮挡的 0.85，净能量才会随云量下降"
+    );
+    let construct = include_str!("../construct.rs");
+    assert!(
+        construct.contains("min_binding_size: wgpu::BufferSize::new(176),")
+            && construct.contains("label: Some(\"rustlua-ssr-params\"),\n            size: 176,"),
+        "uniform 缓冲与布局下限都要跟着 44 个 f32（176 B）走"
+    );
 }
 
 /// 景深只在 HDR Tonemap 路径实际执行。
@@ -403,7 +490,11 @@ fn tonemap_shader_adds_screen_space_water_reflection() {
     assert!(source.contains("offset * 1.08"));
     assert!(source.contains("offset * 0.92"));
     assert!(source.contains("linear = mix(linear, refracted, 0.30)"));
-    assert!(source.contains("linear + water_reflection(uv) * 0.65"));
+    // P3-R171 起水像素判定在 Tonemap 里只做一次，折射/吸收/反射共用同一个 `surface`。
+    assert!(source.contains("let screen = water_reflection(uv, surface);"));
+    assert!(
+        source.contains("linear = linear + select(screen, planar, length(planar) > 0.001) * 0.65")
+    );
 }
 
 /// 接触阴影只在 HDR Tonemap 路径实际执行。
@@ -847,4 +938,215 @@ fn hdr_scene_target_rebuilds_on_resize() {
     let scene = renderer.read_scene_color_to_cpu().expect("large readback");
     assert_eq!((scene.width, scene.height), (1280, 720));
     drop((small, large));
+}
+
+/// 画面下方中点的像素：相机在 `(0,10,20)` 俯视，这一行射线穿过 `z=0` 时都在地下。
+const SECTION_PROBE_ROW: u32 = SIZE * 7 / 8;
+
+/// 渲染一帧单块地形，返回画面下方的探针像素。
+fn render_terrain_probe(
+    renderer: &mut Renderer,
+    target: &wgpu::Texture,
+    view: &wgpu::TextureView,
+    camera: Camera3D,
+    scene_view: RenderView,
+    path: &str,
+) -> [u8; 4] {
+    let scene = Scene3d {
+        camera,
+        view: scene_view,
+        light: Light::default(),
+        point_lights: Vec::new(),
+        drawables: vec![Scene3dDrawable {
+            entity: rustlua_scene::scene::SceneEntityId(1),
+            name: "Terrain".to_owned(),
+            mesh_path: path.to_owned(),
+            material: None,
+            mesh_handle: None,
+            model: Mat4::identity(),
+            palette: Vec::new(),
+            instances: Vec::new(),
+            bounds: Scene3dBounds {
+                local_aabb: Aabb3 {
+                    min: Vec3::new(-40.0, -2.0, -40.0),
+                    max: Vec3::new(40.0, 2.0, 40.0),
+                },
+                source: BoundsSource::Fallback,
+            },
+        }],
+    };
+    let overlay = empty_mesh();
+    renderer.render_into_texture(&overlay, Some(&scene), view, SIZE, SIZE, true);
+    let pixels = renderer
+        .copy_texture_to_cpu(target, SIZE, SIZE)
+        .expect("section readback");
+    pixel(&pixels, SIZE, SIZE / 2, SECTION_PROBE_ROW)
+}
+
+fn max_channel_delta(a: [u8; 4], b: [u8; 4]) -> u8 {
+    (0..3)
+        .map(|channel| a[channel].abs_diff(b[channel]))
+        .max()
+        .unwrap_or(0)
+}
+
+/// P3-R166：`sect=1` 地形 + 相机裁剪平面 ⇒ Tonemap 把切口封成实体土壤。
+///
+/// 反面对照有两条，都在**像素**上判：
+///
+/// 1. 同一场景、同一裁剪平面，只是网格路径去掉 `sect=1`：缺口回到清屏深蓝，
+///    证明暖色土壤不是清屏色或相机的副产物。
+/// 2. 同一张 `sect=1` 地形，把裁剪平面清零：封口必须消失，证明这段填充由平面触发，
+///    而不是地形着色器自己画出来的。
+#[test]
+fn section_cut_fills_the_clipped_terrain_hole() {
+    let Some((mut renderer, device)) = renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    let (target_texture, target_view) = target(&device, SIZE, SIZE);
+    let viewport = Viewport::new(SIZE as f32, SIZE as f32).expect("viewport");
+    let mut camera = Camera3D::perspective(
+        Vec3::new(0.0, 10.0, 20.0),
+        Vec3::new(0.0, 0.0, -4.0),
+        std::f32::consts::FRAC_PI_3,
+        0.1,
+        120.0,
+    )
+    .expect("camera");
+    // `n·p + d >= 0` 保留 z <= 0 的一侧：相机与平面之间的近半张地形整块被裁掉。
+    camera.clip_plane = [0.0, 0.0, -1.0, 0.0];
+    let scene_view = RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR);
+    renderer.set_frame_views(FrameViews {
+        main: Some(scene_view),
+        overlay: None,
+    });
+    renderer.set_render_settings(
+        RenderSettings::default()
+            .with_hdr(ToggleMode::On)
+            .with_pbr(true),
+    );
+    let with_section = render_terrain_probe(
+        &mut renderer,
+        &target_texture,
+        &target_view,
+        camera,
+        scene_view,
+        "__terrain__?size=80&res=48&amp=2&seed=3&sect=1",
+    );
+    let without_section = render_terrain_probe(
+        &mut renderer,
+        &target_texture,
+        &target_view,
+        camera,
+        scene_view,
+        "__terrain__?size=80&res=48&amp=2&seed=3",
+    );
+
+    let mut unclipped_camera = camera;
+    unclipped_camera.clip_plane = [0.0; 4];
+    let unclipped_view = RenderView::main_3d(unclipped_camera, viewport, DEFAULT_3D_CLEAR);
+    renderer.set_frame_views(FrameViews {
+        main: Some(unclipped_view),
+        overlay: None,
+    });
+    let without_plane = render_terrain_probe(
+        &mut renderer,
+        &target_texture,
+        &target_view,
+        unclipped_camera,
+        unclipped_view,
+        "__terrain__?size=80&res=48&amp=2&seed=3&sect=1",
+    );
+
+    assert!(
+        with_section[0] > with_section[2] + 15,
+        "切口应被暖色土壤填满：探针 {with_section:?}（无 sect 对照 {without_section:?}）"
+    );
+    assert!(
+        without_section[2] > without_section[0],
+        "去掉 sect=1 后同一像素应回到深蓝清屏色：{without_section:?}"
+    );
+    let delta = max_channel_delta(with_section, without_plane);
+    assert!(
+        delta > 20,
+        "裁剪平面清零后封口必须消失：{with_section:?} vs {without_plane:?}，max_delta={delta}"
+    );
+}
+
+/// P3-R203：地形 `cheap=1` 必须真的跳过近细节——像素级两条：
+/// 1. `cheap=0` 与缺省路径逐字节一致（默认不变）；
+/// 2. `cheap=1` 必须改变输出（视差/裂缝 AO/太阳微阴影里至少一项生效）。
+#[test]
+fn terrain_cheap_skips_near_detail_pixels() {
+    let Some((mut renderer, device)) = renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    let (target_texture, target_view) = target(&device, SIZE, SIZE);
+    let viewport = Viewport::new(SIZE as f32, SIZE as f32).expect("viewport");
+    let camera = Camera3D::perspective(
+        Vec3::new(0.0, 6.0, 14.0),
+        Vec3::new(0.0, 0.0, -2.0),
+        std::f32::consts::FRAC_PI_3,
+        0.1,
+        120.0,
+    )
+    .expect("camera");
+    let scene_view = RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR);
+    renderer.set_frame_views(FrameViews {
+        main: Some(scene_view),
+        overlay: None,
+    });
+    renderer.set_render_settings(
+        RenderSettings::default()
+            .with_hdr(ToggleMode::On)
+            .with_pbr(true),
+    );
+    let render = |renderer: &mut Renderer, path: &str| {
+        let scene = Scene3d {
+            camera,
+            view: scene_view,
+            light: Light::default(),
+            point_lights: Vec::new(),
+            drawables: vec![Scene3dDrawable {
+                entity: rustlua_scene::scene::SceneEntityId(1),
+                name: "Terrain".to_owned(),
+                mesh_path: path.to_owned(),
+                material: None,
+                mesh_handle: None,
+                model: Mat4::identity(),
+                palette: Vec::new(),
+                instances: Vec::new(),
+                bounds: Scene3dBounds {
+                    local_aabb: Aabb3 {
+                        min: Vec3::new(-40.0, -2.0, -40.0),
+                        max: Vec3::new(40.0, 2.0, 40.0),
+                    },
+                    source: BoundsSource::Fallback,
+                },
+            }],
+        };
+        let overlay = empty_mesh();
+        renderer.render_into_texture(&overlay, Some(&scene), &target_view, SIZE, SIZE, true);
+        renderer
+            .copy_texture_to_cpu(&target_texture, SIZE, SIZE)
+            .expect("terrain readback")
+    };
+    // detail=64：瓦片大 ⇒ 纹素足迹小 ⇒ lod≈0，近细节分支一定参与；否则 cheap 无从生效。
+    let base = "__terrain__?size=80&res=96&amp=2&seed=3&detail=64";
+    let default_pixels = render(&mut renderer, base);
+    let explicit_off = render(&mut renderer, &format!("{base}&cheap=0"));
+    let cheap_pixels = render(&mut renderer, &format!("{base}&cheap=1"));
+    assert_eq!(
+        default_pixels, explicit_off,
+        "cheap=0 必须与缺省路径逐字节一致"
+    );
+    let changed = default_pixels
+        .iter()
+        .zip(&cheap_pixels)
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        changed > 0,
+        "cheap=1 必须改变近细节像素（changed={changed}）"
+    );
 }

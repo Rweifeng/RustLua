@@ -34,6 +34,28 @@ use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws, tex
 use crate::host::runtime_scene::tilemap::sort_world_ranges;
 
 impl RuntimeScene {
+    /// 3D 网格路径 → 稳定身份句柄（同一路径跨帧恒同句柄，渲染器据此做 O(1) 网格缓存查找）。
+    ///
+    /// WP6 的零分配口径：先在身份表里 `handle_of`（只借用），未注册才 `intern` 一次。
+    fn model_handle_for(&self, path: &str) -> rustlua_assets::asset_handle::AssetHandle {
+        // 借用必须先落地成自有值再放掉：`if let` 的临时值活到整条 `if`，会在下一句
+        // `borrow_mut` 时撞上 RefCell 的独占借用。
+        let existing = self.assets.borrow().handle_of(path);
+        if let Some(handle) = existing {
+            return handle;
+        }
+        self.assets
+            .borrow_mut()
+            .intern(
+                path,
+                AssetRecord {
+                    path: path.to_owned(),
+                    kind: rustlua_assets::resource_kind::ResourceKind::Model,
+                },
+            )
+            .0
+    }
+
     /// Gathers the per-frame 3D render state from the runtime world: the active
     /// camera (Lua-selected, else the first `Camera3D` entity, else a default),
     /// the active light, and every entity with both a `Transform3D` and a
@@ -70,7 +92,7 @@ impl RuntimeScene {
                     .as_ref()
                     .map(|frame| frame.camera.position)
             });
-        let drawables = self.script.with_world(|world| {
+        let mut drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
             // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
             // `WorldTransform3D`，此时每个有 `Transform3D` 的实体都已拿到世界变换），
@@ -119,6 +141,23 @@ impl RuntimeScene {
                     }
                 } else if rustlua_render::water::WaterSpec::is_water_path(&renderer.mesh) {
                     let (min, max) = rustlua_render::water::WaterSpec::parse(&renderer.mesh)
+                        .map(|spec| spec.bounds())
+                        .unwrap_or(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+                    Scene3dBounds {
+                        local_aabb: rustlua_math::math3d::Aabb3::new(
+                            Vec3::new(min[0], min[1], min[2]),
+                            Vec3::new(max[0], max[1], max[2]),
+                        )
+                        .unwrap_or_else(|_| rustlua_math::math3d::Aabb3 {
+                            min: Vec3::new(-1.0, -1.0, -1.0),
+                            max: Vec3::new(1.0, 1.0, 1.0),
+                        }),
+                        source: BoundsSource::Fallback,
+                    }
+                } else if rustlua_render::cellmesh::CellMeshSpec::is_cells_path(&renderer.mesh) {
+                    // P3-R213：巢体按整区给包围盒，不按当前实心格——挖穿一角不会让网格被误剔，
+                    // 代价是空区域仍占一份包围盒（与 `__terrain__`/`__water__` 同一条口径）。
+                    let (min, max) = rustlua_render::cellmesh::CellMeshSpec::parse(&renderer.mesh)
                         .map(|spec| spec.bounds())
                         .unwrap_or(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
                     Scene3dBounds {
@@ -195,6 +234,7 @@ impl RuntimeScene {
                     mesh_handle,
                     model,
                     palette,
+                    instances: Vec::new(),
                     bounds,
                 });
             };
@@ -213,7 +253,78 @@ impl RuntimeScene {
             }
             drawables
         });
-        self.view_filtered.set(self.view_filtered.get() + filtered);
+        // P3-R237：实例批次（crowd）——一个实体带 N 份实例变换，渲染侧一次实例化绘制。
+        // 单独一趟：批次实体**不带** `MeshRenderer`（网格写在批次组件里），与普通网格
+        // 提取不共用组件族，因此不会把同一个实体画两遍。
+        let mut batch_filtered = 0usize;
+        // P3-R238：程序化实例运动按**场景时钟**求值（宿主每帧推进）。没有运动的批次逐位
+        // 不变——`matrices_at` 在没有 motion 时就是 `matrices()`。
+        let scene_time = self
+            .script
+            .renderable_state()
+            .with(|state| state.scene_time());
+        // P3-R246：GPU 位姿批次档——登记取代 CPU 求值。暂存表**每帧重建**（不带上一帧的
+        // 残留）；关档时这一段一个字节都不碰，提取结果与开档前逐位一致。
+        let gpu_motion = self.gpu_motion_batches;
+        if gpu_motion {
+            self.staged_motion.borrow_mut().clear();
+        }
+        let batch_drawables = self.script.with_world(|world| {
+            let mut batches = Vec::new();
+            world.for_each::<rustlua_render::instance_batch::InstanceBatch3D>(|id, batch| {
+                // 可见性与普通网格同口径：按**批次实体**判（批次内不逐实例判）。
+                if !rustlua_render::visibility::entity_visible_in(world, id, view_mask) {
+                    batch_filtered += 1;
+                    return;
+                }
+                // P3-R246：带运动且开档 ⇒ 不求 CPU 矩阵，把批次交给渲染器（实例数按批次）。
+                // 静态批次照旧求矩阵——没有运动的批次 `matrices_at` 就是静态表，省不了什么，
+                // 还会让渲染器走一遍"没有可求值运动 ⇒ 回退 CPU"的弯路。
+                let gpu_path = gpu_motion && batch.motion.is_some() && !batch.instances.is_empty();
+                let instances = if gpu_path {
+                    self.staged_motion.borrow_mut().push((
+                        id.index() as u64,
+                        batch.clone(),
+                        scene_time,
+                    ));
+                    Vec::new()
+                } else {
+                    let instances = batch.matrices_at(scene_time);
+                    if instances.is_empty() {
+                        return;
+                    }
+                    instances
+                };
+                let mesh_path = batch.mesh.clone();
+                let mesh_handle = self.model_handle_for(mesh_path.as_str());
+                let name = self
+                    .script
+                    .entity_name(id)
+                    .unwrap_or_else(|| format!("Batch {}", id.index()));
+                batches.push(Scene3dDrawable {
+                    entity: SceneEntityId(id.index() as u64),
+                    name,
+                    mesh_path,
+                    material: batch.material.clone(),
+                    mesh_handle: Some(mesh_handle),
+                    // 实例坐标是**世界坐标**：批次实体自身的变换不参与（口径见 `instance_batch`）。
+                    model: Mat4::identity(),
+                    palette: Vec::new(),
+                    instances,
+                    bounds: Scene3dBounds {
+                        local_aabb: rustlua_math::math3d::Aabb3 {
+                            min: Vec3::new(-0.5, -0.5, -0.5),
+                            max: Vec3::new(0.5, 0.5, 0.5),
+                        },
+                        source: BoundsSource::Fallback,
+                    },
+                });
+            });
+            batches
+        });
+        drawables.extend(batch_drawables);
+        self.view_filtered
+            .set(self.view_filtered.get() + filtered + batch_filtered);
         if drawables.is_empty() {
             return None;
         }
@@ -477,12 +588,10 @@ impl RuntimeScene {
         // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
         // 世界矩形只看相机，与 `sprite_culling` 同一个开关：关掉即全收，像素不变。
         //
-        // docs/54 §8-④：**世界通道的可见域是宿主声明的世界视图，不是 2D 相机**。2D 相机活在
-        // 设计分辨率像素空间（默认中心 (640,360)），而 3D 世界视图里 `(-40, 0)` 之类坐标清晰
-        // 可见；场景里有 3D 内容时宿主会声明 3D 主视图，此时按 2D 相机剔除会在**收集阶段**就把
-        // 世界内容丢掉（`wp0_mixed_golden` 抓到的真实误丢）。因此有 3D 内容时世界通道全收：
-        // 保守不剔除，绝不误丢。纯 2D 画面仍按 2D 视口裁剪，5 万精灵档的收益不变。
-        let world_view_is_3d = self.world_sprite_depth && self.world_view_has_3d_content();
+        // docs/54 §8-④：**世界通道的可见域由世界视图决定**，不能用设计分辨率像素空间的 2D
+        // 相机预筛。纯 2D 仍用正交 bounds；混合 3D 则在世界几何提取时按本帧 3D 主视图 frustum
+        // 裁剪，避免在收集阶段误丢实际位于 3D 视图内的内容。
+        let world_view_is_3d = self.world_view_has_3d_content();
         let cull_bounds = if self.sprite_culling && !world_view_is_3d {
             Some(self.camera.visible_world_bounds(viewport)?)
         } else {
@@ -549,8 +658,13 @@ impl RuntimeScene {
             // 预筛不生效；`sprite_culling` 关闭时同样不预筛（全收，像素不变）。
             let candidates: Option<std::collections::HashSet<EntityId>> =
                 if self.spatial_index && self.sprite_culling && !world_view_is_3d {
-                    let fingerprint = script.with_world(rustlua_ecs::hierarchy::local_fingerprint);
-                    if self.spatial_index_fingerprint != Some(fingerprint) {
+                    let fingerprint = script.with_world(|world| {
+                        (
+                            world.spatial_revision(),
+                            world.component_revision::<Sprite>(),
+                        )
+                    });
+                    if self.spatial_index_revision != Some(fingerprint) {
                         // 重建：与提取同一对组件族（inherit 分支同源），只取位置/缩放/尺寸；
                         // for_each2 按 EntityId 升序，rebuild 要求升序输入。
                         let cell_size = self.spatial_index_cell_size;
@@ -588,7 +702,7 @@ impl RuntimeScene {
                             grid
                         });
                         self.spatial_grid = Some(grid);
-                        self.spatial_index_fingerprint = Some(fingerprint);
+                        self.spatial_index_revision = Some(fingerprint);
                     }
                     // 查询候选（CameraBounds → 查询 Bounds）。
                     cull_bounds.map(|bounds| {
@@ -921,10 +1035,19 @@ impl RuntimeScene {
             // docs/54 §8-④：世界通道的剔除量尺必须与世界视图一致——有 3D 内容时收集阶段
             // 已经按"全收"处理（见上面的 `world_view_is_3d`），这里同样不再用 2D 矩形过滤。
             let world_cull_bounds = if world_view_is_3d { None } else { cull_bounds };
-            self.sprite_batch.build_world_into(
+            let world_frustum = if world_view_is_3d && self.sprite_culling {
+                self.frame_view_3d
+                    .as_ref()
+                    .and_then(|frame| frame.view.baked())
+                    .map(rustlua_camera::camera::CameraView::frustum)
+            } else {
+                None
+            };
+            self.sprite_batch.build_world_into_in_frustum(
                 &mut world_sprites,
                 &mut world_sprite_draws,
                 world_cull_bounds,
+                world_frustum,
                 self.sprite_parallelism,
             )?;
         } else {

@@ -6,6 +6,34 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// P3-R201/R204：画质预设（`--quality default|medium|low`）。
+///
+/// 预设是一次打开若干**已实测**档位的组合；逐项开关仍在，预设只覆盖它包含的字段
+/// （构建链里预设排在逐项开关之后）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Quality {
+    /// 逐项开关的旧行为（默认；GPU 路径逐字节不变）。
+    #[default]
+    Default,
+    /// planar 1/4（R196）+ 水面廉价光照（R197）；阴影档与地形细节档都不动
+    /// （地形廉价档的视觉代价未定档，R203 §21.489 决定不并入预设）。
+    Medium,
+    /// medium + 点光 cube 阴影 512（R200）。
+    Low,
+}
+
+impl Quality {
+    /// 稳定短名：启动日志与帧剖面 JSON 的自描述字段共用（P3-R205），两处不许各写一份。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Arguments {
     pub project: Option<PathBuf>,
@@ -19,6 +47,87 @@ pub struct Arguments {
     pub no_cull: bool,
     /// 关闭实例化（M8-08 基线回退）。
     pub no_instance: bool,
+    /// P3-R184：开发期归因开关——跳过网格路径含该子串的 3D drawable（A/B 量某类网格的 GPU 成本）。
+    pub skip_mesh: Option<String>,
+    /// P3-R185：关闭不透明前到后排序（early-Z 优化的 A/B 回滚档）。
+    pub no_depth_sort: bool,
+    /// P3-R191：关闭平面反射的镜像视锥剔除（A/B 回滚档）。
+    pub no_planar_cull: bool,
+    /// P3-R194：关闭点光阴影逐面方向锥剔除（A/B 回滚档）。
+    pub no_point_face_cull: bool,
+    /// P3-R196：平面反射目标分辨率除数（2 = 默认半分辨率；4 = 四分之一档 A/B）。
+    pub planar_divisor: u32,
+    /// P3-R197：全部水面强制廉价光照档（A/B 用；默认只按 spec 的 `cheap=1`）。
+    pub water_cheap: bool,
+    /// P3-R203：全部地形强制廉价细节档（`--terrain-cheap`，A/B 用；默认只按 spec 的 `cheap=1`）。
+    pub terrain_cheap: bool,
+    /// P3-R206：3D 最大绘制距离（米，0 = 关闭）。超出者并入剔除计数，是植被 LOD 的第一级
+    /// 硬截断档（低端机用；默认关闭 = 像素逐字节不变）。
+    pub draw_distance: u32,
+    /// P3-R206 分类档：只对网格路径含该子串的 drawable 生效（`--draw-distance-filter`）。
+    /// 植被 LOD 用它只掐草，不连带蚁/地形；`None` = 全体（默认）。
+    pub draw_distance_filter: Option<String>,
+    /// P3-R248：方向光 CSM 链的分类排除档（`--shadow-caster-skip`）：样本名或网格路径含
+    /// 该子串的 drawable 不投影（静态合批组只按路径判），主视图照画。`None` = 不排除
+    /// （默认 = 像素逐字节不变）。
+    pub shadow_caster_skip: Option<String>,
+    /// P3-R265：点光链专用分类排除档（`--point-shadow-caster-skip`）：样本名或网格路径含
+    /// 该子串的 drawable 不进点光 6 面链，方向光 CSM 与主视图照画。`None` = 不排除
+    /// （默认 = 像素逐字节不变）。
+    pub point_shadow_caster_skip: Option<String>,
+    /// P3-R256：阴影投射者的距离预算（`--shadow-caster-distance`，米，0 = 关闭）。
+    /// 超过该距离的 drawable 不进方向光与点光阴影链，主视图照画（观感取舍档；
+    /// 默认关闭 = 像素逐字节不变）。
+    pub shadow_caster_distance: u32,
+    /// P3-R207：深度加权水面折射增益（`--water-refraction`，单位 uv / 米光程 / 掠射角）。
+    /// `0` = 关闭 = 旧的固定偏移（像素逐字节不变）；真实量级约 `0.0008`。
+    pub water_refraction: f32,
+    /// P3-R208：水下视角的水-气界面强度（`--underwater-view`，0..=1）。`0` = 关闭 =
+    /// 只有 P3-R173 的整帧吸收（像素逐字节不变）；1 = 界面像素完全换成 Snell 窗口/全反射镜像。
+    pub underwater_view: f32,
+    /// P3-R241：水面折射的屏幕空间 Snell 步进次数（`--water-refract-steps`，0..=32）。
+    /// `0` = 关闭 = R207 的偏移近似（像素逐字节不变）；> 0 = 沿折射方向在水下找几何交点。
+    pub water_refract_steps: u32,
+    /// P3-R243：启动期预热 GPU 粒子管线（`--prewarm-particles`）。默认关 = 第一次画粒子
+    /// 时才编译（P3-R02 的启动预算）；开 = 启动时把 LDR/HDR 两条都编好，第一股连续流
+    /// 不再付管线编译的尖峰。像素与帧序都不变，只挪了编译时刻。
+    pub prewarm_particles: bool,
+    /// P3-R246：实例位姿交给渲染器现场求值（`--gpu-motion`）。默认关 = 宿主每帧求
+    /// `matrices_at` 并把 N 份矩阵交给渲染器（旧行为，像素/帧序逐字节不变）；开 = 带运动
+    /// 的批次**跳过** CPU 求值，批次登记给渲染器 compute 烘焙。
+    pub gpu_motion: bool,
+    /// P3-R250：GPU 位姿烘焙的逐实例距离剔除半径（`--gpu-motion-cull`，米）。`0` = 关闭
+    /// （默认，逐矩阵不变）；> 0 = 离相机超过该距离的实例写零矩阵（只对 GPU 烘焙批次生效）。
+    /// 观感取舍档：贴近切面的实例可能整只消失，不进 `--quality`。
+    pub gpu_motion_cull: f32,
+    /// P3-R255：GPU 位姿烘焙的逐实例视锥剔除（`--gpu-motion-frustum-cull`）。默认关 = 不判、
+    /// 不传视锥参数（逐矩阵不变）；开 = 主视图看不见的实例连实例槽位都不领（与距离剔除
+    /// 同一条取舍，阴影/planar 共享矩阵 ⇒ 全链一致消失）。只对 GPU 烘焙批次生效。
+    pub gpu_motion_frustum_cull: bool,
+    /// P3-R266：GPU 位姿烘焙的远程密度档（`--gpu-motion-thin <米>:<k>`）。`None` = 关闭
+    /// （默认，逐矩阵不变）；`Some((米, k))` = 离相机超过该距离的实例只保留批次内
+    /// `index % k == 0` 的那些。观感取舍档：远区变稀，近区一只不动；只对 GPU 烘焙批次生效。
+    pub gpu_motion_thin: Option<(f32, u32)>,
+    /// P3-R267：第二远带 `(米, k)`（`--gpu-motion-thin <近>:<k>,<远>:<k>` 的第二段）。
+    /// 只在第一带已开、且半径严格更大时生效；与第一带取**交集**。`None` = 关（默认）。
+    pub gpu_motion_thin_far: Option<(f32, u32)>,
+    /// P3-R209：剖切口的实体封口深度（`--clip-cap`，米）。`0` = 关闭 = 只在切面贴 0.08 m
+    /// 薄带（P3-R54 的旧行为，像素逐字节不变）；> 0 = 切得再深也一路画实体截面。
+    pub clip_cap: f32,
+    /// P3-R211：封口也吃到单面网格（`--clip-cap-both-sides`）。默认关 = 只有双面网格（水面、
+    /// 带裙边的地形、`double_sided` 材质）的切口能画实体截面；开 = 挂了会话裁剪平面的帧里，
+    /// 主网格通道对全部网格改用双面管线，单面 glb 壳（巢丘、道具）也被切成实心剖面。
+    pub clip_cap_both_sides: bool,
+    /// P3-R198：方向光 CSM 阴影图边长（512/1024/2048/4096，默认 2048 = 旧行为）。
+    pub shadow_resolution: u32,
+    /// P3-R199：方向光 CSM 实际渲染的级联层数（1..=4，默认 4 = 旧行为）。
+    pub shadow_cascades: u32,
+    /// P3-R200：点光 cube 阴影面的边长（512/1024，默认 1024 = 旧行为）。
+    pub point_shadow_resolution: u32,
+    /// P3-R202：点光阴影盏数预算（1..=8，默认 8 = 旧行为）——只给相机焦点最近的 N 盏录阴影。
+    pub point_shadow_lights: u32,
+    /// P3-R201/R204：画质预设（`--quality default|medium|low`）；默认 = 逐项开关的旧行为。
+    pub quality: Quality,
     /// 加载集观测：把本次运行的资源读取按场景上下文写成 JSON（`docs/67` §5）。
     pub trace_loads: Option<PathBuf>,
     /// 帧调度分档（M74-02 P0 度量闸门）：退出时把每系统 p50/p99、每 stage 合计与
@@ -27,11 +136,30 @@ pub struct Arguments {
     /// P3-R05-4：开发期 shader 源覆盖目录（`--shader-dir` 或 `RUSTLUA_SHADER_DIR`）。
     /// `None` = **不监听**、用内置源——这是发布默认形态，运行时不该有任何 shader 文件 IO。
     pub shader_dir: Option<PathBuf>,
+    /// P3-R236：确定性帧档——每帧恰好推进一个固定步，不读墙钟 ⇒ 帧号与模拟步一一对应，
+    /// 两次运行到同一帧号的世界状态相同（默认关 = 墙钟档，行为不变）。
+    pub fixed_step: bool,
+    /// P3-R236：把着色器时间钉在给定秒数（`--freeze-clock`）。`None` = 渲染钟（默认不变）；
+    /// 钉住后水波/云/后期颗粒的相位在两次运行里一致 ⇒ 逐像素对账成立。
+    pub freeze_clock: Option<f32>,
 }
 
 pub fn parse_arguments() -> Result<Arguments, String> {
-    let mut args = Arguments::default();
-    let mut values = env::args().skip(1);
+    parse_arguments_from(env::args().skip(1))
+}
+
+/// 与 [`parse_arguments`] 同源，参数从迭代器取（单元测试用；`env::args` 进程级不可注入）。
+pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<Arguments, String> {
+    // P3-R196：默认半分辨率（默认值的 0 是占位，不能直接当除数）。
+    let mut args = Arguments {
+        planar_divisor: 2,
+        shadow_resolution: 2048,
+        shadow_cascades: 4,
+        point_shadow_resolution: 1024,
+        point_shadow_lights: 8,
+        ..Arguments::default()
+    };
+    let mut values = values.into_iter();
     while let Some(value) = values.next() {
         match value.as_str() {
             "--project" => {
@@ -48,6 +176,233 @@ pub fn parse_arguments() -> Result<Arguments, String> {
             "--check" => args.check = true,
             "--no-cull" => args.no_cull = true,
             "--no-instance" => args.no_instance = true,
+            "--no-depth-sort" => args.no_depth_sort = true,
+            "--no-planar-cull" => args.no_planar_cull = true,
+            "--no-point-face-cull" => args.no_point_face_cull = true,
+            "--water-cheap" => args.water_cheap = true,
+            "--clip-cap-both-sides" => args.clip_cap_both_sides = true,
+            "--prewarm-particles" => args.prewarm_particles = true,
+            "--gpu-motion" => args.gpu_motion = true,
+            "--gpu-motion-frustum-cull" => args.gpu_motion_frustum_cull = true,
+            "--gpu-motion-cull" => {
+                let value = values
+                    .next()
+                    .ok_or("--gpu-motion-cull requires meters")?
+                    .parse::<f32>()
+                    .map_err(|_| "--gpu-motion-cull must be a number (0 = off)".to_owned())?;
+                args.gpu_motion_cull = if value.is_finite() && value > 0.0 {
+                    value
+                } else {
+                    0.0
+                };
+            }
+            "--gpu-motion-thin" => {
+                let value = values
+                    .next()
+                    .ok_or("--gpu-motion-thin requires meters:stride (e.g. 60:4 or 20:4,80:16)")?;
+                let bands = value.split(',').collect::<Vec<_>>();
+                if bands.len() > 2 {
+                    return Err(
+                        "--gpu-motion-thin takes at most two bands (near:stride,far:stride)"
+                            .to_owned(),
+                    );
+                }
+                let parse_band = |band: &str| -> Result<Option<(f32, u32)>, String> {
+                    let (meters, stride) = band
+                        .split_once(':')
+                        .ok_or("--gpu-motion-thin must be meters:stride (e.g. 60:4)".to_owned())?;
+                    let meters = meters.parse::<f32>().map_err(|_| {
+                        "--gpu-motion-thin meters must be a number (0 = off)".to_owned()
+                    })?;
+                    let stride = stride.parse::<u32>().map_err(|_| {
+                        "--gpu-motion-thin stride must be a non-negative integer (1 = off)"
+                            .to_owned()
+                    })?;
+                    Ok(if meters.is_finite() && meters > 0.0 && stride >= 2 {
+                        Some((meters, stride))
+                    } else {
+                        None
+                    })
+                };
+                let near = parse_band(bands[0])?;
+                let far = match bands.get(1) {
+                    Some(band) => parse_band(band)?,
+                    None => None,
+                };
+                // 第二带必须严格更远才有意义；写反就归一为关（第一带照旧）。
+                let far = match (near, far) {
+                    (Some((near_meters, _)), Some((far_meters, stride)))
+                        if far_meters > near_meters =>
+                    {
+                        Some((far_meters, stride))
+                    }
+                    _ => None,
+                };
+                args.gpu_motion_thin = near;
+                args.gpu_motion_thin_far = far;
+            }
+            "--terrain-cheap" => args.terrain_cheap = true,
+            "--draw-distance" => {
+                let value = values.next().ok_or("--draw-distance requires meters")?;
+                args.draw_distance = value.parse().map_err(|_| {
+                    "--draw-distance must be a non-negative integer (meters)".to_owned()
+                })?;
+            }
+            "--draw-distance-filter" => {
+                let value = values
+                    .next()
+                    .ok_or("--draw-distance-filter requires a mesh-path substring")?;
+                args.draw_distance_filter = Some(value);
+            }
+            "--shadow-caster-skip" => {
+                let value = values
+                    .next()
+                    .ok_or("--shadow-caster-skip requires a name-or-mesh-path substring")?;
+                args.shadow_caster_skip = Some(value);
+            }
+            "--point-shadow-caster-skip" => {
+                let value = values
+                    .next()
+                    .ok_or("--point-shadow-caster-skip requires a name-or-mesh-path substring")?;
+                args.point_shadow_caster_skip = Some(value);
+            }
+            "--shadow-caster-distance" => {
+                let value = values
+                    .next()
+                    .ok_or("--shadow-caster-distance requires meters")?;
+                args.shadow_caster_distance = value.parse().map_err(|_| {
+                    "--shadow-caster-distance must be a non-negative integer (meters)".to_owned()
+                })?;
+            }
+            "--water-refraction" => {
+                let value = values
+                    .next()
+                    .ok_or("--water-refraction requires a gain")?
+                    .parse::<f32>()
+                    .map_err(|_| "--water-refraction must be a number (0 = off)".to_owned())?;
+                args.water_refraction = if value.is_finite() && value > 0.0 {
+                    value
+                } else {
+                    0.0
+                };
+            }
+            "--underwater-view" => {
+                let value = values
+                    .next()
+                    .ok_or("--underwater-view requires a 0..=1 strength")?
+                    .parse::<f32>()
+                    .map_err(|_| "--underwater-view must be a number (0 = off)".to_owned())?;
+                args.underwater_view = if value.is_finite() && value > 0.0 {
+                    value.min(1.0)
+                } else {
+                    0.0
+                };
+            }
+            "--water-refract-steps" => {
+                let value = values
+                    .next()
+                    .ok_or("--water-refract-steps requires a step count")?;
+                args.water_refract_steps = value
+                    .parse::<u32>()
+                    .map_err(|_| {
+                        "--water-refract-steps must be a non-negative integer (0 = off)".to_owned()
+                    })?
+                    .min(32);
+            }
+            "--clip-cap" => {
+                let value = values
+                    .next()
+                    .ok_or("--clip-cap requires a depth in meters")?
+                    .parse::<f32>()
+                    .map_err(|_| "--clip-cap must be a number (0 = off)".to_owned())?;
+                args.clip_cap = if value.is_finite() && value > 0.0 {
+                    value
+                } else {
+                    0.0
+                };
+            }
+            "--planar-divisor" => {
+                let value = values
+                    .next()
+                    .ok_or("--planar-divisor requires an integer divisor")?;
+                let divisor: u32 = value
+                    .parse()
+                    .map_err(|_| "--planar-divisor must be an integer".to_owned())?;
+                if !(1..=8).contains(&divisor) {
+                    return Err("--planar-divisor must be within 1..=8".to_owned());
+                }
+                args.planar_divisor = divisor;
+            }
+            "--shadow-resolution" => {
+                let value = values
+                    .next()
+                    .ok_or("--shadow-resolution requires an integer edge")?;
+                let resolution: u32 = value
+                    .parse()
+                    .map_err(|_| "--shadow-resolution must be an integer".to_owned())?;
+                if ![512, 1024, 2048, 4096].contains(&resolution) {
+                    return Err(
+                        "--shadow-resolution must be one of 512, 1024, 2048, 4096".to_owned()
+                    );
+                }
+                args.shadow_resolution = resolution;
+            }
+            "--shadow-cascades" => {
+                let value = values
+                    .next()
+                    .ok_or("--shadow-cascades requires an integer")?;
+                let cascades: u32 = value
+                    .parse()
+                    .map_err(|_| "--shadow-cascades must be an integer".to_owned())?;
+                if !(1..=4).contains(&cascades) {
+                    return Err("--shadow-cascades must be within 1..=4".to_owned());
+                }
+                args.shadow_cascades = cascades;
+            }
+            "--point-shadow-resolution" => {
+                let value = values
+                    .next()
+                    .ok_or("--point-shadow-resolution requires an integer edge")?;
+                let resolution: u32 = value
+                    .parse()
+                    .map_err(|_| "--point-shadow-resolution must be an integer".to_owned())?;
+                if ![512, 1024].contains(&resolution) {
+                    return Err("--point-shadow-resolution must be one of 512, 1024".to_owned());
+                }
+                args.point_shadow_resolution = resolution;
+            }
+            "--point-shadow-lights" => {
+                let value = values
+                    .next()
+                    .ok_or("--point-shadow-lights requires an integer count")?;
+                let lights: u32 = value
+                    .parse()
+                    .map_err(|_| "--point-shadow-lights must be an integer".to_owned())?;
+                if !(1..=8).contains(&lights) {
+                    return Err("--point-shadow-lights must be within 1..=8".to_owned());
+                }
+                args.point_shadow_lights = lights;
+            }
+            "--quality" => {
+                let value = values
+                    .next()
+                    .ok_or("--quality requires default, medium or low")?;
+                args.quality = match value.as_str() {
+                    "low" => Quality::Low,
+                    "medium" => Quality::Medium,
+                    "default" => Quality::Default,
+                    _ => return Err("--quality must be 'default', 'medium' or 'low'".to_owned()),
+                };
+            }
+            "--skip-mesh" => {
+                let filter = values
+                    .next()
+                    .ok_or("--skip-mesh requires a mesh path substring")?;
+                if filter.is_empty() {
+                    return Err("--skip-mesh substring must not be empty".to_owned());
+                }
+                args.skip_mesh = Some(filter);
+            }
             "--log-filter" => {
                 args.log_filter = Some(
                     values
@@ -71,6 +426,20 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                     values.next().ok_or("--shader-dir requires a path")?,
                 ));
             }
+            "--fixed-step" => args.fixed_step = true,
+            "--freeze-clock" => {
+                let value = values.next().ok_or("--freeze-clock requires seconds")?;
+                let secs = value
+                    .parse::<f32>()
+                    .map_err(|_| "--freeze-clock must be a number (seconds)".to_owned())?;
+                if !secs.is_finite() || secs < 0.0 {
+                    return Err(
+                        "--freeze-clock must be a finite, non-negative number of seconds"
+                            .to_owned(),
+                    );
+                }
+                args.freeze_clock = Some(secs);
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--title <window-title>] [--check] [--log-filter <tracing-filter>]\n\
@@ -79,12 +448,71 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                      --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\
                      --title <title>   设置窗口标题；未指定时优先读取发布包 release.toml\n\
                      --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）\n\
+                     --skip-mesh <子串>  开发期归因开关：跳过网格路径含该子串的 3D drawable\n\
+                                       （A/B 量某类网格的 GPU 成本；不给 = 不跳过）\n\
+                     --no-depth-sort   关闭不透明前到后排序（P3-R185 的 A/B 回滚档）\n\
+                     --no-planar-cull  关闭平面反射的镜像视锥剔除（P3-R191 的 A/B 回滚档）\n\
+                     --no-point-face-cull  关闭点光阴影逐面方向锥剔除（P3-R194 的 A/B 回滚档）\n\
+                     --planar-divisor <n>  平面反射目标分辨率除数（默认 2 = 半分辨率；4 = 1/4 档）\n\
+                     --water-cheap     全部水面强制廉价光照档（P3-R197 的 A/B 开关）\n\
+                     --terrain-cheap   全部地形强制廉价细节档（P3-R203 的 A/B 开关）\n\
+                     --draw-distance <米>  3D 最大绘制距离（P3-R206；0 = 关闭，默认不变；\n\
+                                       超出者并入剔除计数，低端机植被 LOD 的硬截断档）\n\
+                     --draw-distance-filter <子串>  距离档只作用于网格路径含该子串的实例\n\
+                                       （P3-R206；默认全体；植被只掐草用 grass）\n\
+                     --shadow-caster-skip <子串>  样本名或网格路径含该子串的 drawable 不进\n\
+                                       方向光阴影链（P3-R248；静态组只按路径；主视图\n\
+                                       照画；默认不排除）\n\
+                     --shadow-caster-distance <米>  离相机超过该距离的 drawable 不进阴影链\n\
+                                       （P3-R256；方向光与点光都掐，主视图照画；\n\
+                                       0 = 关闭，默认不变）\n\
+                     --point-shadow-caster-skip <子串>  只掐点光 6 面链：样本名或网格路径\n\
+                                       含该子串的 drawable 不投点光阴影（P3-R265；\n\
+                                       方向光 CSM 与主视图照画；默认不排除）\n\
+                     --water-refraction <增益>  水面折射偏移按「光程 × 掠射角」加权\n\
+                                       （P3-R207；0 = 关闭 = 旧的固定偏移，默认不变；\n\
+                                       真实量级约 0.0008 uv/米）\n\
+                     --underwater-view <0..=1>  水下视角把水-气界面换成 Snell 窗口 + 全反射镜像\n\
+                                       （P3-R208；0 = 关闭，默认只有 P3-R173 的整帧吸收，\n\
+                                       像素逐字节不变；只在相机入水时生效）\n\
+                     --water-refract-steps <n>  水面折射沿 Snell 方向做屏幕空间步进\n\
+                                       （P3-R241；0 = 关闭 = R207 的偏移近似，默认不变；\n\
+                                       n = 1..32 次深度取样，未命中退回偏移落点）\n\
+                     --clip-cap <米>   剖切口的实体封口深度（P3-R209；0 = 关闭 = 旧的 0.08 薄带，\n\
+                                       默认不变；> 0 = 从切面向内这么深都一路画实体截面，\n\
+                                       只对双面网格生效）\n\
+                     --clip-cap-both-sides  封口也吃到单面网格（P3-R211；默认关）\n\
+                                       开了以后，挂了会话裁剪平面的帧里主网格通道对全部网格改用\n\
+                                       双面管线，单面 glb 壳也被切成实心剖面；没有裁剪面的帧零变化\n\
+                     --prewarm-particles  启动期预热 GPU 粒子管线（P3-R243；默认关 = 第一次画\n\
+                                       粒子时才编译；开 = LDR/HDR 两条都在启动时编好，\n\
+                                       第一股连续流不再付编译尖峰，像素不变）\n\
+                     --gpu-motion     实例位姿交给渲染器现场求值（P3-R246；默认关 = 宿主每帧
+                                      求 CPU 矩阵；开 = 带运动的批次跳过 matrices_at，由 compute
+                                      烘焙进实例缓冲；像素同 CPU 档，CPU 提取省掉 N 份矩阵）
+                     --gpu-motion-cull <米>  逐实例距离剔除（P3-R250；默认关 = 0；只对
+                                      --gpu-motion 烘焙的批次生效：离相机超过该距离的实例
+                                      写零矩阵，主视图/阴影/planar 全链一致地消失）
+                     --gpu-motion-frustum-cull  逐实例视锥剔除（P3-R255；默认关；只对
+                                      --gpu-motion 烘焙的批次生效：主视图看不见的实例连
+                                      实例槽位都不领，阴影/planar 里也一起消失）
+                     --gpu-motion-thin <近>:<k>[,<远>:<k>]  远程密度档（P3-R266/R267；默认关；
+                                      只对 --gpu-motion 烘焙的批次生效：离相机超过该米数的
+                                      实例只留批次内 index%k==0 的那些，近区一只不动；
+                                      第二带必须更远、且与第一带取交集；观感取舍档）
+                     --quality <档>    画质预设：default（逐项开关）/ medium（planar 1/4 + 水面\n\
+                                       廉价光照）/ low（medium + 点光 cube 阴影 512）\n\
                      --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON\n\
                      --frame-profile <file> 退出时把帧调度分档（每系统 p50/p99、每 stage 合计、\n\
                                        最慢 stage 占帧比）写成 JSON（M74-02 P0）\n\
                      --shader-dir <dir>    开发期 shader 源覆盖目录（同名 .wgsl 覆盖内置源，\n\
                                        运行中按 150ms 去抖热重载）；等价于环境变量 RUSTLUA_SHADER_DIR，\n\
-                                       两者都不给时不监听、只用内置源"
+                                       两者都不给时不监听、只用内置源\n\
+                     --fixed-step      确定性帧档：每帧恰好推进一个固定步，不读墙钟\n\
+                                       （P3-R236；帧号 ⇔ 模拟步一一对应，两次运行到同一帧号\n\
+                                       的世界状态相同；默认关 = 墙钟档）\n\
+                     --freeze-clock <秒>  把着色器时间钉在给定秒数（P3-R236；不给 = 渲染钟）；\n\
+                                       钉住后水波/云/后期颗粒相位在两次运行里一致 ⇒ 逐像素对账成立"
                 );
                 std::process::exit(0);
             }
@@ -338,7 +766,488 @@ fn extract_asset_refs(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_asset_refs, extract_key, resolve_window_title, verify_project};
+    use super::parse_arguments_from;
+    use super::{Quality, extract_asset_refs, extract_key, resolve_window_title, verify_project};
+
+    /// P3-R204：`--quality` 三档解析、末次出现生效、非法值给出三选一提示。
+    #[test]
+    fn quality_preset_parses_three_levels_and_last_wins() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().quality, Quality::Default);
+        assert_eq!(
+            parse(&["--quality", "medium"]).unwrap().quality,
+            Quality::Medium
+        );
+        assert_eq!(parse(&["--quality", "low"]).unwrap().quality, Quality::Low);
+        assert_eq!(
+            parse(&["--quality", "low", "--quality", "default"])
+                .unwrap()
+                .quality,
+            Quality::Default,
+            "末次出现的档位生效"
+        );
+        let error = parse(&["--quality", "ultra"]).unwrap_err();
+        assert!(
+            error.contains("default") && error.contains("medium") && error.contains("low"),
+            "错误提示要列出三档: {error}"
+        );
+    }
+
+    /// P3-R236：确定性帧档的两个开关。默认全关（= 旧行为），非法值必须报错而不是
+    /// 悄悄归一——归一了就会把"对账跑歪了"伪装成"跑过了"。
+    #[test]
+    fn deterministic_frame_flags_default_off_and_reject_garbage() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(!parse(&[]).unwrap().fixed_step, "默认不启用确定性档");
+        assert_eq!(parse(&[]).unwrap().freeze_clock, None, "默认用渲染钟");
+        assert!(parse(&["--fixed-step"]).unwrap().fixed_step);
+        assert_eq!(
+            parse(&["--freeze-clock", "12.5"]).unwrap().freeze_clock,
+            Some(12.5)
+        );
+        assert_eq!(
+            parse(&["--freeze-clock", "0"]).unwrap().freeze_clock,
+            Some(0.0),
+            "0 是合法秒数（不是缺省）"
+        );
+        assert!(parse(&["--freeze-clock"]).is_err(), "缺值必须报错");
+        assert!(parse(&["--freeze-clock", "abc"]).is_err(), "非数字必须报错");
+        assert!(parse(&["--freeze-clock", "-1"]).is_err(), "负数必须报错");
+        assert!(parse(&["--freeze-clock", "nan"]).is_err(), "NaN 必须报错");
+        assert!(parse(&["--freeze-clock", "inf"]).is_err(), "无穷必须报错");
+    }
+
+    /// P3-R206：`--draw-distance` 默认关闭（0）、米数解析、末次生效、非法值给提示。
+    #[test]
+    fn draw_distance_parses_meters_and_defaults_to_off() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().draw_distance, 0, "默认关闭");
+        assert_eq!(parse(&["--draw-distance", "35"]).unwrap().draw_distance, 35);
+        assert_eq!(
+            parse(&["--draw-distance", "35", "--draw-distance", "0"])
+                .unwrap()
+                .draw_distance,
+            0,
+            "末次出现的值生效"
+        );
+        let error = parse(&["--draw-distance", "far"]).unwrap_err();
+        assert!(error.contains("--draw-distance"), "{error}");
+        assert!(parse(&["--draw-distance"]).is_err(), "缺值必须报错");
+
+        // P3-R206 分类档：默认全体（None）、子串原样保留、缺值报错。
+        assert_eq!(parse(&[]).unwrap().draw_distance_filter, None);
+        assert_eq!(
+            parse(&["--draw-distance-filter", "grass"])
+                .unwrap()
+                .draw_distance_filter
+                .as_deref(),
+            Some("grass")
+        );
+        assert!(
+            parse(&["--draw-distance-filter"]).is_err(),
+            "缺子串必须报错"
+        );
+    }
+
+    /// P3-R248：`--shadow-caster-skip` 默认不排除、子串原样保留、末次生效、缺值报错。
+    #[test]
+    fn shadow_caster_skip_parses_substring_and_defaults_to_none() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().shadow_caster_skip, None, "默认不排除");
+        assert_eq!(
+            parse(&["--shadow-caster-skip", "ant_carpenter"])
+                .unwrap()
+                .shadow_caster_skip
+                .as_deref(),
+            Some("ant_carpenter")
+        );
+        assert_eq!(
+            parse(&[
+                "--shadow-caster-skip",
+                "ant",
+                "--shadow-caster-skip",
+                "grass"
+            ])
+            .unwrap()
+            .shadow_caster_skip
+            .as_deref(),
+            Some("grass"),
+            "末次出现的值生效"
+        );
+        assert!(parse(&["--shadow-caster-skip"]).is_err(), "缺子串必须报错");
+    }
+
+    /// P3-R265：`--point-shadow-caster-skip` 默认不排除、子串原样保留、末次生效、缺值报错。
+    #[test]
+    fn point_shadow_caster_skip_parses_substring_and_defaults_to_none() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            parse(&[]).unwrap().point_shadow_caster_skip,
+            None,
+            "默认不排除"
+        );
+        assert_eq!(
+            parse(&["--point-shadow-caster-skip", "ant_carpenter"])
+                .unwrap()
+                .point_shadow_caster_skip
+                .as_deref(),
+            Some("ant_carpenter")
+        );
+        assert_eq!(
+            parse(&[
+                "--point-shadow-caster-skip",
+                "ant",
+                "--point-shadow-caster-skip",
+                "grass"
+            ])
+            .unwrap()
+            .point_shadow_caster_skip
+            .as_deref(),
+            Some("grass"),
+            "末次出现的值生效"
+        );
+        assert!(
+            parse(&["--point-shadow-caster-skip"]).is_err(),
+            "缺子串必须报错"
+        );
+    }
+
+    /// P3-R256：`--shadow-caster-distance` 默认 0（关闭）、整数米、末次生效、缺值/非法报错。
+    #[test]
+    fn shadow_caster_distance_parses_meters_and_defaults_to_off() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().shadow_caster_distance, 0, "默认关闭");
+        assert_eq!(
+            parse(&["--shadow-caster-distance", "150"])
+                .unwrap()
+                .shadow_caster_distance,
+            150
+        );
+        assert_eq!(
+            parse(&[
+                "--shadow-caster-distance",
+                "150",
+                "--shadow-caster-distance",
+                "80",
+            ])
+            .unwrap()
+            .shadow_caster_distance,
+            80,
+            "末次出现的值生效"
+        );
+        assert!(
+            parse(&["--shadow-caster-distance"]).is_err(),
+            "缺米数必须报错"
+        );
+        assert!(
+            parse(&["--shadow-caster-distance", "-5"]).is_err(),
+            "负数必须报错"
+        );
+    }
+
+    /// P3-R207：`--water-refraction` 默认关闭（0）、增益解析、非法/负值归一为关闭、缺值报错。
+    #[test]
+    fn water_refraction_parses_gain_and_rejects_garbage() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            parse(&[]).unwrap().water_refraction,
+            0.0,
+            "默认关闭 = 旧的固定偏移"
+        );
+        assert_eq!(
+            parse(&["--water-refraction", "0.0008"])
+                .unwrap()
+                .water_refraction,
+            0.0008,
+        );
+        assert_eq!(
+            parse(&["--water-refraction", "0.0008", "--water-refraction", "0"])
+                .unwrap()
+                .water_refraction,
+            0.0,
+            "末次出现的值生效"
+        );
+        assert_eq!(
+            parse(&["--water-refraction", "-1"])
+                .unwrap()
+                .water_refraction,
+            0.0,
+            "负增益归一为关闭"
+        );
+        let error = parse(&["--water-refraction", "deep"]).unwrap_err();
+        assert!(error.contains("--water-refraction"), "{error}");
+        assert!(parse(&["--water-refraction"]).is_err(), "缺值必须报错");
+    }
+
+    /// P3-R241：`--water-refract-steps` 默认关闭（0）、截到 32、非整数报错、缺值报错。
+    #[test]
+    fn water_refract_steps_parse_and_clamp() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            parse(&[]).unwrap().water_refract_steps,
+            0,
+            "默认关闭 = R207 的偏移近似"
+        );
+        assert_eq!(
+            parse(&["--water-refract-steps", "16"])
+                .unwrap()
+                .water_refract_steps,
+            16
+        );
+        assert_eq!(
+            parse(&["--water-refract-steps", "64"])
+                .unwrap()
+                .water_refract_steps,
+            32,
+            "超过 32 截到 32"
+        );
+        assert_eq!(
+            parse(&["--water-refract-steps", "8", "--water-refract-steps", "0"])
+                .unwrap()
+                .water_refract_steps,
+            0,
+            "末次出现的值生效"
+        );
+        let error = parse(&["--water-refract-steps", "-1"]).unwrap_err();
+        assert!(error.contains("--water-refract-steps"), "{error}");
+        let error = parse(&["--water-refract-steps", "deep"]).unwrap_err();
+        assert!(error.contains("--water-refract-steps"), "{error}");
+        assert!(parse(&["--water-refract-steps"]).is_err(), "缺值必须报错");
+    }
+
+    /// P3-R243：`--prewarm-particles` 默认关、出现即开。
+    #[test]
+    fn prewarm_particles_flag_parses() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(!parse(&[]).unwrap().prewarm_particles, "默认不预热");
+        assert!(parse(&["--prewarm-particles"]).unwrap().prewarm_particles);
+    }
+
+    /// P3-R246：`--gpu-motion` 默认关、出现即开。
+    #[test]
+    fn gpu_motion_flag_parses() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(!parse(&[]).unwrap().gpu_motion, "默认走 CPU 求值");
+        assert!(parse(&["--gpu-motion"]).unwrap().gpu_motion);
+    }
+
+    /// P3-R255：`--gpu-motion-frustum-cull` 默认关、出现即开、不吞后一个参数。
+    #[test]
+    fn gpu_motion_frustum_cull_parses_flag() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(
+            !parse(&[]).unwrap().gpu_motion_frustum_cull,
+            "默认关闭（逐矩阵不变）"
+        );
+        assert!(
+            parse(&["--gpu-motion-frustum-cull"])
+                .unwrap()
+                .gpu_motion_frustum_cull
+        );
+        assert!(
+            parse(&["--gpu-motion-frustum-cull", "--gpu-motion"])
+                .unwrap()
+                .gpu_motion,
+            "布尔旗标不许吞掉后面的旗标"
+        );
+    }
+
+    /// P3-R266：`--gpu-motion-thin <米>:<k>` 默认关、解析出 (米, k)、k < 2 归一为关、
+    /// 缺冒号/缺值/非数字报错。
+    #[test]
+    fn gpu_motion_thin_parses_meters_and_stride() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().gpu_motion_thin, None, "默认关闭");
+        assert_eq!(
+            parse(&["--gpu-motion-thin", "60:4"])
+                .unwrap()
+                .gpu_motion_thin,
+            Some((60.0, 4))
+        );
+        assert_eq!(
+            parse(&["--gpu-motion-thin", "30:1"])
+                .unwrap()
+                .gpu_motion_thin,
+            None,
+            "步长 1 = 关闭"
+        );
+        assert_eq!(
+            parse(&["--gpu-motion-thin", "0:4"])
+                .unwrap()
+                .gpu_motion_thin,
+            None,
+            "半径 0 = 关闭"
+        );
+        assert!(
+            parse(&["--gpu-motion-thin", "60"]).is_err(),
+            "缺冒号必须报错"
+        );
+        assert!(parse(&["--gpu-motion-thin"]).is_err(), "缺值必须报错");
+        assert!(
+            parse(&["--gpu-motion-thin", "abc:4"]).is_err(),
+            "米数非数字必须报错"
+        );
+        assert!(
+            parse(&["--gpu-motion-thin", "60:x"]).is_err(),
+            "步长非整数必须报错"
+        );
+        // P3-R267：第二远带必须严格更远，否则归一为关（第一带照旧）。
+        let two = parse(&["--gpu-motion-thin", "30:4,90:16"]).unwrap();
+        assert_eq!(two.gpu_motion_thin, Some((30.0, 4)));
+        assert_eq!(two.gpu_motion_thin_far, Some((90.0, 16)));
+        let single = parse(&["--gpu-motion-thin", "30:4"]).unwrap();
+        assert_eq!(single.gpu_motion_thin, Some((30.0, 4)));
+        assert_eq!(single.gpu_motion_thin_far, None, "单带 = 第二带关");
+        let reversed = parse(&["--gpu-motion-thin", "90:4,30:16"]).unwrap();
+        assert_eq!(reversed.gpu_motion_thin, Some((90.0, 4)));
+        assert_eq!(reversed.gpu_motion_thin_far, None, "第二带更近 = 归一为关");
+        assert!(
+            parse(&["--gpu-motion-thin", "10:2,20:4,30:8"]).is_err(),
+            "超过两带必须报错"
+        );
+        assert!(
+            parse(&["--gpu-motion-thin", "30:4,90"]).is_err(),
+            "第二带缺冒号必须报错"
+        );
+    }
+
+    /// P3-R250：`--gpu-motion-cull` 默认 0（关）、非正值归一为 0、缺值/非数字报错。
+    #[test]
+    fn gpu_motion_cull_parses_meters_and_rejects_garbage() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(parse(&[]).unwrap().gpu_motion_cull, 0.0, "默认关闭");
+        assert_eq!(
+            parse(&["--gpu-motion-cull", "12.5"])
+                .unwrap()
+                .gpu_motion_cull,
+            12.5
+        );
+        assert_eq!(
+            parse(&["--gpu-motion-cull", "0"]).unwrap().gpu_motion_cull,
+            0.0,
+            "0 = 关闭"
+        );
+        assert_eq!(
+            parse(&["--gpu-motion-cull", "-3"]).unwrap().gpu_motion_cull,
+            0.0,
+            "负值归一为关闭"
+        );
+        assert!(parse(&["--gpu-motion-cull"]).is_err(), "缺值必须报错");
+        assert!(
+            parse(&["--gpu-motion-cull", "abc"]).is_err(),
+            "非数字必须报错"
+        );
+    }
+
+    /// P3-R208：`--underwater-view` 默认关闭（0）、强度截到 1、非法/负值归一为关闭、缺值报错。
+    #[test]
+    fn underwater_view_parses_strength_and_rejects_garbage() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            parse(&[]).unwrap().underwater_view,
+            0.0,
+            "默认关闭 = 只有 P3-R173 的整帧吸收"
+        );
+        assert_eq!(
+            parse(&["--underwater-view", "0.6"])
+                .unwrap()
+                .underwater_view,
+            0.6
+        );
+        assert_eq!(
+            parse(&["--underwater-view", "4"]).unwrap().underwater_view,
+            1.0,
+            "超过 1 的强度截到全替换档"
+        );
+        assert_eq!(
+            parse(&["--underwater-view", "0.6", "--underwater-view", "0"])
+                .unwrap()
+                .underwater_view,
+            0.0,
+            "末次出现的值生效"
+        );
+        assert_eq!(
+            parse(&["--underwater-view", "-1"]).unwrap().underwater_view,
+            0.0,
+            "负强度归一为关闭"
+        );
+        let error = parse(&["--underwater-view", "clear"]).unwrap_err();
+        assert!(error.contains("--underwater-view"), "{error}");
+        assert!(parse(&["--underwater-view"]).is_err(), "缺值必须报错");
+    }
+
+    /// P3-R209：`--clip-cap` 默认关闭（0）、是米制深度**不截断**、非法/负值归一为关闭、缺值报错。
+    #[test]
+    fn clip_cap_parses_depth_and_rejects_garbage() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert_eq!(
+            parse(&[]).unwrap().clip_cap,
+            0.0,
+            "默认关闭 = P3-R54 的 0.08 薄带，像素逐字节不变"
+        );
+        assert_eq!(parse(&["--clip-cap", "0.5"]).unwrap().clip_cap, 0.5);
+        assert_eq!(
+            parse(&["--clip-cap", "40"]).unwrap().clip_cap,
+            40.0,
+            "封口深度是米制长度，不是混合权重，不许截到 1"
+        );
+        assert_eq!(
+            parse(&["--clip-cap", "0.5", "--clip-cap", "0"])
+                .unwrap()
+                .clip_cap,
+            0.0,
+            "末次出现的值生效"
+        );
+        assert_eq!(
+            parse(&["--clip-cap", "-1"]).unwrap().clip_cap,
+            0.0,
+            "负深度归一为关闭"
+        );
+        let error = parse(&["--clip-cap", "deep"]).unwrap_err();
+        assert!(error.contains("--clip-cap"), "{error}");
+        assert!(parse(&["--clip-cap"]).is_err(), "缺值必须报错");
+    }
+
+    /// P3-R211：`--clip-cap-both-sides` 是无值开关，默认关、给了就开，且不吃后面那个 token。
+    #[test]
+    fn clip_cap_both_sides_is_a_bare_flag() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(
+            !parse(&[]).unwrap().clip_cap_both_sides,
+            "默认关闭 = 单面网格的背面仍被剔除"
+        );
+        assert!(
+            parse(&["--clip-cap-both-sides"])
+                .unwrap()
+                .clip_cap_both_sides,
+            "开关一给就开"
+        );
+        let with_depth = parse(&["--clip-cap", "2", "--clip-cap-both-sides"]).unwrap();
+        assert!(with_depth.clip_cap_both_sides && with_depth.clip_cap > 0.0);
+        assert!(
+            parse(&["--clip-cap-both-sides", "--clip-cap", "2"])
+                .unwrap()
+                .clip_cap
+                > 0.0,
+            "开关不许吞掉后面那条旗标的值"
+        );
+    }
 
     #[test]
     fn splash_check_missing_corrupt_plain_and_packed_images() {

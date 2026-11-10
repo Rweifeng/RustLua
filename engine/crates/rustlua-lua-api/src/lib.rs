@@ -21,8 +21,9 @@
 //!
 //! - [`Handle`]：宿主拥有的能力单元（如 `AudioSystem`）。绑定借它，宿主读写它；
 //!   重入借用返回 Lua 错误而不是 panic（与 `rustlua-scripting` 的 `lua_borrow` 同口径）。
-//! - [`Registry`]/[`Installer`]：绑定集合的注册表。领域 crate 提供安装器，组合根把它塞进
-//!   运行时的 VM 装配流程——`rustlua-scripting` 只认注册表，不认具体 crate。
+//! - [`ApiPack`]/[`Registry`]: 版本化的 API 模块包及注册表。包以静态链接的安装器扩展 Lua，
+//!   并声明维度和依赖；注册表选择 2D/3D 面，先验证再按依赖顺序装配。
+//! - [`Installer`]: 单个 Lua 模块的安装函数。
 //!
 //! ## 红线
 //!
@@ -38,7 +39,9 @@ pub mod values;
 
 pub use cell::Handle;
 pub use project_root::ProjectRoot;
-pub use registry::{Installer, Registry};
+pub use registry::{
+    API_PACK_VERSION, ApiDimension, ApiPack, ApiPackInfo, ApiSurface, Installer, Registry,
+};
 
 /// 绑定期错误：Lua 侧看到的是 `RuntimeError`，与 `rustlua-scripting::api_error` 同一种形状。
 ///

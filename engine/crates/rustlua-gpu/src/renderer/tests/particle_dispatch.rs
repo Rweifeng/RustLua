@@ -334,3 +334,44 @@ fn dispatch_report_defaults_to_silence() {
         }
     );
 }
+
+/// P3-R243：预热把两种目标格式的粒子管线都在启动期编好，第二次调用不再重编；
+/// 设备没有粒子管线布局（无存储缓冲）时如实返回 0。
+#[test]
+fn prewarm_builds_both_formats_once() {
+    let Some(mut renderer) = compute_renderer() else {
+        return gpu_skipped("device has no compute");
+    };
+    assert!(
+        renderer.gpu_particle_pipelines.is_empty(),
+        "构造期不该建粒子管线（P3-R02 的启动预算）"
+    );
+    if renderer.gpu_particle_pipeline_layout.is_none() {
+        assert_eq!(
+            renderer.prewarm_gpu_particles(),
+            0,
+            "没有粒子布局 ⇒ 预热如实返回 0"
+        );
+        assert!(renderer.gpu_particle_pipelines.is_empty());
+        return;
+    }
+    let expected = if renderer.capabilities.hdr_usable()
+        && renderer.config.format != wgpu::TextureFormat::Rgba16Float
+    {
+        2
+    } else {
+        1
+    };
+    let started = std::time::Instant::now();
+    let first = renderer.prewarm_gpu_particles();
+    let first_elapsed = started.elapsed();
+    assert_eq!(first, expected, "首次预热编 LDR（+ 可用时的 HDR）");
+    assert_eq!(renderer.gpu_particle_pipelines.len(), expected as usize);
+    let started = std::time::Instant::now();
+    let second = renderer.prewarm_gpu_particles();
+    let second_elapsed = started.elapsed();
+    assert_eq!(second, 0, "已热 ⇒ 不重编");
+    assert_eq!(renderer.gpu_particle_pipelines.len(), expected as usize);
+    // 只打印不判：不同机器/后端差一个量级都正常，账上只写实测，不把计时当门。
+    eprintln!("prewarm built={first} first={first_elapsed:?} second={second_elapsed:?}");
+}

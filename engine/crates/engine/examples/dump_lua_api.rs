@@ -5,6 +5,7 @@
 //! - `cargo run -q -p engine --example dump_lua_api -- --write` —— 写回
 //!   `crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`
 //!   （WP11 拆分期间每改一处 API 都要跑）
+//! - 同命令加 `--no-default-features` —— 2D 构建，写回 `lua_api_surface_2d.json`（M81）
 //!
 //! 事实源是运行期 `_G`，不是任何手抄清单：见 `rustlua_scripting::script::LUA_API_PROBE`。
 
@@ -15,7 +16,13 @@ use rustlua_scripting::script::{LUA_API_PROBE, LuaRuntime};
 /// 必须与 `api_surface_snapshot` 门 `include_str!` 的那一份指向同一个文件——WP11 拆分把基线
 /// 挪进了 `rustlua-scripting`，这里的 `src/core/...` 没跟着改，于是 `--write` 一直在
 /// panic（目录不存在），基线只能手改。
+///
+/// M81：写回路径按**本次构建的维度**选择（与快照门的基线选择同一口径）：
+/// `--no-default-features` 的 2D 构建写 `lua_api_surface_2d.json`，默认构建写全量面。
+#[cfg(feature = "3d")]
 const BASELINE_REL: &str = "../rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json";
+#[cfg(not(feature = "3d"))]
+const BASELINE_REL: &str = "../rustlua-scripting/src/api_surface_snapshot/lua_api_surface_2d.json";
 
 fn main() {
     let write = std::env::args().skip(1).any(|arg| arg == "--write");

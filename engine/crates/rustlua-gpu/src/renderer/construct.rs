@@ -35,8 +35,8 @@ use super::pipeline_cache::{
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer,
-    RendererCapabilities, camera_uniform, compute::ComputeState, depth_stencil_state,
+    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, RendererCapabilities,
+    TONEMAP_UNIFORM_BYTES, camera_uniform, compute::ComputeState, depth_stencil_state,
     identity_palette_data,
 };
 
@@ -47,12 +47,39 @@ impl Renderer {
         cull_enabled: bool,
         instancing_enabled: bool,
     ) -> anyhow::Result<Self> {
+        Self::new_with_shadow_resolution(
+            window,
+            project_root,
+            cull_enabled,
+            instancing_enabled,
+            super::DEFAULT_SHADOW_RESOLUTION,
+            super::DEFAULT_SHADOW_CASCADE_LIMIT,
+            super::DEFAULT_POINT_SHADOW_RESOLUTION,
+        )
+    }
+
+    /// P3-R198/R199/R200：带阴影品质的选择入口。方向光纹理与绑定组按 `shadow_resolution`
+    /// 一次建好（512..=4096）；`shadow_cascade_limit`（1..=4）决定实际渲染的级联层数，
+    /// 未渲染的远级联清成全亮；`point_shadow_resolution`（512/1024）决定点光 cube 面的边长。
+    /// 缺省值 = 旧行为。
+    pub fn new_with_shadow_resolution(
+        window: Arc<Window>,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+        shadow_resolution: u32,
+        shadow_cascade_limit: u32,
+        point_shadow_resolution: u32,
+    ) -> anyhow::Result<Self> {
         pollster::block_on(Self::new_async(
             Some(window),
             None,
             project_root,
             cull_enabled,
             instancing_enabled,
+            shadow_resolution.clamp(512, 4096),
+            shadow_cascade_limit.clamp(1, 4),
+            point_shadow_resolution.clamp(512, 1024),
         ))
     }
 
@@ -72,6 +99,33 @@ impl Renderer {
             project_root,
             cull_enabled,
             instancing_enabled,
+            super::DEFAULT_SHADOW_RESOLUTION,
+            super::DEFAULT_SHADOW_CASCADE_LIMIT,
+            super::DEFAULT_POINT_SHADOW_RESOLUTION,
+        ))
+    }
+
+    /// P3-R198/R199/R200：离屏渲染的阴影品质入口（测试/编辑器预览用）。
+    #[allow(clippy::too_many_arguments)] // 构造器一次性把三档阴影参数透传到底，拆结构体只会加一层映射。
+    pub fn new_offscreen_with_shadow_settings(
+        device: Device,
+        queue: Queue,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+        shadow_resolution: u32,
+        shadow_cascade_limit: u32,
+        point_shadow_resolution: u32,
+    ) -> anyhow::Result<Self> {
+        pollster::block_on(Self::new_async(
+            None,
+            Some((device, queue)),
+            project_root,
+            cull_enabled,
+            instancing_enabled,
+            shadow_resolution.clamp(512, 4096),
+            shadow_cascade_limit.clamp(1, 4),
+            point_shadow_resolution.clamp(512, 1024),
         ))
     }
 
@@ -95,16 +149,23 @@ impl Renderer {
             project_root,
             cull_enabled,
             instancing_enabled,
+            super::DEFAULT_SHADOW_RESOLUTION,
+            super::DEFAULT_SHADOW_CASCADE_LIMIT,
+            super::DEFAULT_POINT_SHADOW_RESOLUTION,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // 同上：窗口/离屏共用的唯一构造内核。
     async fn new_async(
         window: Option<Arc<Window>>,
         external_device: Option<(Device, Queue)>,
         project_root: Option<PathBuf>,
         cull_enabled: bool,
         instancing_enabled: bool,
+        shadow_resolution: u32,
+        shadow_cascade_limit: u32,
+        point_shadow_resolution: u32,
     ) -> anyhow::Result<Self> {
         // P0-②：窗口渲染（游戏运行）走异步加载；离屏渲染（golden / 编辑器预览）走同步，
         // 保证确定性输出里绝无异步加载。
@@ -295,12 +356,12 @@ impl Renderer {
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         // P3-R02：PBR 片元要读相机世界位置算视线；旧网格着色器只声明 64 字节
-                        // 结构，读写同一块 buffer 的前半段。尺寸 96 = mat4 + 位置 + 裁剪平面。
+                        // 结构，读写同一块 buffer 的前半段。尺寸 176 = 11×vec4（P3-R209 起含封口深度）。
                         visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(160),
+                            min_binding_size: wgpu::BufferSize::new(176),
                         },
                         count: None,
                     },
@@ -432,7 +493,9 @@ impl Renderer {
                     min_filter: Renderer::wgpu_filter_mode(filter),
                     // P3-R96：线性材质采样开 8× 各向异性，地形/水面在掠射角更清晰；
                     // wgpu 要求 anisotropy>1 时三档过滤都必须是 Linear。
-                    mipmap_filter: if filter == rustlua_assets::import_settings::TextureFilter::Linear {
+                    mipmap_filter: if filter
+                        == rustlua_assets::import_settings::TextureFilter::Linear
+                    {
                         wgpu::FilterMode::Linear
                     } else {
                         wgpu::FilterMode::Nearest
@@ -558,7 +621,8 @@ impl Renderer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     // P3-R02：6×vec4 = 基色 / 表面 / 自发光 / 参数 / 贴图开关 / 动画。
-                    min_binding_size: wgpu::BufferSize::new(96),
+                    // P3-R162–165：+4×vec4 = 清漆 / SSS / 虹彩 / 绒毛（共 10×vec4 = 160 字节）。
+                    min_binding_size: wgpu::BufferSize::new(super::MATERIAL_UNIFORM_BYTES),
                 },
                 count: None,
             },
@@ -681,7 +745,8 @@ impl Renderer {
             ],
         };
         let light_matrix = light_projection * light_view;
-        let (shadow_sample_view, shadow_views) = Self::create_shadow_view(&device, 2048);
+        let (shadow_sample_view, shadow_views) =
+            Self::create_shadow_view(&device, shadow_resolution);
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rustlua-shadow-comparison-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -716,6 +781,7 @@ impl Renderer {
                 [0.0, 0.0],
                 [0.0, 1.5],
                 [0.0, 1.5, 0.0, 1.5],
+                0.0,
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -831,13 +897,13 @@ impl Renderer {
             },
         );
         let white_albedo_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // 前八盏（最多 8 盏）点光的立方体阴影：8×6 个 1024² 深度面，主着色器按光源位置找槽位、
-        // 主着色器按 cube array 方向交给硬件跨面过滤。
+        // 前八盏（最多 8 盏）点光的立方体阴影：8×6 个深度面，主着色器按光源位置找槽位、
+        // 主着色器按 cube array 方向交给硬件跨面过滤。P3-R200：面边长按档建（512 ⇒ 48 MiB）。
         let point_shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rustlua-point-shadow-array"),
             size: wgpu::Extent3d {
-                width: super::POINT_SHADOW_SIZE,
-                height: super::POINT_SHADOW_SIZE,
+                width: point_shadow_resolution,
+                height: point_shadow_resolution,
                 depth_or_array_layers: super::POINT_SHADOW_LAYERS as u32,
             },
             mip_level_count: 1,
@@ -847,6 +913,8 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        // 以实际建出的纹理尺寸为准回填字段：门的读数是「真的建了多大」，不是参数回显。
+        let point_shadow_resolution = point_shadow_texture.size().width;
         let point_shadow_array_view =
             point_shadow_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("rustlua-point-shadow-cube-array-view"),
@@ -909,6 +977,46 @@ impl Renderer {
                     ..Default::default()
                 })
             });
+        // P3-R199：未渲染的远级联在构建期一次性清成「全亮」——深度 1.0 / ESM 白。
+        // 采样这些层的像素只会失去该距离的阴影，不会被上一帧或未初始化内容误压暗。
+        if shadow_cascade_limit < 4 {
+            let mut clear_encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rustlua-shadow-cascade-clear"),
+                });
+            for cascade in shadow_cascade_limit as usize..4 {
+                let _ = clear_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("rustlua-shadow-cascade-depth-clear"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &shadow_views[cascade],
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                let _ = clear_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("rustlua-esm-cascade-clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &esm_layer_views[cascade],
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            queue.submit(Some(clear_encoder.finish()));
+        }
         let esm_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-esm-bind-group-layout"),
@@ -1039,6 +1147,102 @@ impl Renderer {
                 },
             ],
         });
+        // P3-R170：平面反射的镜像相机 uniform 与绑定组。除 binding 0 指向另一块 buffer 外
+        // 与主相机绑定组逐项相同——反射 pass 因此能原样复用材质/环境绑定。
+        // P3-R209：尺寸跟 Camera 结构走（11×vec4 = 176 字节），反射 pass 也跑同一份 PBR 着色器。
+        let planar_camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-planar-camera"),
+            size: 176,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let planar_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-planar-camera-bind-group"),
+            layout: &camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: planar_camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shadow_camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: point_shadow_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&esm_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
+                },
+            ],
+        });
+        // 未启用平面反射时 Tonemap 绑定这个 1×1 透明占位图：绑定组形状恒定，
+        // 着色器用 alpha<0.5 判定"没命中"，与绑定组形状切换的时序问题无关。
+        let planar_reflection_texture = device.create_texture(&wgpu::TextureDescriptor {
+            // 回读门要能证明"没跑时仍是这张占位图"，所以占位图也带 COPY_SRC。
+            label: Some("rustlua-planar-reflection-placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &planar_reflection_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0u8; 8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let planar_reflection_view =
+            planar_reflection_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let planar_reflection_depth = Self::create_depth_view(&device, 1, 1);
         let shadow_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-shadow-bind-group-layout"),
@@ -1309,66 +1513,66 @@ impl Renderer {
         // 无存储缓冲的设备（WebGL2 即如此）不建这两条布局：binding 1 是只读存储，
         // `create_bind_group_layout` 会直接报校验错误，而 wasm 上的未捕获校验错误是 abort。
         // GPU 粒子在这些设备上本来就走 CPU，`configure_gpu_particles` 会返回 Unsupported。
-        let (
-            gpu_particle_draw_layout,
-            gpu_particle_pipeline_layout,
-            gpu_particle_depth_layout,
-        ) = if storage_capable {
-            let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-gpu-particles-draw-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-            // P3-R107：group3 = 场景深度，粒子片元自己做深度测试 + 软边。
-            let depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-gpu-particles-depth-layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                }],
-            });
-            // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
-            // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-gpu-particles-pipeline-layout"),
-                bind_group_layouts: &[
-                    &world_sprite_camera_layout,
-                    &texture_bind_group_layout,
-                    &draw_layout,
-                    &depth_layout,
-                ],
-                push_constant_ranges: &[],
-            });
-            (Some(draw_layout), Some(pipeline_layout), Some(depth_layout))
-        } else {
-            (None, None, None)
-        };
+        let (gpu_particle_draw_layout, gpu_particle_pipeline_layout, gpu_particle_depth_layout) =
+            if storage_capable {
+                let draw_layout =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("rustlua-gpu-particles-draw-layout"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::VERTEX,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                // P3-R107：group3 = 场景深度，粒子片元自己做深度测试 + 软边。
+                let depth_layout =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("rustlua-gpu-particles-depth-layout"),
+                        entries: &[wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Depth,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        }],
+                    });
+                // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
+                // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
+                let pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("rustlua-gpu-particles-pipeline-layout"),
+                        bind_group_layouts: &[
+                            &world_sprite_camera_layout,
+                            &texture_bind_group_layout,
+                            &draw_layout,
+                            &depth_layout,
+                        ],
+                        push_constant_ranges: &[],
+                    });
+                (Some(draw_layout), Some(pipeline_layout), Some(depth_layout))
+            } else {
+                (None, None, None)
+            };
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
         // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
         // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。
@@ -1465,7 +1669,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(288),
+                        min_binding_size: wgpu::BufferSize::new(TONEMAP_UNIFORM_BYTES),
                     },
                     count: None,
                 },
@@ -1511,6 +1715,36 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // P3-R166：`sect=1` 地形的高度图（R=高 8 位、G=低 8 位，16 位定点）。
+                // 不走采样器：Tonemap 用 `textureLoad` 自己插值，避免线性过滤把两个字节混掉。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // P3-R170：水面平面反射的离屏色图（半分辨率的 HDR 镜像视图）。
+                // 关掉时绑的是 1×1 透明占位图，着色器按 `planar.x` 与 alpha 掩码跳过。
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let tonemap_pipeline_layout =
@@ -1538,11 +1772,50 @@ impl Renderer {
         };
         let tonemap_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-tonemap-params"),
-            // 288 字节：8 个标量 + 视图投影 + 逆视图投影 + 相机位置 + 光照方向 + 雾 + 景深 + 天空 + 水面反射 + 云层。
-            size: 288,
+            // 400 字节：8 个标量 + 视图投影 + 逆视图投影 + 世界→局部 + 相机位置 + 光照方向 + 雾 + 景深
+            // + 天空 + 水面反射 + 云层 + 剖面裁剪平面/世界→局部/地形范围（P3-R166）
+            // + 平面反射开关/强度（P3-R170）。
+            size: TONEMAP_UNIFORM_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // 没有剖面地形时绑定这张 1×1 占位高度图；着色器靠 `section_terrain.w` 关闭分支，
+        // 不会真读它，但绑定布局要求每个槽位都有资源。
+        let section_height_white = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-tonemap-height-white"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &section_height_white,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0u8, 0, 0, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        let section_height_white =
+            section_height_white.create_view(&wgpu::TextureViewDescriptor::default());
         let ssao_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-ssao-bind-group-layout"),
@@ -1754,7 +2027,7 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(144),
+                            min_binding_size: wgpu::BufferSize::new(176),
                         },
                         count: None,
                     },
@@ -1778,7 +2051,7 @@ impl Renderer {
         );
         let ssr_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-ssr-params"),
-            size: 144,
+            size: 176,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2057,6 +2330,7 @@ impl Renderer {
             gpu_particle_wind_gust_hz: 0.0,
             gpu_particle_wind_sources: [[0.0; 7]; 4],
             gpu_particle_time: 0.0,
+            gpu_particle_grid: None,
             cloud_coverage: 0.5,
             cloud_speed: 1.0,
             cloud_base: 100.0,
@@ -2074,7 +2348,7 @@ impl Renderer {
             gpu_particle_draw_layout,
             gpu_particle_depth_layout,
             gpu_particle_pipeline_layout,
-            gpu_particle_pipeline: None,
+            gpu_particle_pipelines: Vec::new(),
             font_atlas_uploaded_version: u64::MAX,
             font_atlas_uploaded_hash: 0,
             custom_fonts: HashMap::new(),
@@ -2087,6 +2361,14 @@ impl Renderer {
             material_arena_used: 0,
             instance_arena,
             instance_arena_used: 0,
+            gpu_motion_batches: false,
+            gpu_motion_cull_distance: 0.0,
+            gpu_motion_frustum_cull: false,
+            gpu_motion_thin: None,
+            gpu_motion_thin_far: None,
+            bake_frustum: None,
+            camera_world_position: Vec3::ZERO,
+            staged_motion: Vec::new(),
             material_bind_cache: Vec::new(),
             material_arena_epoch: 0,
             instance_arena_epoch: 0,
@@ -2110,9 +2392,37 @@ impl Renderer {
             albedo_sampler,
             white_albedo_view,
             cull_enabled,
+            frame_cull_candidates: 0,
+            frame_cull_frustum: 0,
+            frame_cull_distance: 0,
+            skip_mesh_filter: None,
+            frame_skip_mesh: 0,
+            frame_gpu_motion_culled: 0,
+            frame_gpu_motion_culled_instances: 0,
+            depth_sort_enabled: true,
+            planar_cull_enabled: true,
+            max_draw_distance: 0.0,
+            max_draw_distance_filter: None,
+            shadow_caster_skip: None,
+            point_shadow_caster_skip: None,
+            shadow_caster_max_distance: 0.0,
+            water_refraction_gain: 0.0,
+            submerged_view_gain: 0.0,
+            water_refract_steps: 0,
+            clip_cap_depth: 0.0,
+            clip_cap_both_sides: false,
+            point_face_cull_enabled: true,
+            planar_reflection_divisor: 2,
+            water_cheap_override: false,
+            terrain_cheap_override: false,
+            shadow_resolution,
+            shadow_cascade_limit,
+            point_shadow_resolution,
+            point_shadow_light_budget: super::POINT_SHADOW_LIGHTS as u32,
             instancing_enabled,
             frame_count: 0,
             clock: web_time::Instant::now(),
+            clock_frozen_secs: None,
             _material_bind_group_layout: material_bind_group_layout,
             readback_slots: Vec::new(),
             readback_submitted: 0,
@@ -2168,6 +2478,8 @@ impl Renderer {
             hdr_world_sprite_opaque_pipeline,
             tonemap_pipeline,
             tonemap_params,
+            section_height_white,
+            section_fields: std::collections::HashMap::new(),
             ssao_pipeline,
             ssao_bind_group_layout,
             ssao_params,
@@ -2189,7 +2501,14 @@ impl Renderer {
             ssr_texture: ssr_blur_white,
             ssr_history_texture: ssr_history_white,
             ssr_prev_view_projection: None,
+            tonemap_prev_view_projection: None,
             ssr_size: (1, 1),
+            planar_reflection_texture,
+            planar_reflection_view,
+            planar_reflection_depth,
+            planar_reflection_size: (1, 1),
+            planar_camera_buffer,
+            planar_camera_bind_group,
         })
     }
 }
@@ -2259,12 +2578,18 @@ impl Renderer {
     /// 决定的，提前全编译（PBR 组合数会乘法增长）会越过 250ms 预算。这里每个组合只建一次，
     /// 之后和预热变体一样命中缓存。Legacy 着色忽略 alpha/双面/IBL（回滚档逐字节不变），
     /// 因此不补编译。
+    ///
+    /// `cutaway_both_sides`（P3-R211）：本帧真有会话裁剪平面、且封口档开了「吃到单面网格」
+    /// 时置真，于是主通道的选键把双面强制为真。必须和 `passes.rs` 里主网格通道的选键用
+    /// 同一个表达式，否则运行期会撞上「变体未在构造期预编译」的 panic。
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn ensure_frame_pipelines(
         &mut self,
         draws: &[FrameDraw],
         shading: Shading,
         target: ColorTarget,
         ibl: IblMode,
+        cutaway_both_sides: bool,
     ) {
         if shading != Shading::Pbr {
             return;
@@ -2278,16 +2603,36 @@ impl Renderer {
         let mut shadow_keys = Vec::new();
         for draw in draws {
             let skin = SkinMode::from(draw.material.skinned);
+            // P3-R211：双面强制只影响主网格通道的选键；阴影通道仍按材质自身的双面档，
+            // 否则剖面放回来的背面会进阴影图，把 P3-R54 起的阴影几何改掉。
+            let double_sided = draw.material.double_sided || cutaway_both_sides;
             let mesh_key = ShaderVariantKey::mesh_with_alpha(
                 shading,
                 skin,
                 target,
                 draw.material.alpha_mode,
-                draw.material.double_sided,
+                double_sided,
             )
             .with_ibl(ibl);
             if !material_keys.contains(&mesh_key) {
                 material_keys.push(mesh_key);
+            }
+            // P3-R170：平面反射 pass 用**双面**变体。镜像是保长反射（det = -1），
+            // 同一个三角形在镜像相机下的屏幕绕序与主通道相反，用单面管线会被整片剔除
+            // （像素门实测：单面 0 像素覆盖、双面 244/310）。水面上方的反射内容正反两面
+            // 都要进图，因此按同样的 alpha/skin/IBL 档额外预热一份双面变体。
+            if draw.material.alpha_mode != MaterialAlphaMode::Blend {
+                let reflector_key = ShaderVariantKey::mesh_with_alpha(
+                    shading,
+                    skin,
+                    target,
+                    draw.material.alpha_mode,
+                    true,
+                )
+                .with_ibl(ibl);
+                if !material_keys.contains(&reflector_key) {
+                    material_keys.push(reflector_key);
+                }
             }
             if draw.material.alpha_mode != MaterialAlphaMode::Blend {
                 let shadow_key = ShaderVariantKey::shadow_with_alpha(

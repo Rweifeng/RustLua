@@ -97,7 +97,7 @@ eframe = { version = "0.33", default-features = false, features = ["wgpu", "glow
 # `serde` feature（阶段 2）：DockState 本身带 serde derive，布局树直接落 layout.json；
 # 代价是同时打开 egui/serde。
 egui_dock = { version = "=0.18.0", features = ["serde"] }
-gltf = { version = "1.4", features = ["import", "KHR_materials_emissive_strength"] }
+gltf = { version = "1.4", features = ["import", "KHR_materials_emissive_strength", "extensions"] }
 bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-appender = "0.2"

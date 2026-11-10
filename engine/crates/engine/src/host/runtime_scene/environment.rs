@@ -200,6 +200,7 @@ pub fn apply_to_renderer(
         dof_range: 30.0,
         dof_strength: 1.0,
         point_shadows: true,
+        motion_blur: 0.0,
     };
     renderer.set_render_settings(settings);
     let mut fallback = None;

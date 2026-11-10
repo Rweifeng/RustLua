@@ -362,6 +362,18 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
     // WP4：世界空间文字运行期挂载。与 `animation.attach` 同理——`entity.spawn` 只插
     // Transform，运行期创建的实体（伤害数字、名牌）否则无法带世界文字。
 
+    // docs/54 §4.2：可见层遮罩。**视图侧**的遮罩由宿主声明（`RenderView::visibility`），
+    // Lua 只读写实体侧，因此"脚本把东西藏起来"与"视图决定看哪些层"不会变成两件事。
+    Ok(())
+}
+
+/// M81：3D 包的 `animation3d` 表。领域 crate 不带 feature，由组合根 `register_all`
+/// 在 `3d` 开启时才调用（2D 构建的 Lua 面没有这张表）。
+pub fn install_3d(
+    lua: &Lua,
+    state: &Handle<AnimationState>,
+    world: &Handle<World>,
+) -> LuaResult<()> {
     let animation3d = lua.create_table()?;
     let s = Bindings::new(world, state);
     animation3d.set(
@@ -476,9 +488,6 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
         })?,
     )?;
     lua.globals().set("animation3d", animation3d)?;
-
-    // docs/54 §4.2：可见层遮罩。**视图侧**的遮罩由宿主声明（`RenderView::visibility`），
-    // Lua 只读写实体侧，因此"脚本把东西藏起来"与"视图决定看哪些层"不会变成两件事。
     Ok(())
 }
 
@@ -494,6 +503,8 @@ mod tests {
         let state = AnimationState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &state, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world).unwrap();
         let mut total = 0;
         for table in ["animation", "animation3d"] {
             let table: mlua::Table = lua.globals().get(table).unwrap();
@@ -509,6 +520,8 @@ mod tests {
         let state = AnimationState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &state, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world).unwrap();
         let id = world.with_mut(|world| world.spawn());
         state.with_mut(|state| {
             state.push_events(vec![(
@@ -532,6 +545,8 @@ mod tests {
         let state = AnimationState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &state, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world).unwrap();
         let id = world.with_mut(|world| world.spawn());
         state.with_mut(|state| {
             state.push_events(vec![(
@@ -572,6 +587,8 @@ mod tests {
         let state = AnimationState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &state, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world).unwrap();
         let dead = EntityId::from_raw(999, 1).to_lua_i64();
         for call in [
             format!("return animation.get({dead})"),
@@ -596,6 +613,8 @@ mod tests {
         let state = AnimationState::handle();
         let world = Handle::new(World::new(), "world");
         install(&lua, &state, &world).unwrap();
+        // 领域 crate 无 feature：测试永远装全量面（门控只发生在组合根调用点）。
+        install_3d(&lua, &state, &world).unwrap();
         let _guard = state.borrow_mut().unwrap();
         let message = lua
             .load("return animation.events()")
