@@ -1,6 +1,6 @@
 # Lua 模块 `mesh`
 
-> 运行期 API 面基线里本模块有 9 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 14 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -29,6 +29,35 @@
 - 示例：`local n = mesh.batch_count(id)`
 - 注意：这是**写进去的份数**，不是"这一帧真正画出来的份数"——被视锥剔除掉的实例
   仍然计入。渲染侧读数要看待剔除后的 draw 计数。
+
+## `mesh.batch_lod(id: i64)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:698`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读这个实体上挂的**远距替代网格**：`{mesh=路径, distance=阈值}`；挂了第二台阶时
+再带 `far_mesh` / `far_distance`；没挂时返回 `nil`。
+
+- 参数：`id` 实体。
+- 返回：一张表 `{mesh=String, distance=number, far_mesh=String?, far_distance=number?}`，
+  或 `nil`。
+- 失败：实体不存在/已死亡时。
+- 示例：`local lod = mesh.batch_lod(crowd)`
+- 注意：读回的是**引擎烘焙时看的那一份组件**，不是脚本侧副本；`clear_batch_lod`
+  之后立刻是 `nil`。挂没挂、挂在什么阈值上，脚本不需要自己记。
+
+## `mesh.batch_planar(id: i64)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:802`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读回实例批次的**平面反射排除档**：组件缺席（默认）或 `enabled = true` 时返回
+`true`，被 `mesh.set_batch_planar(id, false)` 排除后返回 `false`。
+
+- 参数：`id` 实体。
+- 返回：`boolean`（进不进水面平面反射 pass）；实体没有实例批次时返回 `nil`。
+- 失败：实体不存在/已死亡时。
+- 示例：`local casts = mesh.batch_planar(crowd)`
+- 注意：读回的是组件本身，不是脚本侧副本；这个开关只影响**水面平面反射 pass**
+  （半分辨率镜像屏幕），主视图与方向光/点光两条阴影链都不看它。
 
 ## `mesh.batch_pose(id: i64, index: i64)`
 
@@ -72,6 +101,19 @@
 - 返回：`true`。
 - 失败：实体不存在/已死亡时。
 - 示例：`mesh.clear_batch(id)`
+
+## `mesh.clear_batch_lod(id: i64)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:683`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+摘掉远距替代网格：下一帧起整批回到同一张网格。批次本身（`mesh.clear_batch`）与普通
+`MeshRenderer` 都不受影响。
+
+- 参数：`id` 实体。
+- 返回：`true`。
+- 失败：实体不存在/已死亡时。
+- 示例：`mesh.clear_batch_lod(crowd)`
+- 注意：没挂替代网格时也是 `true`——这是幂等摘除，不是错误。
 
 ## `mesh.get(id: i64)`
 
@@ -196,6 +238,56 @@ mesh.set_batch(crowd, "assets/models/ant.glb", instances, nil, {
 })
 -- instances 里每项只写 { s = 偏移, align = true, forward = "z", sx=, sy=, sz= }
 ```
+
+## `mesh.set_batch_lod(id: i64, path: String, distance: f32, far_path: Option<String>, far_distance: Option<f32>)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:650`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+给实例批次挂**远距替代网格链**：离相机超过 `distance` 米的实例改画 `path`；再给
+`far_path` / `far_distance` 时，超过更远阈值的实例改画 `far_path`——近/中/远三段。
+
+只在 GPU 位姿档生效（`--gpu-motion` 且批次带运动）：近/中/远各烘焙一次、各一条 draw，
+阈值判定在压缩烘焙的 kernel 里按实例位置算，三段**互斥且穷尽**（三段之和 = 原本的
+存活集，不会多画也不会漏画）。只给第一台阶时退化成两段（与旧行为逐字节一致）；
+关档或批次不带运动时这一档不生效，整批画批次网格。
+
+- 参数：
+  - `id` 实体；`path` 中距替代网格；`distance` 中距阈值（米，必须有限且 > 0）；
+  - `far_path` / `far_distance` 可选第二台阶：必须**成对给出**，`far_distance`
+    有限且严格大于 `distance`。
+- 返回：`true`。
+- 失败：实体不存在/已死亡、实体没有实例批次、`distance` 非有限或 ≤ 0、`path` 为空、
+  `path` 与批次网格相同、只给远路径或只给远阈值、`far_distance ≤ distance`、
+  `far_path` 为空、`far_path` 与中距/批次网格相同（任何一条都等于"两侧画同一张脸"，
+  是静默空档）时报错。
+- 示例：
+  - 两段：`mesh.set_batch_lod(crowd, "assets/models/ant_low.glb", 25.0)`
+  - 三段：`mesh.set_batch_lod(crowd, "assets/models/ant_low.glb", 25.0, "assets/models/ant_lowest.glb", 60.0)`
+- 注意：代价是每批多一次烘焙 dispatch 与一条 draw（三档是两条）；密度档
+  （`--gpu-motion-thin`）仍先于 LOD 判定——被密度档剔掉的实例三段都不画。
+
+## `mesh.set_batch_planar(id: i64, enabled: bool)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:778`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+把实例批次**排除出水面平面反射 pass**：`enabled = false` 后这一批不再参与水面
+镜像屏幕的第二遍绘制；主视图、方向光阴影、点光阴影照旧画它。
+
+- 参数：
+  - `id` 实体（必须已有 `mesh.set_batch` 建的批次）；
+  - `enabled` `false` = 不进反射；`true` = 恢复（等同组件缺席）。
+- 返回：`true`。
+- 失败：实体不存在/已死亡、实体没有实例批次（静默插组件会让下一帧什么都没发生，
+  调用方却以为生效了）。
+- 示例：
+  ```lua
+  -- 6 万只的 crowd 在反射图里只占几个像素，却要为整批几何再跑一遍顶点与像素
+  mesh.set_batch_planar(crowd, false)
+  ```
+- 注意：反射图是半分辨率的镜像屏幕，远处小实例在里面的可见面积很小；这是"视觉上
+  换帧时间"的显式取舍，不是无损优化。开关按**实体**生效：静态合批组里只有全组都
+  被排除时整组才跳过。计数落在帧剖面的 `cull.planar_skipped`（本帧被排除档挡掉的
+  draw 数），与镜像视锥剔除（`RenderFrameMetrics::planar_draws_culled`）分开记。
 
 ## `mesh.set_batch_range(id: i64, start: i64, instances: mlua::Value)`
 

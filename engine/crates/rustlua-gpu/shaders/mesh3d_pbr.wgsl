@@ -977,6 +977,10 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     // 缺省 false，分支整帧相干（uniform 驱动），对非水面材质零影响。
     let water_cheap = material.animation.x > 0.5 && material.animation.x < 1.5
         && material.animation.z > 0.5;
+    // P3-R277：普通网格的廉价着色档（宿主 `--crowd-cheap`，A/B 用）。
+    // 砍掉级联阴影、点光循环、SH9 漫反射与镜面 IBL，保留直射阳光与常数环境光。
+    // 缺省 false（z 槽只在档开且 animated=0 时才置 1），水面/地形与旧路径逐字节不变。
+    let mesh_cheap = material.animation.x < 0.5 && material.animation.z > 0.5;
     let l = safe_normalize(-light.direction.xyz);
     let v = safe_normalize(camera.position.xyz - world_position);
     let h = safe_normalize(l + v);
@@ -1043,7 +1047,7 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     // 点光源：同一 BRDF，衰减用"range 内平方反 × 平滑截断"
     // 前八盏点光可乘六面阴影可见度；其余点光只做直接光
     var point_direct = vec3<f32>(0.0);
-    let point_count = select(min(u32(light.params.x), 16u), 0u, water_cheap);
+    let point_count = select(min(u32(light.params.x), 16u), 0u, water_cheap || mesh_cheap);
     for (var i = 0u; i < point_count; i = i + 1u) {
         let point = light.points[i];
         let to_light = point.position_range.xyz - world_position;
@@ -1095,7 +1099,7 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     }
 
     var shadow_visibility = 1.0;
-    if (!water_cheap) {
+    if (!water_cheap && !mesh_cheap) {
         shadow_visibility = shadow_visibility_four_cascades(
             shadow_position,
             shadow_position_mid,
@@ -1114,8 +1118,11 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
 //#if IBL_DIFFUSE
     // P3-R03-2：SH9 漫反射。系数含 cosine 卷积，直接乘反照率；金属没有漫反射
     var indirect = vec3<f32>(0.0);
-    if (!water_cheap) {
+    if (!water_cheap && !mesh_cheap) {
         indirect = base_rgb * sh_irradiance(rotate_y(n, -environment.params.y)) * environment.params.x * (1.0 - metallic) * occlusion;
+    } else if (mesh_cheap) {
+        // P3-R277：廉价档不采 SH9，退回 R02-1 的常数环境光（与 IBL 关档同式）
+        indirect = base_rgb * AMBIENT_FACTOR * radiance * occlusion;
     }
 //#else
     //#if IBL_SPECULAR
@@ -1131,16 +1138,19 @@ fn point_shadow_visibility(world_position: vec3<f32>, slot: u32) -> f32 {
     // mip  roughness 线性映射；遮蔽只作用在间接项
     // P3-R162：清漆同样反射环境（独立粗糙度瓣），基层镜面按清漆菲涅耳衰减。
     // factor=0 ⇒ 衰减 1、清漆瓣 0，表达式逐字节等价于旧路径。
-    let cc_factor = material.clearcoat.x;
-    let cc_env_attenuation = 1.0 - fresnel_schlick(n_dot_v, vec3<f32>(DIELECTRIC_F0)).r * cc_factor;
-    var spec_ibl = sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * cc_env_attenuation;
-    if (cc_factor > 0.0) {
-        let cc_roughness = clamp(material.clearcoat.y, MIN_ROUGHNESS, 1.0);
-        spec_ibl = spec_ibl + sample_environment_specular(n, v, cc_roughness)
-            * env_brdf_approx(vec3<f32>(DIELECTRIC_F0), cc_roughness, n_dot_v)
-            * cc_factor;
+    // P3-R277：廉价档跳过预过滤镜面 IBL（含清漆环境瓣与两次 env 采样）
+    if (!mesh_cheap) {
+        let cc_factor = material.clearcoat.x;
+        let cc_env_attenuation = 1.0 - fresnel_schlick(n_dot_v, vec3<f32>(DIELECTRIC_F0)).r * cc_factor;
+        var spec_ibl = sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * cc_env_attenuation;
+        if (cc_factor > 0.0) {
+            let cc_roughness = clamp(material.clearcoat.y, MIN_ROUGHNESS, 1.0);
+            spec_ibl = spec_ibl + sample_environment_specular(n, v, cc_roughness)
+                * env_brdf_approx(vec3<f32>(DIELECTRIC_F0), cc_roughness, n_dot_v)
+                * cc_factor;
+        }
+        indirect = indirect + spec_ibl * environment.params.x * occlusion;
     }
-    indirect = indirect + spec_ibl * environment.params.x * occlusion;
 //#endif
     let emissive = material.emissive.rgb * textureSample(emissive_map, albedo_sampler, uv).rgb;
     // 云影统一在最终颜色上执行（P3-R49）：地形、水面、树冠、蚁巢、蚂蚁都吃同一层，

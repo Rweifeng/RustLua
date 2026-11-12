@@ -19,7 +19,6 @@ use rustlua_infra::par::Parallelism;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_render::font::FontAtlas;
 use rustlua_render::frame::{HintedAtlasMap, OverlayVertex, SceneDraw, VectorFontHandle};
-use rustlua_render::instance_batch::InstanceBatch3D;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite_batch::SpriteBatch;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -111,12 +110,20 @@ impl RuntimeScene {
         self.gpu_motion_batches
     }
 
-    /// P3-R246：取走本帧提取登记的运动批次 `(实体, 批次, 场景时刻)`；**取走即清空**。
+    /// P3-R246：取走本帧提取登记的运动批次 `(实体, 批次, 场景时刻, 可选 LOD)`；**取走即清空**。
     ///
     /// 与 `take_script_micros` 同语义：没调用 `scene_3d` 的帧自然得到空表，不会把上一帧
     /// 的批次重复推给渲染器。
-    pub fn take_staged_motion_batches(&self) -> Vec<(u64, InstanceBatch3D, f32)> {
+    pub fn take_staged_motion_batches(&self) -> Vec<super::StagedMotionBatch> {
         std::mem::take(&mut *self.staged_motion.borrow_mut())
+    }
+
+    /// P3-R275：取走本帧被平面反射排除档挡掉的实体 id；**取走即清空**。
+    ///
+    /// 宿主在 `render` 前把它交给渲染器（`Renderer::set_planar_skip_entities`）。与
+    /// [`Self::take_staged_motion_batches`] 同语义：没提取的帧得到空表，不留上一帧残值。
+    pub fn take_planar_skip_entities(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.planar_skip_entities.borrow_mut())
     }
 
     /// docs/54 §4.4：当前登记在身份表里的运行时资源（按句柄排序）。
@@ -802,6 +809,7 @@ impl RuntimeScene {
             view_filtered: std::cell::Cell::new(0),
             gpu_motion_batches: false,
             staged_motion: std::cell::RefCell::new(Vec::new()),
+            planar_skip_entities: std::cell::RefCell::new(Vec::new()),
             tilemap_culling: true,
             sprite_culling: true,
             camera,

@@ -3,6 +3,9 @@
 //!
 //! 同一类型、同 crate 的另一个固有 `impl` 块；可见性口径见 `gpu_mesh.rs` 的文件头。
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use rustlua_math::math3d::Mat4;
 
 use super::batch_motion_gpu::BATCH_MOTION_MATRIX_BYTES;
@@ -244,7 +247,10 @@ impl Renderer {
                     0.0
                 },
                 // P3-R197：z = 1 表示水面廉价光照档（仅 animated=1 的水面读取）。
-                if water_cheap && animated > 0.5 {
+                // P3-R277：普通网格（animated=0）复用同一槽表示廉价着色档。
+                if animated < 0.5 {
+                    if self.crowd_cheap_override { 1.0 } else { 0.0 }
+                } else if water_cheap && animated > 0.5 {
                     1.0
                 } else {
                     0.0
@@ -421,7 +427,34 @@ impl Renderer {
     /// P3-R245：按 `FrameDraw` 建绑定组——带 `gpu_motion` 的 draw 先让 compute 把位姿写进
     /// 实例 arena（PBR 时连同法线矩阵），再按同一份切片建绑定组；烘焙失败/无 compute 能力
     /// 时回退到 CPU `models`（画面与开档前一致，不静默丢 draw）。
+    /// P3-R268：给「逐 draw 建材质绑定组」整段循环计时。这段在任何 pass 录制之前跑，
+    /// `render_record_us` 减掉两条阴影子桶后剩下的固定面主要就在这里；不拆出来的话
+    /// 「record 贵」只能归到 pass 上，而真正贵的可能是烘焙与上传（R268 实测关掉整条
+    /// planar + 后处理 + 点光阴影只减 record 0.07–0.32 ms，pass 侧不是大头）。
+    ///
+    /// `index == 0` 时复位：循环恒从 0 起，于是不必在 `render_passes` 里另加复位点。
+    /// 读数由宿主 `take_*` 取走（取完归零），没有 3D draw 的帧报 0 而不是上一帧残值。
     pub(super) fn material_bind_group_for_draw(
+        &mut self,
+        index: usize,
+        draw: &FrameDraw,
+        normals: bool,
+    ) -> (
+        wgpu::BindGroup,
+        Option<NormalMatrixSlice>,
+        Option<wgpu::Buffer>,
+    ) {
+        if index == 0 {
+            self.frame_bind_build_us = 0;
+            self.frame_bind_bake_us = 0;
+        }
+        let started = Instant::now();
+        let built = self.material_bind_group_for_draw_inner(index, draw, normals);
+        self.frame_bind_build_us += started.elapsed().as_micros() as u64;
+        built
+    }
+
+    fn material_bind_group_for_draw_inner(
         &mut self,
         index: usize,
         draw: &FrameDraw,
@@ -472,10 +505,17 @@ impl Renderer {
             let normal_slices = normal_slice
                 .as_ref()
                 .map(|slice| (&slice.buffer, slice.offset));
+            // P3-R273：网格 LOD 链——2~3 条 draw 各烘一次，球心与剔除档共用当帧相机
+            // 位置。单开 LOD 也必须走压缩通道：每侧只画自己那一侧的实例，存活数得由
+            // indirect 参数带出去。P3-R274：`(第一台阶, 第二台阶或 0, 侧)`。
+            let lod = draw.gpu_motion_lod.map(|(distance, far_distance, side)| {
+                (self.camera_world_position, distance, far_distance, side)
+            });
             // P3-R251：剔除档开时走**压缩**烘焙——存活实例写前缀、indirect 参数带真实
             // instance_count；零矩阵档的顶点底价不再随批次全量支付。两档都关走原路径。
-            let baked = match (cull, frustum, thin, thin_far) {
-                (None, None, None, None) => self
+            let bake_started = Instant::now();
+            let baked = match (cull, frustum, thin, thin_far, lod) {
+                (None, None, None, None, None) => self
                     .bake_batch_motion_with_normals_and_cull(
                         &motion.batch,
                         motion.time,
@@ -486,23 +526,48 @@ impl Renderer {
                         None,
                     )
                     .map(|written| (u64::from(written), None)),
-                (cull, frustum, thin, thin_far) => self
-                    .bake_batch_motion_compact(
-                        &motion.batch,
-                        motion.time,
-                        &instance.0,
-                        instance.1,
-                        normal_slices,
-                        motion.model_scale,
-                        cull,
-                        draw.geometry.index_count,
-                        frustum,
-                        draw.gpu_motion_local_radius,
-                        thin,
-                        thin_far,
-                    )
-                    .map(|args| (count, args)),
+                (cull, frustum, thin, thin_far, lod) => {
+                    if self.bake_cache_enabled {
+                        self.bake_batch_motion_compact_cached_with_lod(
+                            &motion.batch,
+                            motion.time,
+                            &instance.0,
+                            instance.1,
+                            normal_slices,
+                            motion.model_scale,
+                            cull,
+                            draw.geometry.index_count,
+                            frustum,
+                            draw.gpu_motion_local_radius,
+                            thin,
+                            thin_far,
+                            lod,
+                            // P3-R284：目标与法线槽都出自上面那次 `reserve_frame_storage`
+                            // ⇒ 就是本帧 arena，绑定组可以按输入集身份 + arena 代数缓存。
+                            true,
+                        )
+                        .map(|args| (count, args))
+                    } else {
+                        self.bake_batch_motion_compact_with_lod(
+                            &motion.batch,
+                            motion.time,
+                            &instance.0,
+                            instance.1,
+                            normal_slices,
+                            motion.model_scale,
+                            cull,
+                            draw.geometry.index_count,
+                            frustum,
+                            draw.gpu_motion_local_radius,
+                            thin,
+                            thin_far,
+                            lod,
+                        )
+                        .map(|args| (count, args))
+                    }
+                }
             };
+            self.frame_bind_bake_us += bake_started.elapsed().as_micros() as u64;
             match baked {
                 Ok((written, args)) if written == count => {
                     let (bind, normal_slice) = self.material_bind_group_with_slices(
@@ -565,6 +630,32 @@ impl Renderer {
     /// 只打"全命中"的话，真机上一帧都没命中的场景在日志里**和缓存不存在时长得一模一样**——
     /// 那等于没有观测。这一行把 `draws/created/reused` 三个数摆出来，命中率是几一眼可见。
     pub(super) fn note_material_bind_frame(&mut self, draws: u64) {
+        // P3-R270：绑定组循环到此结束——把攒下的烘焙 compute 封好（R289 起随图形一次提交，
+        // 队列顺序不变），再清掉已经没有活引用的批次缓存。封好必须在下面那个「只打一次
+        // 日志」的提前返回之前，否则第 5 帧之后就再也不封了。
+        self.seal_pending_compute();
+        // P3-R273：LOD 链让**同一条批次**占两份输入集（近/远各一份参数与参数缓冲），
+        // 单条 `strong_count > 1` 会把这一对互相撑着、永远清不掉。按"同一指针还有几个
+        // 缓存持有者"扣掉自持计数：活引用只剩缓存本身时才回收。
+        let mut holders: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for inputs in self.bake_inputs.values() {
+            *holders
+                .entry(Arc::as_ptr(&inputs.batch) as usize)
+                .or_default() += 1;
+        }
+        let mut retired_binds = Vec::new();
+        self.bake_inputs.retain(|_, inputs| {
+            let ptr = Arc::as_ptr(&inputs.batch) as usize;
+            let alive = Arc::strong_count(&inputs.batch) > holders.get(&ptr).copied().unwrap_or(1);
+            // P3-R284：输入集回收时把它那份 compute 绑定组也清掉，否则缓存随批次数无限长。
+            if !alive && inputs.bind_serial != 0 {
+                retired_binds.push(inputs.bind_serial);
+            }
+            alive
+        });
+        for serial in retired_binds {
+            self.compute_state.retire_bind_group(serial);
+        }
         self.material_bind_frames += 1;
         let warm = self.material_bind_created == 0;
         if self.material_bind_reported || (self.material_bind_frames < 5 && !warm) {
@@ -579,6 +670,17 @@ impl Renderer {
             warm,
             "[render] material bind cache stats"
         );
+    }
+
+    /// P3-R268：取走本帧「逐 draw 建绑定组」循环的 CPU µs（取完归零）。
+    pub fn take_frame_bind_build_us(&mut self) -> u64 {
+        std::mem::take(&mut self.frame_bind_build_us)
+    }
+
+    /// P3-R268：取走本帧该循环里 GPU 位姿烘焙（compute 派发）那一段的 CPU µs（取完归零）。
+    /// 恒 `<= take_frame_bind_build_us()`；两者之差 = 绑定组创建 + arena 上传 + CPU 兜底。
+    pub fn take_frame_bind_bake_us(&mut self) -> u64 {
+        std::mem::take(&mut self.frame_bind_bake_us)
     }
 }
 

@@ -268,6 +268,36 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             })?,
         )?;
     }
+    #[cfg(feature = "3d")]
+    {
+        let caster_distance_state = state.clone();
+        table.set(
+            "set_shadow_caster_distance",
+            lua.create_function(move |_, meters: Value| {
+                // P3-R283：距离预算是**整数米档位**（0 = 关）。与 R242 的步进数同形：
+                // 非数、非有限、带小数、越界一律拒绝，不静默取整——悄悄改档会让
+                // 「哪些投射者丢阴影」与脚本写的数对不上。0 是合法值且必须留痕
+                // Some(0)，宿主靠它把启动期的 --shadow-caster-distance 覆盖掉。
+                let value = match meters {
+                    Value::Integer(number) => number as f64,
+                    Value::Number(number) => number,
+                    _ => {
+                        return Ok((false, "shadow caster distance must be a number".to_owned()));
+                    }
+                };
+                if !value.is_finite() || value.fract() != 0.0 || !(0.0..=1000.0).contains(&value) {
+                    return Ok((
+                        false,
+                        "shadow caster distance must be an integer in 0..=1000".to_owned(),
+                    ));
+                }
+                caster_distance_state
+                    .borrow_mut()
+                    .render_shadow_caster_distance = Some(value as u32);
+                Ok((true, String::new()))
+            })?,
+        )?;
+    }
     let stats_state = state.clone();
     table.set(
         "stats",

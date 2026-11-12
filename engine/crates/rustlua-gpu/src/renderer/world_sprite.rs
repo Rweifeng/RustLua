@@ -276,6 +276,9 @@ impl Renderer {
         // `self` 只被 `&self` 读取（网格缓存/缩放查询），因此借用键不会和 `&mut self` 冲突。
         let mut groups: HashMap<(&str, usize, Option<&str>), StaticGroup> = HashMap::new();
         let mut draws: Vec<FrameDraw> = Vec::new();
+        // P3-R287：保守包围盒的批次种子按实体缓存（同一批的多个 LOD 侧共用一份）。
+        // 键取实体而不是 Arc 指针：`staged_motion` 的认领本来就是按实体 find 的。
+        let mut bounds_seeds: HashMap<u64, (f32, Aabb3)> = HashMap::new();
         // P3-R02-4：半透明单独排队，最后按到相机的距离**从远到近**画；不参与实例合批
         // （合批会打乱逐实例的透明顺序）。
         let mut blend_draws: Vec<FrameDraw> = Vec::new();
@@ -298,6 +301,9 @@ impl Renderer {
         let shadow_caster_skip = self.shadow_caster_skip.clone();
         // P3-R265：点光链专用排除档（同一个借用原因）。
         let point_shadow_caster_skip = self.point_shadow_caster_skip.clone();
+        // P3-R275：平面反射排除表同样先拷出来（`cached_mesh` 要 `&mut self`）。几十个 id 量级，
+        // 与上面几条 `Option<String>` 克隆同价；空表 = 每条 draw 都进反射。
+        let planar_skip_entities = self.planar_skip_entities.clone();
         // P3-R252：整批跳过的球心/半径与烘焙侧同一份口径（`update_3d_uniforms` 每帧先写）。
         // 借用原因同 `max_draw_distance`：`cached_mesh` 要 `&mut self`。
         let batch_cull = (self.gpu_motion_cull_distance > 0.0)
@@ -316,6 +322,8 @@ impl Renderer {
             }
         }
         for drawable in &scene.drawables {
+            // P3-R275：这条 drawable 是否进平面反射 pass（排除表按实体身份查）。
+            let casts_planar = !planar_skip_entities.contains(&drawable.entity.0);
             // P3-R184：归因开关在缓存查询与剔除**之前**跳过 ⇒ 不进候选分母，
             // 两档 A/B 的剔除率口径不受开关本身污染。
             if let Some(filter) = &self.skip_mesh_filter
@@ -354,16 +362,36 @@ impl Renderer {
                 // **放弃逐实例剔除与合批**（R244 模块文档：GPU 批必须单独一条 draw，实例数
                 // 口径才对得上）；包围盒仍按同一批 CPU 矩阵并集算，阴影 range 剔除的结果与
                 // CPU 档一致。`models` 留作烘焙失败时的回退。
-                if let Some((_, batch, time)) = staged_motion
+                if let Some((entity, batch, time, lod)) = staged_motion
                     .iter()
-                    .find(|(entity, _, _)| *entity == drawable.entity.0)
+                    .find(|(entity, ..)| *entity == drawable.entity.0)
                     && !batch.instances.is_empty()
                 {
+                    // P3-R273：LOD 各档靠网格路径认领自己的那一侧（宿主提取时用同一份
+                    // 决定发出的 2~3 条 draw，路径与 LOD 组件一一对应）。
+                    // P3-R274：近/中/远三档；中档= `lod.mesh`、远档= `lod.far_mesh`。
+                    // 认不出路径时按近档处理（与"没有 LOD 时全画"等价，不会重复画）。
+                    let lod_side = lod.as_ref().map(|lod| {
+                        let far_distance = lod.far_distance.unwrap_or(0.0);
+                        let side = if lod.mesh == drawable.mesh_path {
+                            2
+                        } else if lod.far_mesh.as_deref() == Some(drawable.mesh_path.as_str()) {
+                            3
+                        } else {
+                            1
+                        };
+                        (lod.distance, far_distance, side)
+                    });
                     cull_candidates += batch.instances.len() as u64;
                     // P3-R246：宿主跳过 CPU 矩阵时 `drawable.instances` 为空——实例数照样按
                     // 批次算，包围盒用"路径点 AABB 外扩最大实例半径"（保守，不误剔）。
                     let bounds = if drawable.instances.is_empty() {
-                        conservative_batch_bounds(batch, primitive.bounds.1, scale)
+                        // P3-R287：种子每批只算一次；外扩仍逐 draw（半径含网格局部
+                        // 半径与模型缩放，LOD 两侧不同）。结果与重算逐位相同。
+                        let seed = *bounds_seeds
+                            .entry(*entity)
+                            .or_insert_with(|| batch_bounds_seed(batch));
+                        expanded_batch_bounds(seed, primitive.bounds.1, scale)
                     } else {
                         let mut bounds = Aabb3 {
                             min: Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
@@ -422,8 +450,10 @@ impl Renderer {
                         }),
                         // P3-R255：局部包围球从原点量起（球心偏移 + 半径），逐实例再乘缩放。
                         gpu_motion_local_radius: primitive.bounds.0.length() + primitive.bounds.1,
+                        gpu_motion_lod: lod_side,
                         cast_shadow: !drawable_skips_shadow,
                         cast_point_shadow: !drawable_skips_shadow && !drawable_skips_point_shadow,
+                        cast_planar: casts_planar,
                     };
                     if material.alpha_mode == MaterialAlphaMode::Blend {
                         blend_draws.push(draw);
@@ -516,7 +546,10 @@ impl Renderer {
                                     && !point_shadow_caster_skip
                                         .as_deref()
                                         .is_some_and(|filter| drawable.mesh_path.contains(filter)),
+                                cast_planar: casts_planar,
                             });
+                        // 组是跨实体合并的：只有组内**每个**实体都被排除，整组才不进反射。
+                        group.cast_planar = group.cast_planar && casts_planar;
                         group.models.push(model);
                         group.bounds.min = Vec3::new(
                             group.bounds.min.x.min(bounds.min.x),
@@ -538,9 +571,11 @@ impl Renderer {
                             bounds,
                             gpu_motion: None,
                             gpu_motion_local_radius: 0.0,
+                            gpu_motion_lod: None,
                             cast_shadow: !drawable_skips_shadow,
                             cast_point_shadow: !drawable_skips_shadow
                                 && !drawable_skips_point_shadow,
+                            cast_planar: casts_planar,
                         });
                     } else {
                         draws.push(FrameDraw {
@@ -552,9 +587,11 @@ impl Renderer {
                             bounds,
                             gpu_motion: None,
                             gpu_motion_local_radius: 0.0,
+                            gpu_motion_lod: None,
                             cast_shadow: !drawable_skips_shadow,
                             cast_point_shadow: !drawable_skips_shadow
                                 && !drawable_skips_point_shadow,
+                            cast_planar: casts_planar,
                         });
                     }
                 }
@@ -582,8 +619,10 @@ impl Renderer {
                 bounds: group.bounds,
                 gpu_motion: None,
                 gpu_motion_local_radius: 0.0,
+                gpu_motion_lod: None,
                 cast_shadow: group.cast_shadow,
                 cast_point_shadow: group.cast_point_shadow,
+                cast_planar: group.cast_planar,
             });
         }
         // P3-R185：不透明前到后排序——近处网格先写深度，远处被挡像素（被草/蚁压住的
@@ -724,7 +763,15 @@ fn draw_center(bounds: Aabb3) -> Vec3 {
 /// 运动实例的世界中心必落在路径上，姿态怎么转也逃不出"局部包围球 × 缩放"；因此
 /// 路径节点 AABB 外扩 `局部半径 × 最大实例缩放 × 模型缩放` 就是上界。静态批次按实例
 /// 位置取点。路径非法/实例表为空时退回一个巨大的盒（宁可多画，不可误剔阴影）。
-fn conservative_batch_bounds(
+///
+/// P3-R287：只作逐位对账的**独立参考实现**——保留拆分前「逐节点外扩再取 min/max」的
+/// 原样算法，**刻意不调用** `batch_bounds_seed` / `expanded_batch_bounds`。
+///
+/// 为什么必须独立：第一版把它写成 `expanded_batch_bounds(batch_bounds_seed(..), ..)`，
+/// 于是反面对照（把半径里的 `max_scale` 抹成 1）两侧一起变、门照样绿——期望值复用了
+/// 被测层，是个空洞门。生产路径在 `frame_3d_draws` 里按实体缓存种子。
+#[cfg(test)]
+pub(super) fn conservative_batch_bounds(
     batch: &InstanceBatch3D,
     local_radius: f32,
     model_scale: f32,
@@ -770,6 +817,89 @@ fn conservative_batch_bounds(
             bounds.max.z.max(node[2] + radius),
         );
     }
+    if !bounds.min.x.is_finite() {
+        return Aabb3 {
+            min: Vec3::new(-1.0e6, -1.0e6, -1.0e6),
+            max: Vec3::new(1.0e6, 1.0e6, 1.0e6),
+        };
+    }
+    bounds
+}
+
+/// P3-R287：保守包围盒里**只与批次有关**的那部分——最大实例缩放 + 路径节点（静态批次
+/// 取实例位置）的原始 AABB，不含半径外扩。
+///
+/// 为什么单列：这一段要全批扫实例并重新收集一份节点 `Vec`，而同一批次的 2~3 个 LOD 侧
+/// 各是一条 draw ⇒ 60k crowd 下每帧重复 3 遍（R286 实测 `record_prep` 3.08 ms，是
+/// `cpu_record` 8.19 ms 里最大的单段）。种子按实体缓存后每批只算一次。
+pub(super) fn batch_bounds_seed(batch: &InstanceBatch3D) -> (f32, Aabb3) {
+    let mut max_scale = 0.0f32;
+    for instance in &batch.instances {
+        let scale = instance.scale;
+        if scale.iter().all(|value| value.is_finite()) {
+            max_scale = max_scale
+                .max(scale[0].abs())
+                .max(scale[1].abs())
+                .max(scale[2].abs());
+        }
+    }
+    let positions = || {
+        batch
+            .instances
+            .iter()
+            .map(|instance| instance.position)
+            .collect::<Vec<[f32; 3]>>()
+    };
+    let nodes: Vec<[f32; 3]> = match batch.motion.as_ref() {
+        Some(motion) => match motion.arc() {
+            Some(arc) => arc.nodes(&motion.path),
+            None => positions(),
+        },
+        None => positions(),
+    };
+    let mut bounds = Aabb3 {
+        min: Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+        max: Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+    };
+    for node in nodes {
+        bounds.min = Vec3::new(
+            bounds.min.x.min(node[0]),
+            bounds.min.y.min(node[1]),
+            bounds.min.z.min(node[2]),
+        );
+        bounds.max = Vec3::new(
+            bounds.max.x.max(node[0]),
+            bounds.max.y.max(node[1]),
+            bounds.max.z.max(node[2]),
+        );
+    }
+    (max_scale, bounds)
+}
+
+/// P3-R287：把种子外扩成世界包围盒，半径 = `局部半径 × 最大实例缩放 × 模型缩放`。
+///
+/// 与「逐节点外扩再取 min/max」逐位相同：IEEE 对同一常量做减/加是单调的，
+/// `min(node - r) == min(node) - r`（`max` 同理），所以先收盒再外扩不改任何一位。
+/// 空节点表或非法半径仍退回巨盒（判据与拆分前同一条 `min.x.is_finite()`）。
+pub(super) fn expanded_batch_bounds(
+    seed: (f32, Aabb3),
+    local_radius: f32,
+    model_scale: f32,
+) -> Aabb3 {
+    let (max_scale, nodes) = seed;
+    let radius = local_radius * max_scale * model_scale;
+    let bounds = Aabb3 {
+        min: Vec3::new(
+            nodes.min.x - radius,
+            nodes.min.y - radius,
+            nodes.min.z - radius,
+        ),
+        max: Vec3::new(
+            nodes.max.x + radius,
+            nodes.max.y + radius,
+            nodes.max.z + radius,
+        ),
+    };
     if !bounds.min.x.is_finite() {
         return Aabb3 {
             min: Vec3::new(-1.0e6, -1.0e6, -1.0e6),

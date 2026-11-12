@@ -34,6 +34,7 @@ local SPARKS = "Sparks"
 
 -- mesh.set 的两条合法路径：`.glb/.gltf` 或内置地面哨兵。
 local TRIANGLE_MESH = "assets/models/m8-test-triangle.glb"
+local SPHERE_MESH = "assets/models/p3-sphere.glb"
 local GROUND_MESH = "__ground_plane__"
 
 -- 透视相机的"归位"姿态：位置、目标与视场角都写全（camera.set 的 target 是必填参数）。
@@ -54,6 +55,19 @@ local patch_count = 0
 local patch_x = nil
 local patch_zero = nil
 local patch_oob = nil
+local lod_mesh = nil
+local lod_distance = nil
+local lod_far_mesh = nil
+local lod_far_distance = nil
+local lod_cleared = nil
+local lod_bad_err = nil
+local lod_same_err = nil
+local lod_far_pair_err = nil
+local lod_far_order_err = nil
+local planar_default = nil
+local planar_off = nil
+local planar_live = nil
+local planar_no_batch_err = nil
 
 --- `entity.find` + 存活校验：缺实体时返回 nil，调用方据此跳过而不是让 API 报错。
 local function live(name)
@@ -353,6 +367,128 @@ local steps = {
             )
             -- 模型前向轴写的是 "+Z 前向" ⇒ 路径沿 +X 走时 yaw = atan2(dx, dz) = π/2。
             t:near(motion_pose.yaw, math.pi * 0.5, 0.01, "yaw follows the tangent (forward = z)")
+        end,
+    },
+    {
+        id = "crowd_batch_lod",
+        title = "Crowd batch mesh LOD",
+        claim = "mesh.set_batch_lod 给实例批次挂远距替代网格链：超过阈值的实例在 GPU 位姿档改画低模，第二台阶再切一张更远的模；mesh.batch_lod 读回同一份组件（含第二台阶），mesh.clear_batch_lod 摘掉；非正/非有限距离、等于批次网格的替代、只给一半的第二台阶、远阈值不大于近阈值都直接报错（不静默落空档）",
+        api = { "mesh.set_batch", "mesh.set_batch_lod", "mesh.batch_lod", "mesh.clear_batch_lod", "entity.find", "entity.is_alive" },
+        code = "mesh.set_batch(tri, ground, {{x=0},{x=30}}); mesh.set_batch_lod(tri, triangle, 20, sphere, 40); mesh.batch_lod(tri)",
+        enter = function()
+            reset_world()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            -- 两只：一只在原点（近侧），一只在 30 米外（远侧）；阈值 20 ⇒ 远侧那只走替代网格。
+            mesh.set_batch(tri, GROUND_MESH, {
+                { x = 0.0, y = 0.0, z = 0.0 },
+                { x = 30.0, y = 0.0, z = 0.0 },
+            })
+            mesh.set_batch_lod(tri, TRIANGLE_MESH, 20.0, SPHERE_MESH, 40.0)
+            local lod = mesh.batch_lod(tri)
+            lod_mesh = lod and lod.mesh
+            lod_distance = lod and lod.distance
+            lod_far_mesh = lod and lod.far_mesh
+            lod_far_distance = lod and lod.far_distance
+            -- 0/负/NaN 距离意味着"整批永远近侧"，等于批次网格的替代意味着"远侧其实就是近侧"：
+            -- 两种都是静默空档，必须报错。第二台阶的两条护栏同理：只给一半 = 不知道挂多高，
+            -- 远阈值不大于近阈值 = 中段永远空档。pcall 的错误值是 userdata，tostring 之后才查文案。
+            lod_bad_err = tostring((select(2, pcall(mesh.set_batch_lod, tri, TRIANGLE_MESH, 0.0))))
+            lod_same_err = tostring((select(2, pcall(mesh.set_batch_lod, tri, GROUND_MESH, 20.0))))
+            lod_far_pair_err = tostring((select(2, pcall(mesh.set_batch_lod, tri, TRIANGLE_MESH, 20.0, SPHERE_MESH))))
+            lod_far_order_err = tostring((select(2, pcall(mesh.set_batch_lod, tri, TRIANGLE_MESH, 20.0, SPHERE_MESH, 20.0))))
+            mesh.clear_batch_lod(tri)
+            lod_cleared = mesh.batch_lod(tri)
+        end,
+        run = function()
+            lab.note("batch_lod = " .. tostring(lod_mesh) .. " @ " .. tostring(lod_distance)
+                .. " > " .. tostring(lod_far_mesh) .. " @ " .. tostring(lod_far_distance)
+                .. "；clear 之后 " .. tostring(lod_cleared))
+        end,
+        read = function()
+            return {
+                lod_mesh = tostring(lod_mesh),
+                lod_distance = tostring(lod_distance),
+                lod_far_mesh = tostring(lod_far_mesh),
+                lod_far_distance = tostring(lod_far_distance),
+                lod_cleared = tostring(lod_cleared),
+                lod_bad_err = tostring(lod_bad_err),
+                lod_same_err = tostring(lod_same_err),
+                lod_far_pair_err = tostring(lod_far_pair_err),
+                lod_far_order_err = tostring(lod_far_order_err),
+            }
+        end,
+        check = function(t)
+            local tri = live(TRI)
+            if not tri then
+                t:ok(false, "TriMesh is required")
+                return
+            end
+            t:eq(lod_mesh, TRIANGLE_MESH, "batch_lod reads back the middle mesh")
+            t:near(lod_distance, 20.0, 1e-4, "batch_lod reads back the middle distance")
+            t:eq(lod_far_mesh, SPHERE_MESH, "batch_lod reads back the far mesh")
+            t:near(lod_far_distance, 40.0, 1e-4, "batch_lod reads back the far distance")
+            t:eq(lod_cleared, nil, "clear_batch_lod removed the LOD chain")
+            t:ok(type(lod_bad_err) == "string" and lod_bad_err:find("finite and > 0", 1, true) ~= nil,
+                "a non-positive distance is rejected, not silently ignored")
+            t:ok(type(lod_same_err) == "string" and lod_same_err:find("must differ", 1, true) ~= nil,
+                "a lod mesh equal to the batch mesh is rejected")
+            t:ok(type(lod_far_pair_err) == "string" and lod_far_pair_err:find("given together", 1, true) ~= nil,
+                "half of the far band is rejected, not silently ignored")
+            t:ok(type(lod_far_order_err) == "string" and lod_far_order_err:find("> distance", 1, true) ~= nil,
+                "a far distance not beyond the middle one is rejected")
+        end,
+    },
+    {
+        id = "crowd_batch_planar",
+        title = "Crowd batch planar exclusion",
+        claim = "mesh.set_batch_planar 把实例批次排除出水面平面反射 pass（主视图与两条阴影链照旧）：组件缺席读回 true，置 false 后读回 false；没有实例批次的实体直接报错（不静默插组件让调用方以为生效）",
+        api = { "mesh.set_batch", "mesh.set_batch_planar", "mesh.batch_planar", "entity.find", "entity.is_alive" },
+        code = "mesh.set_batch(tri, ground, {{x=0}}); mesh.batch_planar(tri); mesh.set_batch_planar(tri, false); mesh.batch_planar(tri)",
+        enter = function()
+            reset_world()
+            local tri = live(TRI)
+            if not tri then
+                return
+            end
+            mesh.set_batch(tri, GROUND_MESH, { { x = 0.0, y = 0.0, z = 0.0 } })
+            -- 组件缺席 = 照旧进反射；置 false 才排掉，两个方向都要读回。
+            planar_default = mesh.batch_planar(tri)
+            mesh.set_batch_planar(tri, false)
+            planar_off = mesh.batch_planar(tri)
+            -- 没有批次的实体：静默插组件会让下一帧什么都没发生，必须报错。
+            local hero = live(HERO)
+            if hero then
+                planar_no_batch_err = tostring((select(2, pcall(mesh.set_batch_planar, hero, false))))
+            end
+        end,
+        run = function()
+            lab.note("batch_planar 缺席=" .. tostring(planar_default)
+                .. "，置 false 后=" .. tostring(planar_off))
+        end,
+        read = function()
+            return {
+                planar_default = tostring(planar_default),
+                planar_off = tostring(planar_off),
+                planar_no_batch_err = tostring(planar_no_batch_err),
+            }
+        end,
+        check = function(t)
+            local tri = live(TRI)
+            if not tri then
+                t:ok(false, "TriMesh is required")
+                return
+            end
+            -- 读回发生在 enter 里；这里再读一次当前值，确认组件挂在实体上而不是只回了个值。
+            planar_live = mesh.batch_planar(tri)
+            t:eq(planar_default, true, "a batch without the component reads back true")
+            t:eq(planar_off, false, "set_batch_planar(false) reads back false")
+            t:eq(planar_live, false, "the exclusion survives the component round-trip")
+            t:ok(type(planar_no_batch_err) == "string"
+                and planar_no_batch_err:find("no instance batch", 1, true) ~= nil,
+                "setting the exclusion on a non-batch entity is rejected")
         end,
     },
     {

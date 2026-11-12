@@ -33,7 +33,9 @@ struct Params {
     frustum_enabled: u32,
     // P3-R255：网格局部包围球半径（从局部原点算，含球心偏移），逐实例再乘 max|scale|·model_scale。
     local_radius: f32,
-    _pad0: u32,
+    // P3-R273：LOD 侧（0 = 关，1 = 近侧 dist <= 第一台阶，2 = 中侧，3 = 远侧）。
+    // 侧 2/3 的分界见 `lod_distance_far`；没有第二台阶时侧 2 与侧 3 同义。
+    lod_side: u32,
     // P3-R250：逐实例距离剔除。xyz = 剔除球心（相机世界位置），w = 半径（米）；
     // w <= 0 = 关闭（默认，逐矩阵与开档前逐字节相同）。
     cull_origin: vec3<f32>,
@@ -43,7 +45,10 @@ struct Params {
     // 判据用**批次内实例下标**而不是位置哈希：下标是静态的 ⇒ 同一只每帧留/走一致，不闪。
     thin_distance: f32,
     thin_stride: u32,
-    _pad1: vec2<f32>,
+    // P3-R273：LOD 第一台阶半径（米，离 `cull_origin`）；`<= 0` 或 `lod_side == 0` = 关。
+    lod_distance: f32,
+    // P3-R274：LOD 第二台阶半径（米）；`<= lod_distance` = 没有第二台阶（中/远同侧）。
+    lod_distance_far: f32,
     // P3-R267：第二远带（可选）。每带是**交集**语义：第一带已留下标集合，第二带在该集合上再抽。
     // `thin_stride2 < 2` 或距离 <= 0 = 关（默认）。
     thin_distance2: f32,
@@ -67,10 +72,10 @@ struct Params {
 // 只有 `main_normals` 入口用；`main` 的管线布局不含它。
 @group(0) @binding(5) var<storage, read_write> normal_matrices: array<mat4x4<f32>>;
 
-// P3-R251：压缩通道。存活实例用原子计数器领前缀槽位（顺序不确定，但画面等价）；
-// `finalize_compact` 事后把计数器写进 indirect 参数的第 2 个 u32（instance_count）。
-@group(0) @binding(6) var<storage, read_write> compact_counter: atomic<u32>;
-@group(0) @binding(7) var<storage, read_write> compact_args: array<u32>;
+// P3-R251：压缩通道。存活实例用原子计数器领前缀槽位（顺序不确定，但画面等价）。
+// P3-R271：计数器就是 indirect 参数的第 2 个 u32（instance_count）——atomicAdd 的返回值
+// 直接当槽位，计数与参数是同一次原子操作 ⇒ 不再需要单独的 counter 缓冲与收尾 kernel。
+@group(0) @binding(6) var<storage, read_write> compact_args: array<atomic<u32>>;
 
 // 不用 `isNan`/`isInf`：wgpu 27 的 WGSL 前端里没有这两个内建，等价写法是"自反 + 上界"。
 fn finite(value: f32) -> bool {
@@ -208,6 +213,31 @@ fn evaluate(index: u32) -> Pose {
             return pose;
         }
     }
+    // P3-R273：网格 LOD 侧选择。P3-R274：三档——近（1）`dist <= 第一台阶`、中（2）夹在
+    // 两台阶之间、远（3）`dist > 第二台阶`；三档两两互斥且合起来完备（并集 = 关 LOD 时
+    // 会画出来的全部存活实例）。第二台阶没开（`lod_distance_far <= lod_distance`）时中/远
+    // 同义，与 R273 的两档行为逐字节一致。关档（lod_side=0 或半径 <= 0）这一段不执行，
+    // 逐矩阵与开档前逐字节相同。NaN 位置按"未过第一台阶"处理（与 R273 同口径），保证
+    // 病态输入也不会把实例漏给所有档。
+    if (params.lod_side != 0u && params.lod_distance > 0.0) {
+        let lod_delta = position - params.cull_origin;
+        let lod_d2 = dot(lod_delta, lod_delta);
+        let beyond_near = lod_d2 > params.lod_distance * params.lod_distance;
+        let far_band = params.lod_distance_far > params.lod_distance;
+        let beyond_far = far_band
+            && lod_d2 > params.lod_distance_far * params.lod_distance_far;
+        var keep_lod = false;
+        if (params.lod_side == 1u) {
+            keep_lod = !beyond_near;
+        } else if (params.lod_side == 2u) {
+            keep_lod = beyond_near && !beyond_far;
+        } else {
+            keep_lod = beyond_far;
+        }
+        if (!keep_lod) {
+            return pose;
+        }
+    }
     // P3-R255：逐实例视锥剔除（保守包围球：实例位置 ± 局部半径×max|scale|×model_scale）。
     // 球心在任一平面外侧一个半径之外 ⇒ 该实例在主视图里一个像素都不会出，写零矩阵/不领槽位。
     // 与 P3-R250 同一条退化路径；矩阵同时供主视图/阴影/planar ⇒ 全链一致的取舍。
@@ -281,6 +311,7 @@ fn main_normals(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // P3-R251：压缩入口——只给可见实例领前缀槽位（顺序由原子加决定，不保证稳定）。
+// P3-R271：`compact_args[1]` 既是 instance_count 又是槽位分配器，主 kernel 结束即参数就绪。
 @compute @workgroup_size(64)
 fn main_compact(@builtin(global_invocation_id) id: vec3<u32>) {
     let index = id.x;
@@ -291,7 +322,7 @@ fn main_compact(@builtin(global_invocation_id) id: vec3<u32>) {
     if (pose.visible == 0u) {
         return;
     }
-    let slot = atomicAdd(&compact_counter, 1u);
+    let slot = atomicAdd(&compact_args[1], 1u);
     matrices[params.base_matrix + slot] = pose.matrix;
 }
 
@@ -305,14 +336,7 @@ fn main_normals_compact(@builtin(global_invocation_id) id: vec3<u32>) {
     if (pose.visible == 0u) {
         return;
     }
-    let slot = atomicAdd(&compact_counter, 1u);
+    let slot = atomicAdd(&compact_args[1], 1u);
     matrices[params.base_matrix + slot] = pose.matrix;
     normal_matrices[params.normal_base_matrix + slot] = pose.normal;
-}
-
-// 压缩收尾：把存活数写回 indirect 参数（u32[1] = instance_count），供
-// `draw_indexed_indirect` 用。参数其余四项在缓冲创建时预填（index_count 等）。
-@compute @workgroup_size(1)
-fn finalize_compact() {
-    compact_args[1] = atomicLoad(&compact_counter);
 }

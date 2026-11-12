@@ -1167,6 +1167,46 @@ fn submit_cpu_attribution_separates_the_shadow_chain() {
         on.record_shadow_us + on.record_point_shadow_us,
         on.cpu_record_us
     );
+    // P3-R285：planar / 主视图不透明网格两段录制子桶必须接在自己的段上。这个场景有网格
+    // 没水面 ⇒ depth 桶必须 > 0；挂错桶（例如累加进 shadow）画面上看不出来，只有这里能抓住。
+    assert!(
+        on.record_depth_us > 0,
+        "主视图不透明网格 pass 的录制时间不可能是 0"
+    );
+    assert!(
+        on.record_shadow_us
+            + on.record_point_shadow_us
+            + on.record_planar_us
+            + on.record_depth_us
+            + on.record_prep_us
+            + on.record_tail_us
+            + on.record_binds_us
+            <= on.cpu_record_us,
+        "四条 pass 子桶之和超过总录制 {}us",
+        on.cpu_record_us
+    );
+    // P3-R286：准备段恒 > 0（计划推导与 uniform 更新每帧都跑）；挂错桶会在这里红。
+    assert!(on.record_prep_us > 0, "pass 前准备段的录制时间不可能是 0");
+    // P3-R288：命名桶必须覆盖 ≥90% 的录制时间。残差是渲染器内逐帧算的，挂错任何一段
+    // 都会把它顶大；这条断言就是「录制已被完全命名」的判据（不是 p50 相减的口径）。
+    assert!(
+        on.record_other_us * 10 <= on.cpu_record_us,
+        "逐帧残差 {}us 超过总录制 {}us 的 10%",
+        on.record_other_us,
+        on.cpu_record_us
+    );
+    println!(
+        "record split: shadow={} point_shadow={} planar={} depth={} prep={} tail={} binds={} other={} of record={}us",
+        on.record_shadow_us,
+        on.record_point_shadow_us,
+        on.record_planar_us,
+        on.record_depth_us,
+        on.record_prep_us,
+        on.record_tail_us,
+        on.record_binds_us,
+        on.record_other_us,
+        on.cpu_record_us
+    );
     assert!(
         on.cpu_record_us <= on.cpu_frame_us,
         "总录制 {}us 超过 cpu_frame_us {}us",

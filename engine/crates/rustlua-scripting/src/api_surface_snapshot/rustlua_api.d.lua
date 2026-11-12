@@ -929,13 +929,23 @@ function map.state(name, value) end
 function map.state_clear(name) end
 
 --- `mesh` 给实体挂/换 3D 网格与材质覆盖。网格路径来自 `.glb/.gltf`，或引擎哨兵
---- mesh：运行期 API 面基线里的 9 个函数
+--- mesh：运行期 API 面基线里的 14 个函数
 mesh = {}
 
 --- 读这个实体上的实例批次里有多少份实例变换。实体没有批次时返回 `0`（不是 `nil`）。
 ---@param id integer
 ---@return any
 function mesh.batch_count(id) end
+
+--- 读这个实体上挂的**远距替代网格**：`{mesh=路径, distance=阈值}`；挂了第二台阶时
+---@param id integer
+---@return any
+function mesh.batch_lod(id) end
+
+--- 读回实例批次的**平面反射排除档**：组件缺席（默认）或 `enabled = true` 时返回
+---@param id integer
+---@return any
+function mesh.batch_planar(id) end
 
 --- 读这个实体上的实例批次里**第 `index` 个实例此刻的位姿**（世界位置 + 绕 Y 的 yaw）。
 ---@param id integer
@@ -952,6 +962,11 @@ function mesh.clear(id) end
 ---@param id integer
 ---@return any
 function mesh.clear_batch(id) end
+
+--- 摘掉远距替代网格：下一帧起整批回到同一张网格。批次本身（`mesh.clear_batch`）与普通
+---@param id integer
+---@return any
+function mesh.clear_batch_lod(id) end
 
 --- 读当前网格路径；实体没有 `MeshRenderer` 时返回 `nil`，不是空串。
 ---@param id integer
@@ -972,6 +987,21 @@ function mesh.set(id, path) end
 ---@param motion table?
 ---@return any
 function mesh.set_batch(id, path, instances, material, motion) end
+
+--- 给实例批次挂**远距替代网格链**：离相机超过 `distance` 米的实例改画 `path`；再给
+---@param id integer
+---@param path string
+---@param distance number
+---@param far_path string?
+---@param far_distance number?
+---@return any
+function mesh.set_batch_lod(id, path, distance, far_path, far_distance) end
+
+--- 把实例批次**排除出水面平面反射 pass**：`enabled = false` 后这一批不再参与水面
+---@param id integer
+---@param enabled boolean
+---@return any
+function mesh.set_batch_planar(id, enabled) end
 
 --- 就地替换批次里从 `start` 起的一段实例：只解析被改的那 K 份、只动这一段，**数量与
 ---@param id integer
@@ -1476,7 +1506,7 @@ function quad.get(id) end
 ---@return any
 function quad.set(id, component) end
 
---- render：运行期 API 面基线里的 17 个函数
+--- render：运行期 API 面基线里的 18 个函数
 render = {}
 
 ---@param depth number
@@ -1545,6 +1575,11 @@ function render.set_quality(level) end
 ---@param z number
 ---@return any
 function render.set_ripple(x, z) end
+
+--- 把阴影投射者的距离预算调到 `meters`（0..=1000 的整数米；`0` = 关）。相机到 drawable 超过预算的投射者
+---@param meters any
+---@return any
+function render.set_shadow_caster_distance(meters) end
 
 --- 设置地面覆盖（各 0..1）：`snow` 把地形颜色拉向冷白，`wet` 压暗地表。宿主每帧读一次；
 ---@param snow number

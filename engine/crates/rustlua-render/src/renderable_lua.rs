@@ -10,8 +10,8 @@
 
 use crate::atlas::resolve_atlas_reference;
 use crate::instance_batch::{
-    BatchMotion3D, ForwardAxis, Instance3D, InstanceBatch3D, InstanceMotion3D, MotionKind,
-    instances_from_packed,
+    BatchMotion3D, ForwardAxis, Instance3D, InstanceBatch3D, InstanceBatchLod3D,
+    InstanceBatchPlanar3D, InstanceMotion3D, MotionKind, instances_from_packed,
 };
 use crate::light::{Light, LightKind};
 use crate::mesh3d::MeshRenderer;
@@ -23,6 +23,7 @@ use rustlua_ecs::world::{World, WorldError};
 use rustlua_lua_api::{Handle, ProjectRoot, api_error};
 use rustlua_math::math3d::Vec3;
 use std::cell::{Cell, Ref, RefMut};
+use std::sync::Arc;
 
 /// 渲染域里"跨帧的脚本可见状态"：本帧主光。
 ///
@@ -586,7 +587,12 @@ pub fn install_3d(
                     instances: parsed,
                     motion,
                 };
-                state.world_mut()?.insert(id, batch).map_err(world_error)?;
+                // P3-R272：组件存 `Arc<InstanceBatch3D>`——提取层按 Arc 共享（60 万只的批次
+                // 每帧深拷贝一次是 3.8 MB 级搬运），渲染侧的烘焙缓存也拿它当稳定身份。
+                state
+                    .world_mut()?
+                    .insert(id, Arc::new(batch))
+                    .map_err(world_error)?;
                 Ok(true)
             },
         )?,
@@ -612,10 +618,12 @@ pub fn install_3d(
             let count = parsed.len();
             let mut world = state.world_mut()?;
             let batch = world
-                .get_mut::<InstanceBatch3D>(id)
+                .get_mut::<Arc<InstanceBatch3D>>(id)
                 .map_err(world_error)?
                 .ok_or_else(|| api_error("mesh.set_batch_range: entity has no instance batch"))?;
-            batch
+            // P3-R272：`make_mut` 只在还有别的强引用（渲染器的烘焙缓存 / 本帧暂存）时才拷贝——
+            // 拷贝换来新的分配地址，缓存键随之失效 ⇒ 局部改段不可能被缓存的旧静态输入吃掉。
+            Arc::make_mut(batch)
                 .replace_range(start as usize, parsed)
                 .map_err(|error| api_error(format!("mesh.set_batch_range: {error}")))?;
             Ok(count)
@@ -630,9 +638,185 @@ pub fn install_3d(
             require_alive(state, id)?;
             state
                 .world_mut()?
-                .remove::<InstanceBatch3D>(id)
+                .remove::<Arc<InstanceBatch3D>>(id)
                 .map_err(world_error)?;
             Ok(true)
+        })?,
+    )?;
+    // P3-R273：批次网格 LOD 链——离相机超过 `distance` 的实例改画远侧网格。
+    // P3-R274：可选第二台阶（`far_path`/`far_distance`）⇒ 三档近/中/远。
+    // 拒绝都在入口：没有批次、半径非有限/<= 0、网格与上一档相同。后者尤其不能静默：相邻
+    // 两档画同一张网格会把同一只画两遍（实例数翻倍、深度打架），而画面"看起来还在"。
+    // 两个可选参数必须成对：只给一个说明调用方漏了一个，静默当两档跑会把棋子画错颜色。
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "set_batch_lod",
+        lua.create_function(
+            move |_,
+                  (id, path, distance, far_path, far_distance): (
+                i64,
+                String,
+                f32,
+                Option<String>,
+                Option<f32>,
+            )| {
+                let id = entity_from_lua(id)?;
+                let state = &s;
+                require_alive(state, id)?;
+                if !(distance.is_finite() && distance > 0.0) {
+                    return Err(api_error(format!(
+                        "mesh.set_batch_lod: distance must be finite and > 0 (got {distance})"
+                    )));
+                }
+                if path.is_empty() {
+                    return Err(api_error("mesh.set_batch_lod: path must not be empty"));
+                }
+                match (&far_path, far_distance) {
+                    (None, None) => {}
+                    (Some(far_path), Some(far_distance)) => {
+                        if far_path.is_empty() {
+                            return Err(api_error(
+                                "mesh.set_batch_lod: far path must not be empty",
+                            ));
+                        }
+                        if !(far_distance.is_finite() && far_distance > distance) {
+                            return Err(api_error(format!(
+                                "mesh.set_batch_lod: far distance must be finite and > distance \
+                                 (got {far_distance} with distance {distance})"
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(api_error(
+                            "mesh.set_batch_lod: far path and far distance must be given together",
+                        ));
+                    }
+                }
+                let mut world = state.world_mut()?;
+                let batch_mesh = world
+                    .get::<Arc<InstanceBatch3D>>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("mesh.set_batch_lod: entity has no instance batch"))?
+                    .mesh
+                    .clone();
+                if batch_mesh == path {
+                    return Err(api_error(format!(
+                        "mesh.set_batch_lod: lod mesh must differ from the batch mesh ({path})"
+                    )));
+                }
+                if let Some(far_path) = &far_path {
+                    if *far_path == path {
+                        return Err(api_error(format!(
+                            "mesh.set_batch_lod: far mesh must differ from the lod mesh ({far_path})"
+                        )));
+                    }
+                    if *far_path == batch_mesh {
+                        return Err(api_error(format!(
+                            "mesh.set_batch_lod: far mesh must differ from the batch mesh ({far_path})"
+                        )));
+                    }
+                }
+                world
+                    .insert(
+                        id,
+                        InstanceBatchLod3D {
+                            mesh: path,
+                            distance,
+                            far_mesh: far_path,
+                            far_distance,
+                        },
+                    )
+                    .map_err(world_error)?;
+                Ok(true)
+            },
+        )?,
+    )?;
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "clear_batch_lod",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            state
+                .world_mut()?
+                .remove::<InstanceBatchLod3D>(id)
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    // 读回：脚本/门要确认"远侧到底挂了哪张网格、半径多少"得读同一份组件，不许另算。
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "batch_lod",
+        lua.create_function(move |lua, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let world = state.world()?;
+            let Some(lod) = world.get::<InstanceBatchLod3D>(id).map_err(world_error)? else {
+                return Ok(mlua::Value::Nil);
+            };
+            let table = lua.create_table()?;
+            table.set("mesh", lod.mesh.clone())?;
+            table.set("distance", lod.distance)?;
+            if let Some(far_mesh) = &lod.far_mesh {
+                table.set("far_mesh", far_mesh.clone())?;
+            }
+            if let Some(far_distance) = lod.far_distance {
+                table.set("far_distance", far_distance)?;
+            }
+            Ok(mlua::Value::Table(table))
+        })?,
+    )?;
+    // P3-R275：批次的**平面反射排除档**。`enabled = false` ⇒ 这一批不进水面平面反射
+    // pass（主视图与方向光/点光阴影链照旧）。反射图是半分辨率的镜像屏幕，远处小实例在
+    // 里面的可见面积很小，却要为整批几何再跑一遍顶点与像素——6 万规模下这是显式取舍。
+    // 拒绝"没有批次"的实体：静默插入组件会让下一帧什么都没发生，调用方却以为生效了。
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "set_batch_planar",
+        lua.create_function(move |_, (id, enabled): (i64, bool)| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let has_batch = world
+                .get::<Arc<InstanceBatch3D>>(id)
+                .map_err(world_error)?
+                .is_some();
+            if !has_batch {
+                return Err(api_error(
+                    "mesh.set_batch_planar: entity has no instance batch",
+                ));
+            }
+            world
+                .insert(id, InstanceBatchPlanar3D { enabled })
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    // 读回：默认（没有组件）= `true`；没有批次时返回 `nil`，与 `mesh.batch_lod` 同一语义。
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "batch_planar",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let world = state.world()?;
+            if world
+                .get::<Arc<InstanceBatch3D>>(id)
+                .map_err(world_error)?
+                .is_none()
+            {
+                return Ok(mlua::Value::Nil);
+            }
+            let enabled = world
+                .get::<InstanceBatchPlanar3D>(id)
+                .map_err(world_error)?
+                .is_none_or(|planar| planar.enabled);
+            Ok(mlua::Value::Boolean(enabled))
         })?,
     )?;
     let s = Bindings::new(world, state, project_root);
@@ -644,7 +828,7 @@ pub fn install_3d(
             require_alive(state, id)?;
             let world = state.world()?;
             let count = world
-                .get::<InstanceBatch3D>(id)
+                .get::<Arc<InstanceBatch3D>>(id)
                 .map_err(world_error)?
                 .map_or(0, |batch| batch.instances.len());
             Ok(count)
@@ -664,7 +848,7 @@ pub fn install_3d(
             }
             let world = state.world()?;
             let batch = world
-                .get::<InstanceBatch3D>(id)
+                .get::<Arc<InstanceBatch3D>>(id)
                 .map_err(world_error)?
                 .ok_or_else(|| api_error("mesh.batch_pose: entity has no instance batch"))?;
             let time = s

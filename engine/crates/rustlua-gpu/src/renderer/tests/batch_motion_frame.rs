@@ -788,3 +788,162 @@ fn gpu_motion_thin_far_selects_intersection_of_bands() {
     fixture.renderer.set_gpu_motion_thin_far(Some((7.0, 1)));
     assert_eq!(fixture.renderer.gpu_motion_thin_far(), None);
 }
+
+/// P3-R284：帧路径的 compute 绑定组按批次身份复用（R270 只持久化了缓冲，绑定组仍每帧新建）。
+///
+/// 钉三件事：
+/// * **稳态零新建**：同一 `Arc` 身份 + 同一 arena，连画 4 帧只建 1 次绑定组，像素逐字节相同。
+/// * **arena 换代必须重绑**：绑定 4/5 绑的是**整块**实例 arena（矩阵格偏移走 params）。别的
+///   内容把 arena 撑爆换缓冲后，原批次下一帧必须换新绑定组——否则烘焙写进旧缓冲、draw 读新
+///   缓冲（零初始化）⇒ 整批退化成零矩阵。判据是"换代后只画原批次"的帧与首帧逐字节相同。
+/// * **回滚档同画**：`set_bake_cache_enabled(false)` 走每次新建缓冲 + 不缓存绑定组的旧入口，
+///   像素必须与缓存档相同（缓存不是"换了张图"）。
+#[test]
+fn gpu_motion_frame_reuses_compute_bind_group_and_rebinds_after_arena_growth() {
+    let Some(mut fixture) = fixture("rustlua-test-bake-bind-cache") else {
+        return gpu_skipped("request_adapter/compute");
+    };
+    let batch = std::sync::Arc::new(motion_batch(&SLOTS));
+    fixture.renderer.set_gpu_motion_batches(true);
+    // 帧路径只有在剔除/密度/LOD 至少开一档时才走**缓存压缩**入口（五档全 None 会落到非缓存
+    // 旧路径，那条每帧新建缓冲、本来就不缓存绑定组）。半径给足，4 只全留。
+    fixture.renderer.set_gpu_motion_cull_distance(1000.0);
+    fixture
+        .renderer
+        .stage_motion_batch(1, batch.clone(), FROZEN);
+    let first = fixture.render(vec![batch_drawable(&[])]);
+    if !first.hdr {
+        return gpu_skipped("hdr_active");
+    }
+    let creates_first = fixture.renderer.compute_stats().bind_group_creates;
+    let serials_first = fixture.renderer.bake_bind_serials;
+    let epoch_first = fixture.renderer.instance_arena_epoch;
+    assert!(creates_first >= 1, "首帧必须真的建过 compute 绑定组");
+
+    // ① 稳态：同一身份连画 3 帧，零新建、零新身份、像素逐字节不变。
+    for round in 0..3 {
+        fixture
+            .renderer
+            .stage_motion_batch(1, batch.clone(), FROZEN);
+        let frame = fixture.render(vec![batch_drawable(&[])]);
+        assert_eq!(
+            byte_diff(&frame.pixels, &first.pixels),
+            0,
+            "稳态第 {round} 帧必须与首帧逐字节相同"
+        );
+    }
+    assert_eq!(
+        fixture.renderer.compute_stats().bind_group_creates,
+        creates_first,
+        "稳态帧不许再建 compute 绑定组（R284 前是每帧每批一次）"
+    );
+    assert_eq!(
+        fixture.renderer.bake_bind_serials, serials_first,
+        "稳态帧不许再发新的绑定组身份"
+    );
+    assert!(
+        fixture.renderer.compute_stats().bind_group_cache_hits >= 3,
+        "稳态 3 帧必须真的命中缓存，而不是根本没走烘焙"
+    );
+
+    // ② 回滚档同画：关掉缓存走旧入口，像素必须一致。
+    fixture.renderer.set_bake_cache_enabled(false);
+    fixture
+        .renderer
+        .stage_motion_batch(1, batch.clone(), FROZEN);
+    let uncached = fixture.render(vec![batch_drawable(&[])]);
+    assert_eq!(
+        byte_diff(&uncached.pixels, &first.pixels),
+        0,
+        "回滚档必须与缓存档同画"
+    );
+    fixture.renderer.set_bake_cache_enabled(true);
+
+    // ③ 换代：只画另一批 3000 只（3000×64B 起 > 128 KiB 初始容量）把 arena 撑爆。
+    //    这一帧故意不带原批次——否则深度排序可能让原批次先预留，换代就测不到它头上。
+    let big_slots: Vec<f32> = (0..3000).map(|i| -8.0 + (i as f32) * 0.005).collect();
+    let big = std::sync::Arc::new(motion_batch(&big_slots));
+    let mut big_draw = batch_drawable(&[]);
+    big_draw.entity = rustlua_scene::scene::SceneEntityId(2);
+    big_draw.name = "CrowdBig".to_owned();
+    fixture.renderer.stage_motion_batch(2, big, FROZEN);
+    let grown = fixture.render(vec![big_draw]);
+    assert!(grown.draw_calls >= 1, "大批必须真的出了 draw");
+    assert!(
+        fixture.renderer.instance_arena_epoch > epoch_first,
+        "夹具必须真的把 arena 撑爆换代（epoch {} → {}），否则这一条是空洞的",
+        epoch_first,
+        fixture.renderer.instance_arena_epoch
+    );
+    let serials_grown = fixture.renderer.bake_bind_serials;
+
+    // ④ 换代后只画原批次：必须与首帧逐字节相同，且必须发过新身份。
+    fixture.renderer.stage_motion_batch(1, batch, FROZEN);
+    let after = fixture.render(vec![batch_drawable(&[])]);
+    let after_diff = byte_diff(&after.pixels, &first.pixels);
+    println!(
+        "bake_bind_cache creates_first={creates_first} steady_creates={} serials={serials_first}→{serials_grown}→{} epoch={epoch_first}→{} after_growth_diff={after_diff}",
+        fixture.renderer.compute_stats().bind_group_creates,
+        fixture.renderer.bake_bind_serials,
+        fixture.renderer.instance_arena_epoch,
+    );
+    assert_eq!(
+        after_diff, 0,
+        "arena 换代后必须重绑（实测 {after_diff} 字节不同）"
+    );
+    assert!(
+        fixture.renderer.bake_bind_serials > serials_grown,
+        "arena 换代后原批次必须拿到新的绑定组身份"
+    );
+}
+
+/// P3-R287：种子缓存必须与「每条 draw 重算」逐位相同——含零缩放、空实例表、静态批次
+/// （走 `positions()` 而不是路径节点）、非法缩放与无穷半径这些退化形状。
+/// 比的是 `to_bits()`：NaN 也要同位，`assert_eq!(f32)` 会把 NaN 判成不等而漏掉形状。
+#[test]
+fn conservative_bounds_seed_is_bit_identical_to_per_draw_recompute() {
+    use crate::renderer::world_sprite::{
+        batch_bounds_seed, conservative_batch_bounds, expanded_batch_bounds,
+    };
+
+    let mut static_batch = motion_batch(&SLOTS);
+    static_batch.motion = None;
+    let mut nan_scale = motion_batch(&SLOTS);
+    nan_scale.instances[0].scale = [f32::NAN, 1.0, 1.0];
+    let batches = [
+        motion_batch_scaled(&SLOTS, 0.0, ANT_SCALE),
+        motion_batch_scaled(&SLOTS, 3.0, 0.0),
+        motion_batch_scaled(&[], 0.0, ANT_SCALE),
+        static_batch,
+        nan_scale,
+    ];
+    let mut cases = 0;
+    for batch in &batches {
+        let seed = batch_bounds_seed(batch);
+        for radius in [0.0_f32, 0.5, 2.0, f32::INFINITY] {
+            for scale in [0.0_f32, 1.0, 3.5] {
+                let direct = conservative_batch_bounds(batch, radius, scale);
+                let cached = expanded_batch_bounds(seed, radius, scale);
+                for (axis, (a, b)) in [
+                    (direct.min.x, cached.min.x),
+                    (direct.min.y, cached.min.y),
+                    (direct.min.z, cached.min.z),
+                    (direct.max.x, cached.max.x),
+                    (direct.max.y, cached.max.y),
+                    (direct.max.z, cached.max.z),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "轴 {axis} 半径 {radius} 缩放 {scale}：缓存种子与逐 draw 重算不同位"
+                    );
+                }
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, 60, "5 个批次 × 4 半径 × 3 缩放 = 60 组对账");
+}

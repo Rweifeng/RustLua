@@ -439,6 +439,41 @@ impl std::fmt::Display for BatchPatchError {
 
 impl std::error::Error for BatchPatchError {}
 
+/// P3-R273：批次的网格 LOD 链——离相机超过 `distance` 的实例改画 `mesh`。
+///
+/// P3-R274：可选第二台阶——离相机超过 `far_distance` 的实例再改画 `far_mesh`。
+/// 三档（近 = 批次主网格 / 中 = `mesh` / 远 = `far_mesh`）仍按同一份 GPU 位姿各烘一次，
+/// 分成互斥且完备的 2~3 条 draw（并集 = 全部存活实例）。
+///
+/// 单独一个组件（不进 [`InstanceBatch3D`]）：LOD 是**渲染取舍**，批次数据本身
+/// （实例表/运动）一个字节都不变；关档时这个组件根本不存在，提取结果与开档前逐位一致。
+/// 只在 GPU 位姿档（`--gpu-motion`）下生效。
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstanceBatchLod3D {
+    /// 中档网格路径（项目相对路径）。必须与批次主网格不同（同一个网格分两条 draw 只会
+    /// 让实例画两遍，入口直接拒绝）。
+    pub mesh: String,
+    /// 中档切换半径（米，离相机世界位置）。`> 0`，`0` 表示没有 LOD。
+    pub distance: f32,
+    /// 第二台阶的远侧网格；与 `far_distance` 成对出现。
+    pub far_mesh: Option<String>,
+    /// 第二台阶的切换半径（米）；必须严格大于 `distance`。
+    pub far_distance: Option<f32>,
+}
+
+/// P3-R275：批次的**平面反射排除档**。组件缺席 = 照旧进反射。
+///
+/// `enabled = false` 时这一批不进水面平面反射 pass（主视图、方向光/点光阴影链照旧）。
+/// 反射图是半分辨率的镜像屏幕，远处小实例在里面的可见面积很小，却要为整批几何再跑一遍
+/// 顶点与像素；60k 规模下这是显式的观感取舍，不是像素精确的剔除。
+///
+/// 与 `cast_shadow` 一族分开：那个是"按样本名/路径分类"的排除（阴影链），这个按批次实体。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstanceBatchPlanar3D {
+    /// `false` = 本批不进平面反射 pass。
+    pub enabled: bool,
+}
+
 /// 一批实例：同一张网格 + 同一份（可选）材质 + N 份实例变换。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InstanceBatch3D {

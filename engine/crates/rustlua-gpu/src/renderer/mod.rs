@@ -25,7 +25,7 @@ use rustlua_render::render_settings::{
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 
 use rustlua_render::frame::{Scene3d, SceneMesh};
-use rustlua_render::instance_batch::InstanceBatch3D;
+use rustlua_render::instance_batch::{InstanceBatch3D, InstanceBatchLod3D};
 
 pub use environment::EnvironmentMapError;
 
@@ -329,6 +329,10 @@ struct FrameDraw {
     /// P3-R255：这批实例的网格局部包围球半径（从局部原点算，含球心偏移），供视锥剔除
     /// 在 GPU 侧展开成逐实例保守球（再乘 max|scale|·model_scale）。非 GPU 批恒 0。
     gpu_motion_local_radius: f32,
+    /// P3-R273：网格 LOD 选择——`(第一台阶半径, 第二台阶半径或 0, 侧)`。只在 GPU 位姿档下
+    /// 出现：2~3 条 draw 共用同一份批次位姿，各自只画自己那一档（互斥且完备）。
+    /// P3-R274：侧 `1` = 近 / `2` = 中 / `3` = 远；第二台阶为 `0` 时中/远同义。
+    gpu_motion_lod: Option<(f32, f32, u32)>,
     /// P3-R248：这条 draw 是否进方向光 CSM 链。`false` = 被分类排除档按样本名/网格路径
     /// 掐掉（静态合批组只按路径判），主视图/平面反射照旧；成组/建 draw 时一次算好。
     cast_shadow: bool,
@@ -336,6 +340,9 @@ struct FrameDraw {
     /// 两链一起掐）；点光专用排除档只清这一位 ⇒ CSM 的 crowd 阴影保留、6 面链的 crowd
     /// 提交掐掉，主视图/平面反射照旧。
     cast_point_shadow: bool,
+    /// P3-R275：这条 draw 是否进水面平面反射 pass。`false` = 批次/实体的平面反射排除档
+    /// （`InstanceBatchPlanar3D`）挡掉了它；主视图与两条阴影链照旧。
+    cast_planar: bool,
 }
 
 impl FrameDraw {
@@ -375,6 +382,9 @@ struct StaticGroup {
     /// P3-R265：整组是否进点光 6 面链（组键路径命中点光专用排除子串 ⇒ false；
     /// `cast_shadow` 为假时恒假）。
     cast_point_shadow: bool,
+    /// P3-R275：整组是否进平面反射 pass。组是跨实体合并的，只有**组内每个实体**都被
+    /// 排除档点名时才为 false（任何一条没被排除的 drawable 都要照旧反射）。
+    cast_planar: bool,
 }
 
 /// 一个可复用的非阻塞回读槽：GPU 拷贝目标 buffer + 提交序号 + 映射完成标志。
@@ -487,6 +497,33 @@ pub struct RenderFrameMetrics {
     pub record_shadow_us: u64,
     /// P3-R180：录制里点光立方体阴影（最多 8 盏 × 6 面，每面重画全部 drawable）的 CPU 时间。
     pub record_point_shadow_us: u64,
+    /// P3-R285：录制里平面反射 pass 的 CPU 时间（含逐 draw 的管线/绑定组设置与 draw 调用）。
+    ///
+    /// 为什么单列：R282 之后 d40 档整帧 21.4 ms 是 CPU 墙，`cpu_record_us` 8.67 ms 里
+    /// 两条阴影子桶 + `bind_build` 2.53 ms 之外还剩 ≈6.1 ms 无名成本。planar 与 depth
+    /// 是 3D 场景里最大的两段录制，不拆开就无法判断下一刀该减 draw 数（CPU）还是减片元（GPU）。
+    pub record_planar_us: u64,
+    /// P3-R285：录制里主视图不透明网格 pass（`DepthOpaque`）的 CPU 时间。口径同 `record_planar_us`。
+    pub record_depth_us: u64,
+    /// P3-R286：`render_passes` 从入口到「逐 draw 建绑定组循环」之前的 CPU 时间。
+    ///
+    /// 含渲染计划推导、uniform 更新、`frame_draws` 整理、Clear 与不透明世界精灵 pass。
+    /// R285 证明 planar + depth 两段录制合计只有 0.14 ms，record 8.40 ms 里 5.82 ms 无名
+    /// ⇒ 必须把「pass 前」与「3D 之后」两大段也命名，否则下一刀只能猜。
+    pub record_prep_us: u64,
+    /// P3-R286：主视图不透明网格 pass 之后到函数返回的 CPU 时间（世界精灵/粒子/tonemap/
+    /// 2D 覆盖层与 ScreenUI/矢量文字/后处理）。与 `record_prep_us` 一起夹住全部 3D pass。
+    pub record_tail_us: u64,
+    /// P3-R288：「逐 draw 建绑定组」那整段的 CPU 时间（含三张并列表的 push 与
+    /// `note_material_bind_frame`）。`bind_build` 只包住了每次 `material_bind_group_for_draw`
+    /// 调用本身，这一段用来判「循环里还有没有没被计时的部分」。
+    pub record_binds_us: u64,
+    /// P3-R288：**逐帧**残差 = 函数总时长 − 七条命名子桶之和（在渲染器内算，不是 p50 相减）。
+    ///
+    /// 为什么必须逐帧：R286/R287 按各桶 p50 相加都剩 ≈2.4 ms，但 **p50 之和 ≠ 和的 p50**，
+    /// 那个差可能只是分布形状。这一桶 ≈0 就说明录制已被完全命名，下一刀该去 bind/prep；
+    /// 这一桶 ≈2.4 ms 才说明真有一段没被计时。
+    pub record_other_us: u64,
     /// P3-R180：本帧录制的方向光阴影 pass 数（4 级联，开 `filtered_shadows` 时再 +4 个 ESM 全屏）。
     ///
     /// 为什么要计数而不是只计时：跳过空 pass 的优化必须能被断言，而 CPU 计时在本机是
@@ -539,6 +576,11 @@ pub struct RenderFrameMetrics {
     pub point_shadow_distance_skipped: u64,
     /// P3-R191：平面反射 pass 里因落在镜像相机视锥外的 draw 次数（水面与 Blend 不计）。
     pub planar_draws_culled: u64,
+    /// P3-R275：本帧因批次/实体的平面反射排除档而**没进**反射 pass 的 draw 次数。
+    ///
+    /// 与 `planar_draws_culled` 分开记：剔除是只省不丢，排除档是显式的观感取舍
+    /// （反射图里没有这一批）。两档都不计水面与 Blend（它们本来就跳）。
+    pub planar_draws_skipped: u64,
 }
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
@@ -1084,8 +1126,9 @@ pub struct Renderer {
     camera_world_position: Vec3,
     /// P3-R245：宿主在本帧 `render`/`render_into_texture` 前登记的运动批次。按
     /// `Scene3dDrawable::entity` 的 id 认领，没被认领的在帧末丢弃。第三项是求值时刻
-    /// （场景时钟秒）——渲染器不持有场景时钟，必须由宿主给。
-    staged_motion: Vec<(u64, Arc<InstanceBatch3D>, f32)>,
+    /// （场景时钟秒）——渲染器不持有场景时钟，必须由宿主给。第四项是 P3-R273 的
+    /// LOD 链（远侧网格路径 + 切换半径），`None` = 这条批次没有 LOD。
+    staged_motion: Vec<(u64, Arc<InstanceBatch3D>, f32, Option<InstanceBatchLod3D>)>,
     /// P4-①：3D 材质绑定组缓存（按本帧 draw 序位）。稳态帧零 `create_bind_group`；
     /// 详见 `arena::MaterialBindKey` 的注释。arena 扩容时靠代次让旧条目失配。
     material_bind_cache: Vec<arena::CachedMaterialBind>,
@@ -1153,11 +1196,42 @@ pub struct Renderer {
     /// `frame_gpu_motion_culled` 数的是 draw 条数，这里数的是原本会烘进实例缓冲的那批实例；
     /// 有了它，`cull_candidates − cull_frustum − skipped_instances` 才重新约等于"提交实例"。
     frame_gpu_motion_culled_instances: u64,
+    /// P3-R268：本帧「逐 draw 建材质绑定组」循环的 CPU µs（跨 draw 累计，index==0 复位）。
+    /// 这段在 `render_passes` 里、任何 pass 录制之前跑，含 GPU 位姿烘焙与 arena 上传。
+    frame_bind_build_us: u64,
+    /// P3-R268：上述循环里 `bake_batch_motion_*`（compute 烘焙）那一段的 CPU µs。
+    frame_bind_bake_us: u64,
+    /// P3-R270：本帧共享的 compute 编码器。绑定组循环里的烘焙攒在这里，循环收尾
+    /// （`note_material_bind_frame`）封好，随图形一次提交。`None` = 没有待封的。
+    pending_compute: Option<wgpu::CommandEncoder>,
+    /// P3-R289：循环收尾封好的 compute 命令缓冲。**不再单独 `queue.submit`**，而是与图形
+    /// 编码器合成一次提交（compute 在前 ⇒ 队列顺序与两次提交完全一致）。`None` = 本帧没有烘焙。
+    pending_compute_sealed: Option<wgpu::CommandBuffer>,
+    /// P3-R270：GPU 位姿烘焙的输入缓冲，按批次身份持久化。键 = (Arc 指针, indirect
+    /// index_count, 是否带法线)；值持住 Arc，防止地址被回收后复用给别的批次。
+    /// P3-R270：按批次身份持久化的烘焙输入（P3-R273 起键里带 LOD 侧，近/远各一份）。
+    bake_inputs: HashMap<(usize, u32, bool, u32), batch_motion_gpu::BakeInputs>,
+    /// P3-R270：持久输入缓冲的累计**分配**次数（首建 5/批次 + 扩容）。门用它证明稳态帧
+    /// 真的零分配，而不是"看起来复用了"；活体读数也可以拿它对账批次数。
+    bake_input_allocs: u64,
+    /// P3-R272：静态输入（nodes/cumulative/instances）的**累计上传**次数。命中缓存时
+    /// 这三块一个字节都不重传——每帧只写 params + args。门用它区分"命中"与"重建"。
+    bake_static_uploads: u64,
+    /// P3-R284：烘焙 compute 绑定组的身份发号器（单调递增）。初值取最高位段，与 GPU
+    /// 粒子那套从 0 起的发号器分属两个命名空间——`retire_bind_group` 按 id 清缓存，
+    /// 撞号会顺手清掉别人的绑定组。累计发号数也是门读数：稳态帧不再增长。
+    bake_bind_serials: u64,
+    /// P3-R270：烘焙输入缓冲持久化 + 共享 compute 编码器；`false`（`--no-bake-cache`）= 回滚档，
+    /// 帧路径改走每次新建缓冲、每 dispatch 自己 submit 的旧入口（逐字节旧行为）。
+    bake_cache_enabled: bool,
     /// P3-R185：不透明 draw 按到相机距离前到后排序（early-Z 拒绝被挡像素）。
     /// `false`（`--no-depth-sort` 回滚档）= 保持声明/合批顺序。Blend 队列不受影响。
     depth_sort_enabled: bool,
     /// P3-R191：平面反射按镜像视锥剔除（`--no-planar-cull` 回滚档，A/B 用）。
     planar_cull_enabled: bool,
+    /// P3-R275：本帧不进平面反射 pass 的实体（`Scene3dDrawable::entity.0` 口径）。
+    /// 宿主每帧整体替换；空表 = 与未引入这一档前逐字节相同。
+    planar_skip_entities: Vec<u64>,
     /// P3-R194：点光阴影逐面方向锥剔除（`--no-point-face-cull` 回滚档，A/B 用）。
     point_face_cull_enabled: bool,
     /// P3-R196：平面反射目标的分辨率除数（2 = 半分辨率默认；4 = 四分之一档）。
@@ -1206,6 +1280,8 @@ pub struct Renderer {
     water_cheap_override: bool,
     /// P3-R203：开发期全局覆盖——所有地形强制走廉价细节档（`--terrain-cheap`，A/B 用）。
     terrain_cheap_override: bool,
+    /// P3-R277：开发期全局覆盖——所有普通网格强制走廉价着色档（`--crowd-cheap`，A/B 用）。
+    crowd_cheap_override: bool,
     /// P3-R198：方向光 CSM 阴影图边长（默认 2048；512/1024 为低端档）。构建期决定，
     /// 纹理与绑定组在 `new_async` 里一次建好，运行期不重建。
     shadow_resolution: u32,
@@ -1603,9 +1679,23 @@ impl Renderer {
         self.depth_sort_enabled = enabled;
     }
 
+    /// P3-R270：烘焙缓存开关；`false` = `--no-bake-cache` 回滚档（帧路径走旧入口）。
+    pub fn set_bake_cache_enabled(&mut self, enabled: bool) {
+        self.bake_cache_enabled = enabled;
+    }
+
     /// P3-R191：平面反射逐 draw 剔除开关（`true` 默认；`false` = A/B 回滚档）。
     pub fn set_planar_cull_enabled(&mut self, enabled: bool) {
         self.planar_cull_enabled = enabled;
+    }
+
+    /// P3-R275：本帧不进平面反射 pass 的实体集合（整体替换；空表 = 全部照旧进反射）。
+    ///
+    /// 语义是**逐实体**而不是逐网格：同一张网格的两个实体可以一个反射、一个不反射。
+    /// 静态合批组跨实体合并，只有组内全部实体都被点名时才整组跳过（见 `world_sprite`）。
+    pub fn set_planar_skip_entities(&mut self, entities: &[u64]) {
+        self.planar_skip_entities.clear();
+        self.planar_skip_entities.extend_from_slice(entities);
     }
 
     /// P3-R194：点光阴影逐面剔除开关（`true` 默认；`false` = A/B 回滚档）。
@@ -1800,6 +1890,11 @@ impl Renderer {
     /// P3-R203：把全部地形强制切到廉价细节档（A/B 用；`false` = 只按 spec 的 `cheap=1`）。
     pub fn set_terrain_cheap_override(&mut self, enabled: bool) {
         self.terrain_cheap_override = enabled;
+    }
+
+    /// P3-R277：把全部普通网格强制切到廉价着色档（A/B 用；`false` = 全价 PBR）。
+    pub fn set_crowd_cheap_override(&mut self, enabled: bool) {
+        self.crowd_cheap_override = enabled;
     }
 
     /// docs/54 §4.3：打开 / 关闭后处理通道。
@@ -2118,16 +2213,39 @@ impl Renderer {
     /// 认领的在帧末丢弃，不会跨帧残留。`time` 是求值用的场景时钟（秒）。
     ///
     /// 只登记不生效：还要 [`Self::set_gpu_motion_batches`] 开档。同一实体重复登记以后者为准。
-    pub fn stage_motion_batch(&mut self, entity: u64, batch: InstanceBatch3D, time: f32) {
+    ///
+    /// P3-R272：接受 `Arc<InstanceBatch3D>`，宿主把世界组件的那一份**原样**递过来（不再每帧
+    /// `Arc::new(整批)`）；传裸值也照旧可用（`Arc<T>: From<T>`），只是会多一次分配。
+    pub fn stage_motion_batch(
+        &mut self,
+        entity: u64,
+        batch: impl Into<Arc<InstanceBatch3D>>,
+        time: f32,
+    ) {
+        self.stage_motion_batch_with_lod(entity, batch, time, None);
+    }
+
+    /// P3-R273：[`Self::stage_motion_batch`] + 网格 LOD 链。`lod` = 远侧网格路径与切换
+    /// 半径；宿主提取时若看到 [`InstanceBatchLod3D`] 组件就带过来，渲染器据此把这条批次
+    /// 的近/远两条 draw 各烘一次（互斥且完备）。`None` 与旧入口逐字节同义。
+    pub fn stage_motion_batch_with_lod(
+        &mut self,
+        entity: u64,
+        batch: impl Into<Arc<InstanceBatch3D>>,
+        time: f32,
+        lod: Option<InstanceBatchLod3D>,
+    ) {
+        let batch = batch.into();
         if let Some(existing) = self
             .staged_motion
             .iter_mut()
-            .find(|(staged, _, _)| *staged == entity)
+            .find(|(staged, ..)| *staged == entity)
         {
-            existing.1 = Arc::new(batch);
+            existing.1 = batch;
             existing.2 = time;
+            existing.3 = lod;
         } else {
-            self.staged_motion.push((entity, Arc::new(batch), time));
+            self.staged_motion.push((entity, batch, time, lod));
         }
     }
 

@@ -132,7 +132,7 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **49 个模块表 / 414 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
+  **49 个模块表 / 423 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
   `scripts/verify/check-doc-claims.mjs` 与覆盖率门自动守，不靠人记；1.3 版核对时把 README 里过期的
   40/270 改正，2026-10-27 又把 283 校正为 313，2026-10-28 随 `nav` 模块校正为 319，
   2026-10-29 随 `net.now()` 校正为 328）/ 31 个运行时组件全部有演示；引擎新增一个

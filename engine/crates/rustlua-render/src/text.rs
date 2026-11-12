@@ -10,6 +10,55 @@ use crate::hinted::HintedAtlas;
 const GLYPH_W: u32 = 5;
 const GLYPH_H: u32 = 7;
 
+/// CJK region of the built-in atlas, appended below the ASCII block.
+/// Cells are 12x12 with an 11x11 glyph at (0, 1), so the ASCII rows stay
+/// byte-identical and only the normalization height changes.
+const CJK_GLYPH_W: u32 = 12;
+const CJK_GLYPH_H: u32 = 12;
+const CJK_COLS: u32 = 10;
+const CJK_ORIGIN_Y: u32 = 48;
+
+/// Embedded CJK glyphs for the F3 overlay labels. Each entry holds 12 rows
+/// of 12-bit masks (bit 11 = leftmost pixel); the 11x11 glyph sits at
+/// `(0, 1)` of a 12x12 cell, matching `FusionPixel-12px-Monospaced-zhHans`
+/// at 12 px. Keep the table in sync with `game_app::build_overlay`.
+#[rustfmt::skip]
+const CJK_GLYPHS: [(char, [u16; 12]); 33] = [
+    ('帧', [0x000, 0x208, 0x20e, 0xf88, 0xabe, 0xaa2, 0xaaa, 0xaaa, 0xaaa, 0xb88, 0x214, 0x222]),
+    ('率', [0x000, 0x040, 0xffe, 0x444, 0x2a8, 0x040, 0x4a4, 0x9f2, 0x040, 0xffe, 0x040, 0x040]),
+    ('时', [0x000, 0x004, 0xf04, 0x97e, 0x904, 0x904, 0xf44, 0x924, 0x924, 0x904, 0xf04, 0x01c]),
+    ('更', [0x000, 0xffe, 0x040, 0x7fc, 0x444, 0x7fc, 0x444, 0x7fc, 0x440, 0x240, 0x180, 0xe7e]),
+    ('新', [0x000, 0x106, 0xfd8, 0x450, 0x290, 0xfde, 0x114, 0xfd4, 0x114, 0x554, 0x924, 0x324]),
+    ('脚', [0x000, 0xe4e, 0xa4a, 0xbfa, 0xe4a, 0xa4a, 0xbfa, 0xe4a, 0xa8a, 0xaae, 0xb28, 0xbd8]),
+    ('本', [0x000, 0x040, 0x040, 0xffe, 0x150, 0x150, 0x150, 0x248, 0x248, 0x5f4, 0x842, 0x040]),
+    ('内', [0x000, 0x040, 0x040, 0xffe, 0x842, 0x842, 0x8a2, 0x912, 0xa0a, 0x802, 0x802, 0x80e]),
+    ('存', [0x000, 0x080, 0xffe, 0x100, 0x27c, 0x208, 0x610, 0xa10, 0x2fe, 0x210, 0x210, 0x230]),
+    ('峰', [0x000, 0x210, 0x21e, 0xaa2, 0xa9c, 0xaea, 0xabc, 0xa88, 0xabe, 0xf88, 0x07e, 0x008]),
+    ('值', [0x000, 0x210, 0x2fe, 0x410, 0x4fc, 0xc84, 0x4fc, 0x484, 0x4fc, 0x484, 0x484, 0x5fe]),
+    ('私', [0x000, 0x190, 0xe10, 0x210, 0x210, 0xf90, 0x220, 0x724, 0x6a4, 0xa42, 0x24e, 0x2f2]),
+    ('有', [0x000, 0x080, 0xffe, 0x100, 0x200, 0x3fc, 0x604, 0xbfc, 0x204, 0x3fc, 0x204, 0x21c]),
+    ('数', [0x000, 0x950, 0x590, 0xfde, 0x324, 0x594, 0x954, 0x214, 0xfd4, 0x248, 0x394, 0xc62]),
+    ('绘', [0x000, 0x410, 0x428, 0x844, 0xa82, 0xc7c, 0x400, 0x800, 0xefe, 0x020, 0x244, 0xcfa]),
+    ('制', [0x000, 0x502, 0x7ea, 0x90a, 0x10a, 0xfea, 0x10a, 0xfea, 0x92a, 0x922, 0x962, 0x10e]),
+    ('网', [0x000, 0xffe, 0x802, 0x88a, 0xaaa, 0x912, 0x912, 0xaaa, 0xaaa, 0xc42, 0x802, 0x80e]),
+    ('格', [0x000, 0x220, 0x23c, 0xf44, 0x2a8, 0x210, 0x628, 0x6c6, 0xb7c, 0x244, 0x244, 0x27c]),
+    ('顶', [0x000, 0xefe, 0x410, 0x4fe, 0x482, 0x492, 0x492, 0x492, 0x492, 0x428, 0x444, 0xc82]),
+    ('点', [0x000, 0x040, 0x07e, 0x040, 0x040, 0x7fc, 0x404, 0x404, 0x7fc, 0x000, 0x524, 0x892]),
+    ('三', [0x000, 0x7fc, 0x000, 0x000, 0x000, 0x000, 0x3f8, 0x000, 0x000, 0x000, 0x000, 0xffe]),
+    ('角', [0x000, 0x200, 0x3f0, 0x410, 0xffc, 0x444, 0x7fc, 0x444, 0x7fc, 0x444, 0x444, 0x84c]),
+    ('实', [0x000, 0x040, 0xffe, 0x802, 0xa22, 0x120, 0x420, 0x220, 0xffe, 0x050, 0x188, 0xe06]),
+    ('例', [0x000, 0x3e2, 0x28a, 0x48a, 0x4ea, 0xd2a, 0x52a, 0x4aa, 0x44a, 0x442, 0x482, 0x50e]),
+    ('候', [0x000, 0x27c, 0x204, 0x5fe, 0x540, 0xd7e, 0x590, 0x510, 0x5fe, 0x528, 0x444, 0x482]),
+    ('选', [0x000, 0x890, 0x4fc, 0x110, 0x010, 0xdfe, 0x448, 0x448, 0x48a, 0x50e, 0xa00, 0x9fe]),
+    ('剔', [0x000, 0x7e2, 0x42a, 0x7ea, 0x42a, 0x7ea, 0x20a, 0x7ea, 0xaaa, 0x4a2, 0x922, 0x26e]),
+    ('除', [0x000, 0xe38, 0xa44, 0xb82, 0xa7c, 0xc10, 0xa10, 0xafe, 0xa10, 0xe94, 0x912, 0x830]),
+    ('影', [0x000, 0x7c2, 0x444, 0x7c8, 0x440, 0x7c2, 0x104, 0xfe8, 0x440, 0x7c2, 0x544, 0xb28]),
+    ('平', [0x000, 0x7fc, 0x040, 0x444, 0x248, 0x040, 0xffe, 0x040, 0x040, 0x040, 0x040, 0x040]),
+    ('面', [0x000, 0xffe, 0x040, 0x080, 0xffe, 0x912, 0x9f2, 0x912, 0x912, 0x9f2, 0x912, 0xffe]),
+    ('性', [0x000, 0x248, 0x248, 0xa7e, 0xb48, 0xa88, 0xa08, 0x27e, 0x208, 0x208, 0x208, 0x2fe]),
+    ('能', [0x000, 0x426, 0x938, 0xea0, 0x022, 0xf9e, 0x880, 0xfa6, 0x8b8, 0xfa0, 0x8a2, 0x99e]),
+];
+
 /// The built-in monochrome ASCII glyph atlas used by the first text renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextAtlas {
@@ -19,11 +68,13 @@ pub struct TextAtlas {
 }
 
 impl TextAtlas {
-    /// Creates a 128x48 RGBA8 atlas containing printable ASCII glyphs.
+    /// Creates a 128x96 RGBA8 atlas: printable ASCII glyphs in the top
+    /// 128x48 block, plus the CJK labels used by the F3 overlay below it.
     #[must_use]
     pub fn built_in() -> Self {
         let width = 128;
-        let height = 48;
+        let cjk_rows = (CJK_GLYPHS.len() as u32).div_ceil(CJK_COLS);
+        let height = CJK_ORIGIN_Y + cjk_rows * CJK_GLYPH_H;
         let mut pixels = vec![0; (width * height * 4) as usize];
         for code in 32u8..=127 {
             let index = (code - 32) as u32;
@@ -32,6 +83,19 @@ impl TextAtlas {
             for (row, bits) in bitmap(code as char).iter().enumerate() {
                 for column in 0..5 {
                     if bits & (1 << (4 - column)) != 0 {
+                        let offset =
+                            (((cell_y + row as u32) * width + cell_x + column) * 4) as usize;
+                        pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
+                    }
+                }
+            }
+        }
+        for (index, (_, rows)) in CJK_GLYPHS.iter().enumerate() {
+            let cell_x = (index as u32 % CJK_COLS) * CJK_GLYPH_W;
+            let cell_y = CJK_ORIGIN_Y + (index as u32 / CJK_COLS) * CJK_GLYPH_H;
+            for (row, bits) in rows.iter().enumerate() {
+                for column in 0..CJK_GLYPH_W {
+                    if bits & (1 << (CJK_GLYPH_W - 1 - column)) != 0 {
                         let offset =
                             (((cell_y + row as u32) * width + cell_x + column) * 4) as usize;
                         pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
@@ -63,7 +127,35 @@ impl TextAtlas {
         self.width * 4
     }
 
-    /// Returns normalized UVs for the 5x7 glyph inside one printable ASCII cell.
+    /// True when the built-in atlas embeds a bitmap for this character.
+    #[must_use]
+    pub fn has_cjk_glyph(&self, character: char) -> bool {
+        CJK_GLYPHS.iter().any(|(ch, _)| *ch == character)
+    }
+
+    /// Glyph quad size in pixels at scale 1: ASCII glyphs are 5x7 inside an
+    /// 8x8 cell, CJK cells fill their 12x12 cell.
+    #[must_use]
+    pub fn glyph_size_px(&self, character: char) -> (f32, f32) {
+        if self.has_cjk_glyph(character) {
+            (CJK_GLYPH_W as f32, CJK_GLYPH_H as f32)
+        } else {
+            (GLYPH_W as f32, GLYPH_H as f32)
+        }
+    }
+
+    /// Horizontal advance in pixels at scale 1 (monospace ASCII 6, CJK 12).
+    #[must_use]
+    pub fn advance_px(&self, character: char) -> f32 {
+        if self.has_cjk_glyph(character) {
+            CJK_GLYPH_W as f32
+        } else {
+            6.0
+        }
+    }
+
+    /// Returns normalized UVs for the 5x7 glyph inside one printable ASCII cell,
+    /// or the full 12x12 cell of an embedded CJK glyph.
     ///
     /// The atlas cell is 8x8 with the glyph in the top-left and transparent
     /// padding on the right/bottom. `build_bitmap` draws the glyph into a
@@ -73,6 +165,17 @@ impl TextAtlas {
     /// as F at `font_size` 13).
     #[must_use]
     pub fn uv(&self, character: char) -> ([f32; 2], [f32; 2]) {
+        if let Some(index) = CJK_GLYPHS.iter().position(|(ch, _)| *ch == character) {
+            let x = (index as u32 % CJK_COLS) * CJK_GLYPH_W;
+            let y = CJK_ORIGIN_Y + (index as u32 / CJK_COLS) * CJK_GLYPH_H;
+            return (
+                [x as f32 / self.width as f32, y as f32 / self.height as f32],
+                [
+                    (x + CJK_GLYPH_W) as f32 / self.width as f32,
+                    (y + CJK_GLYPH_H) as f32 / self.height as f32,
+                ],
+            );
+        }
         let code = if character.is_ascii() && (character as u8) >= 32 && (character as u8) <= 127 {
             character as u8
         } else {
@@ -698,11 +801,17 @@ impl TextLayout {
                 TextError::NonFiniteOrigin
             });
         }
-        let advance = 6.0 * style.scale + style.spacing;
-        let mut advance_fn = |_: char| advance;
+        // ASCII advances are 6 px (5 px glyph + 1 px gap); embedded CJK cells
+        // advance 12 px so mixed lines keep both scripts on one grid.
+        let mut advance_fn =
+            |character: char| atlas.advance_px(character) * style.scale + style.spacing;
         let lines = layout_lines(text, &style, &mut advance_fn, "...");
-        let line_height = 8.0 * style.scale + style.line_spacing;
-        let first_line_height = 7.0 * style.scale;
+        // CJK cells are 12 px tall, so mixed lines need the taller first line and
+        // a 13 px step; ASCII-only text keeps the byte-identical 7/8 px metrics.
+        let has_cjk = text.chars().any(|character| atlas.has_cjk_glyph(character));
+        let (line_step, first_line) = if has_cjk { (13.0, 12.0) } else { (8.0, 7.0) };
+        let line_height = line_step * style.scale + style.line_spacing;
+        let first_line_height = first_line * style.scale;
         let visible = visible_lines(&style, lines.len(), line_height, first_line_height);
         let lines = &lines[..visible];
         let content_width = lines
@@ -719,8 +828,6 @@ impl TextLayout {
                 .valign
                 .offset(style.box_height().unwrap_or(content_height), content_height);
         let bold_shift = BOLD_SHIFT_EM * 8.0 * style.scale;
-        let w = 5.0 * style.scale;
-        let h = 7.0 * style.scale;
         let mut glyph_count = 0;
         let mut vertices = Vec::with_capacity(text.chars().count() * 6);
         for (line_index, line) in lines.iter().enumerate() {
@@ -732,6 +839,9 @@ impl TextLayout {
             let y = box_top + line_index as f32 * line_height;
             for character in line {
                 let (uv_min, uv_max) = atlas.uv(character.ch);
+                let (glyph_w, glyph_h) = atlas.glyph_size_px(character.ch);
+                let w = glyph_w * style.scale;
+                let h = glyph_h * style.scale;
                 let shifts = [0.0_f32, bold_shift];
                 let shift_count = if character.bold { 2 } else { 1 };
                 for shift in &shifts[..shift_count] {
@@ -758,7 +868,7 @@ impl TextLayout {
                         make(quad[3]),
                     ]);
                 }
-                x += advance;
+                x += atlas.advance_px(character.ch) * style.scale + style.spacing;
                 glyph_count += 1;
             }
         }
@@ -1276,7 +1386,7 @@ mod tests {
     #[test]
     fn atlas_has_expected_dimensions_and_non_empty_glyph() {
         let atlas = TextAtlas::built_in();
-        assert_eq!((atlas.width(), atlas.height()), (128, 48));
+        assert_eq!((atlas.width(), atlas.height()), (128, 96));
         assert!(
             atlas
                 .pixels()
@@ -1284,6 +1394,41 @@ mod tests {
                 .0
                 .contains(&[255, 255, 255, 255])
         );
+    }
+
+    #[test]
+    fn builtin_atlas_embeds_cjk_labels_at_twelve_px() {
+        let atlas = TextAtlas::built_in();
+        let (min, max) = atlas.uv('帧');
+        let texels = [
+            (max[0] - min[0]) * atlas.width() as f32,
+            (max[1] - min[1]) * atlas.height() as f32,
+        ];
+        assert!((texels[0] - 12.0).abs() < 1e-4);
+        assert!((texels[1] - 12.0).abs() < 1e-4);
+        // 每个内嵌汉字的 12x12 单元里必须有实心像素：空白说明 blit 偏移
+        // 越界或字模表本身没内容（UV 正确也画不出字）。
+        for (index, (ch, _)) in CJK_GLYPHS.iter().enumerate() {
+            let x0 = (index as u32 % CJK_COLS) * CJK_GLYPH_W;
+            let y0 = CJK_ORIGIN_Y + (index as u32 / CJK_COLS) * CJK_GLYPH_H;
+            let lit = (0..CJK_GLYPH_H).any(|row| {
+                (0..CJK_GLYPH_W).any(|column| {
+                    let offset = (((y0 + row) * atlas.width() + x0 + column) * 4) as usize;
+                    atlas.pixels()[offset] != 0
+                })
+            });
+            assert!(lit, "CJK 字模 {ch:?} 的单元是空白");
+        }
+        let style = TextStyle {
+            spacing: 0.0,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap("帧率", [0.0, 0.0], style, &atlas).unwrap();
+        assert_eq!(mesh.glyph_count, 2);
+        assert_eq!(mesh.size[0], 24.0);
+        assert!((mesh.size[1] - 12.0).abs() < 1e-4);
+        // Outside the embedded subset the glyph still falls back to '?'.
+        assert_eq!(atlas.uv('龍'), atlas.uv('?'));
     }
     #[test]
     fn layout_handles_newlines_and_lowercase() {

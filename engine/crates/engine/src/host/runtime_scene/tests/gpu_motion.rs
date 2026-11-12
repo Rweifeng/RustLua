@@ -51,7 +51,9 @@ fn runtime_with_batch() -> RuntimeScene {
         .expect("scene entity handle");
     runtime.with_script(|script| {
         script.with_world_mut(|world| {
-            world.insert(handle, motion_batch()).expect("insert batch");
+            world
+                .insert(handle, std::sync::Arc::new(motion_batch()))
+                .expect("insert batch");
         });
     });
     runtime
@@ -95,8 +97,196 @@ fn gpu_motion_extraction_stages_batches_and_skips_cpu_matrices() {
         "登记键必须与 drawable 的实体 id 一致"
     );
     assert_eq!(staged[0].1.instances.len(), 2, "登记的是整批（含运动参数）");
+    // P3-R272：登记必须是**同一个分配**——以前这里每帧深拷贝整批实例表（6 万只 ≈3.8 MB），
+    // 渲染器的烘焙缓存也只能靠"分配器恰好复用同一地址"命中。
+    let handle = runtime
+        .with_script(|script| script.scene_entity_handle(SceneEntityId(1)))
+        .expect("scene entity handle");
+    let world_batch = runtime.with_script(|script| {
+        script.with_world(|world| {
+            world
+                .get::<std::sync::Arc<InstanceBatch3D>>(handle)
+                .expect("world lookup")
+                .expect("组件必须还在")
+                .clone()
+        })
+    });
+    assert!(
+        std::sync::Arc::ptr_eq(&world_batch, &staged[0].1),
+        "暂存批次必须与世界组件共享同一个 Arc（提取层零深拷贝）"
+    );
     assert!(
         runtime.take_staged_motion_batches().is_empty(),
         "取走即清空：同一个批次不许跨帧重复推给渲染器"
     );
+}
+
+/// 给测试场景的批次实体挂一份 LOD 组件（P3-R273/R274 的宿主提取口径）。
+fn attach_lod(runtime: &mut RuntimeScene, lod: rustlua_render::instance_batch::InstanceBatchLod3D) {
+    let handle = runtime
+        .with_script(|script| script.scene_entity_handle(SceneEntityId(1)))
+        .expect("scene entity handle");
+    runtime.with_script(|script| {
+        script.with_world_mut(|world| {
+            world.insert(handle, lod).expect("insert lod");
+        });
+    });
+}
+
+/// P3-R274：宿主把三档 LOD 发成 **3 条 draw**（路径各一条），组件原样进暂存表。
+#[test]
+fn gpu_motion_extraction_emits_lod_chain_draws() {
+    let mut runtime = runtime_with_batch();
+    attach_lod(
+        &mut runtime,
+        rustlua_render::instance_batch::InstanceBatchLod3D {
+            mesh: "assets/models/ant_lod.glb".to_owned(),
+            distance: 5.0,
+            far_mesh: Some("assets/models/ant_lod_far.glb".to_owned()),
+            far_distance: Some(20.0),
+        },
+    );
+    runtime.set_gpu_motion_batches(true);
+    let viewport = Viewport::new(320.0, 180.0).expect("viewport");
+    let frame = runtime.scene_3d(viewport).expect("3d frame");
+    let paths: Vec<&str> = frame
+        .drawables
+        .iter()
+        .map(|drawable| drawable.mesh_path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "assets/models/ant.glb",
+            "assets/models/ant_lod.glb",
+            "assets/models/ant_lod_far.glb",
+        ],
+        "近/中/远三档各发一条 draw（顺序即 emit 顺序）"
+    );
+    let staged = runtime.take_staged_motion_batches();
+    assert_eq!(
+        staged.len(),
+        1,
+        "一个批次只登记一次（三条 draw 共用一份位姿）"
+    );
+    let lod = staged[0].3.as_ref().expect("暂存里必须带 LOD 链");
+    assert_eq!(lod.mesh, "assets/models/ant_lod.glb");
+    assert_eq!(
+        lod.far_mesh.as_deref(),
+        Some("assets/models/ant_lod_far.glb")
+    );
+    assert_eq!(lod.far_distance, Some(20.0));
+}
+
+/// P3-R275：平面反射排除组件缺席 / `enabled: true` = 照旧进反射（表为空）；
+/// `enabled: false` 才登记，键必须与 drawable 的实体 id 一致（渲染器按它查表），取走即清空。
+#[test]
+fn planar_skip_entities_extraction_follows_component() {
+    let viewport = Viewport::new(320.0, 180.0).expect("viewport");
+    let mut runtime = runtime_with_batch();
+
+    let _ = runtime.scene_3d(viewport).expect("3d frame");
+    assert!(
+        runtime.take_planar_skip_entities().is_empty(),
+        "组件缺席 = 照旧进反射"
+    );
+
+    attach_planar(
+        &mut runtime,
+        rustlua_render::instance_batch::InstanceBatchPlanar3D { enabled: true },
+    );
+    let _ = runtime.scene_3d(viewport).expect("3d frame");
+    assert!(
+        runtime.take_planar_skip_entities().is_empty(),
+        "enabled = true 仍是照旧进反射"
+    );
+
+    attach_planar(
+        &mut runtime,
+        rustlua_render::instance_batch::InstanceBatchPlanar3D { enabled: false },
+    );
+    let frame = runtime.scene_3d(viewport).expect("3d frame");
+    assert_eq!(
+        runtime.take_planar_skip_entities(),
+        vec![frame.drawables[0].entity.0],
+        "登记键必须与 drawable 的实体 id 一致"
+    );
+    assert!(
+        runtime.take_planar_skip_entities().is_empty(),
+        "取走即清空：同一个批次不许跨帧重复排除"
+    );
+}
+
+/// 给测试场景的批次实体挂一份平面反射排除组件（P3-R275 的宿主提取口径）。
+fn attach_planar(
+    runtime: &mut RuntimeScene,
+    planar: rustlua_render::instance_batch::InstanceBatchPlanar3D,
+) {
+    let handle = runtime
+        .with_script(|script| script.scene_entity_handle(SceneEntityId(1)))
+        .expect("scene entity handle");
+    runtime.with_script(|script| {
+        script.with_world_mut(|world| {
+            world.insert(handle, planar).expect("insert planar");
+        });
+    });
+}
+
+/// P3-R274：坏的第二台阶**只丢 far**，中档照旧；坏的中档才整条链退掉。
+#[test]
+fn gpu_motion_extraction_drops_bad_far_band_only() {
+    let viewport = Viewport::new(320.0, 180.0).expect("viewport");
+    for (label, lod, expected_paths) in [
+        (
+            "far 半径不大于第一台阶",
+            rustlua_render::instance_batch::InstanceBatchLod3D {
+                mesh: "assets/models/ant_lod.glb".to_owned(),
+                distance: 5.0,
+                far_mesh: Some("assets/models/ant_lod_far.glb".to_owned()),
+                far_distance: Some(5.0),
+            },
+            vec!["assets/models/ant.glb", "assets/models/ant_lod.glb"],
+        ),
+        (
+            "far 网格 = 批次网格",
+            rustlua_render::instance_batch::InstanceBatchLod3D {
+                mesh: "assets/models/ant_lod.glb".to_owned(),
+                distance: 5.0,
+                far_mesh: Some("assets/models/ant.glb".to_owned()),
+                far_distance: Some(20.0),
+            },
+            vec!["assets/models/ant.glb", "assets/models/ant_lod.glb"],
+        ),
+        (
+            "中档网格 = 批次网格（整条链退掉）",
+            rustlua_render::instance_batch::InstanceBatchLod3D {
+                mesh: "assets/models/ant.glb".to_owned(),
+                distance: 5.0,
+                far_mesh: Some("assets/models/ant_lod_far.glb".to_owned()),
+                far_distance: Some(20.0),
+            },
+            vec!["assets/models/ant.glb"],
+        ),
+    ] {
+        let mut runtime = runtime_with_batch();
+        attach_lod(&mut runtime, lod);
+        runtime.set_gpu_motion_batches(true);
+        let frame = runtime.scene_3d(viewport).expect("3d frame");
+        let paths: Vec<&str> = frame
+            .drawables
+            .iter()
+            .map(|drawable| drawable.mesh_path.as_str())
+            .collect();
+        assert_eq!(paths, expected_paths, "{label}");
+        let staged = runtime.take_staged_motion_batches();
+        if expected_paths.len() == 2 {
+            let lod = staged[0].3.as_ref().expect("中档必须保留");
+            assert!(
+                lod.far_mesh.is_none() && lod.far_distance.is_none(),
+                "{label}"
+            );
+        } else {
+            assert!(staged[0].3.is_none(), "{label}：整条链都必须退掉");
+        }
+    }
 }

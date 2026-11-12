@@ -155,6 +155,24 @@ pub struct HostPhases {
     pub shadow_record_us: Option<u64>,
     /// 录制里的点光立方体阴影子桶（≤8 盏 × 6 面，每面重录全部 drawable）。
     pub point_shadow_record_us: Option<u64>,
+    /// P3-R268：录制里「逐 draw 建材质绑定组」整段循环的子桶（在任何 pass 录制之前跑，
+    /// 含 GPU 位姿烘焙、arena 上传与绑定组创建）。`render_record_us` 减两条阴影子桶后
+    /// 剩下的固定面主要落在这里；没有这一列就只能把 record 的成本误归到 pass 上。
+    pub bind_build_us: Option<u64>,
+    /// P3-R268：上述循环里 GPU 位姿烘焙（compute 派发）那一段的子桶。恒 <= `bind_build_us`。
+    pub bind_bake_us: Option<u64>,
+    /// P3-R285：录制里平面反射 pass 的 CPU 子桶（`RenderFrameMetrics::record_planar_us`）。
+    pub record_planar_us: Option<u64>,
+    /// P3-R285：录制里主视图不透明网格 pass 的 CPU 子桶（`RenderFrameMetrics::record_depth_us`）。
+    pub record_depth_us: Option<u64>,
+    /// P3-R286：pass 前准备段（计划/uniform/frame_draws 整理/Clear），见 `RenderFrameMetrics::record_prep_us`。
+    pub record_prep_us: Option<u64>,
+    /// P3-R286：3D 之后的尾段（2D/HUD/后处理），见 `RenderFrameMetrics::record_tail_us`。
+    pub record_tail_us: Option<u64>,
+    /// P3-R288：绑定组整段，见 `RenderFrameMetrics::record_binds_us`。
+    pub record_binds_us: Option<u64>,
+    /// P3-R288：逐帧残差，见 `RenderFrameMetrics::record_other_us`。
+    pub record_other_us: Option<u64>,
     /// 渲染器时间戳自报的**整帧 GPU** 耗时（`GpuPassReport::frame_us`）。
     ///
     /// 与 `gpu_frame_us` 同源但独立填：`gpu_frame_us` 是既有口径，这一项与下面的逐 pass
@@ -177,6 +195,11 @@ pub struct HostPhases {
     /// P3-R254：上述被跳过批次带的实例总数（补 `cull_candidates` 的口径：候选 − 视锥剔 −
     /// 整批跳过 ≈ 提交实例）。
     pub gpu_motion_culled_instances: Option<u64>,
+    /// P3-R275：本帧被实例批次平面反射排除档挡在 planar pass 外的 draw 次数。
+    ///
+    /// 与 `cull_frustum` 分开记：剔除只省不丢，排除档会丢反射（观感取舍）。
+    /// 也不与 `gpu_motion_culled` 混：那一列是主视图整批跳过，这一列只影响反射图。
+    pub planar_skipped: Option<u64>,
     /// P3-R247：本帧方向光阴影链实际提交的 draw 次数（跨级联累计）。
     ///
     /// 三者一起才能把"阴影便宜了"拆到 draw 粒度：提交 + 剔除 = drawable × 级联数。
@@ -253,6 +276,14 @@ pub struct FrameProfile {
     host_present_ns: Vec<u64>,
     host_shadow_record_ns: Vec<u64>,
     host_point_shadow_record_ns: Vec<u64>,
+    host_bind_build_ns: Vec<u64>,
+    host_bind_bake_ns: Vec<u64>,
+    host_record_planar_ns: Vec<u64>,
+    host_record_depth_ns: Vec<u64>,
+    host_record_prep_ns: Vec<u64>,
+    host_record_tail_ns: Vec<u64>,
+    host_record_binds_ns: Vec<u64>,
+    host_record_other_ns: Vec<u64>,
     /// 渲染器时间戳自报的整帧 GPU 耗时样本（P3-R182）。
     gpu_pass_frame_ns: Vec<u64>,
     /// 逐 pass GPU 样本的**首见顺序**（与 `system_order` 同一条纪律：报告不随 HashMap 迭代抖）。
@@ -266,6 +297,8 @@ pub struct FrameProfile {
     gpu_motion_culled_total: u64,
     /// P3-R254：整批跳过带走的实例累计（与上面的 draw 条数同帧累计）。
     gpu_motion_culled_instances_total: u64,
+    /// P3-R275：平面反射排除档挡掉的 draw 累计（排除档关时恒 0）。
+    planar_skipped_total: u64,
     /// P3-R247：方向光阴影的提交/剔除累计（只统计有阴影 draw 的帧）。
     shadow_frames: u64,
     shadow_draws_total: u64,
@@ -405,6 +438,14 @@ impl FrameProfile {
                 phases.point_shadow_record_us,
                 &mut self.host_point_shadow_record_ns,
             ),
+            (phases.bind_build_us, &mut self.host_bind_build_ns),
+            (phases.bind_bake_us, &mut self.host_bind_bake_ns),
+            (phases.record_planar_us, &mut self.host_record_planar_ns),
+            (phases.record_depth_us, &mut self.host_record_depth_ns),
+            (phases.record_prep_us, &mut self.host_record_prep_ns),
+            (phases.record_tail_us, &mut self.host_record_tail_ns),
+            (phases.record_binds_us, &mut self.host_record_binds_ns),
+            (phases.record_other_us, &mut self.host_record_other_ns),
         ] {
             if let Some(us) = value {
                 samples.push(us.saturating_mul(1_000));
@@ -439,6 +480,11 @@ impl FrameProfile {
             self.gpu_motion_culled_instances_total = self
                 .gpu_motion_culled_instances_total
                 .saturating_add(culled);
+        }
+        // P3-R275：反射排除档与主视图剔除互不影响（排除发生在 planar pass 内），
+        // 单独累计，不与上面任何一桶共用分母。
+        if let Some(skipped) = phases.planar_skipped {
+            self.planar_skipped_total = self.planar_skipped_total.saturating_add(skipped);
         }
         // P3-R261：点光链的提交与方向光无关（没有方向光的帧也可能有立方体阴影），
         // 因此不进上面「有 CSM draw 的帧」那个桶，按帧独立累计。
@@ -573,6 +619,14 @@ impl FrameProfile {
         let (render_present, _) = host_of(&self.host_present_ns);
         let (shadow_record, _) = host_of(&self.host_shadow_record_ns);
         let (point_shadow_record, _) = host_of(&self.host_point_shadow_record_ns);
+        let (bind_build, _) = host_of(&self.host_bind_build_ns);
+        let (bind_bake, _) = host_of(&self.host_bind_bake_ns);
+        let (record_planar, _) = host_of(&self.host_record_planar_ns);
+        let (record_depth, _) = host_of(&self.host_record_depth_ns);
+        let (record_prep, _) = host_of(&self.host_record_prep_ns);
+        let (record_tail, _) = host_of(&self.host_record_tail_ns);
+        let (record_binds, _) = host_of(&self.host_record_binds_ns);
+        let (record_other, _) = host_of(&self.host_record_other_ns);
         let (gpu_pass_frame, _) = host_of(&self.gpu_pass_frame_ns);
         let mut gpu_passes = Vec::with_capacity(self.gpu_pass_order.len());
         for &name in &self.gpu_pass_order {
@@ -614,6 +668,14 @@ impl FrameProfile {
                 render_present,
                 shadow_record,
                 point_shadow_record,
+                bind_build,
+                bind_bake,
+                record_planar,
+                record_depth,
+                record_prep,
+                record_tail,
+                record_binds,
+                record_other,
                 gpu_pass_frame,
             },
             gpu_passes,
@@ -623,6 +685,7 @@ impl FrameProfile {
                 frustum_culled: self.cull_frustum_total,
                 gpu_motion_skipped: self.gpu_motion_culled_total,
                 gpu_motion_skipped_instances: self.gpu_motion_culled_instances_total,
+                planar_skipped: self.planar_skipped_total,
                 culled_pct: percent(
                     self.cull_frustum_total as f64,
                     self.cull_candidates_total as f64,
@@ -812,6 +875,8 @@ pub struct CullSummary {
     pub gpu_motion_skipped: u64,
     /// P3-R254：这些被跳过批次带的实例总数（累计）。
     pub gpu_motion_skipped_instances: u64,
+    /// P3-R275：平面反射排除档挡掉的 draw 累计（跨帧）。
+    pub planar_skipped: u64,
     /// 剔除率（%）；`candidates = 0` 时为 0。
     pub culled_pct: f64,
 }
@@ -845,6 +910,22 @@ pub struct HostPhaseSummary {
     pub shadow_record: TimingStats,
     /// 录制里的点光立方体阴影子桶。
     pub point_shadow_record: TimingStats,
+    /// P3-R268：逐 draw 建材质绑定组循环（含烘焙/上传），见 [`HostPhases::bind_build_us`]。
+    pub bind_build: TimingStats,
+    /// P3-R268：其中 GPU 位姿烘焙那一段，见 [`HostPhases::bind_bake_us`]。
+    pub bind_bake: TimingStats,
+    /// P3-R285：平面反射 pass 的录制 CPU，见 [`HostPhases::record_planar_us`]。
+    pub record_planar: TimingStats,
+    /// P3-R285：主视图不透明网格 pass 的录制 CPU，见 [`HostPhases::record_depth_us`]。
+    pub record_depth: TimingStats,
+    /// P3-R286：pass 前准备段，见 [`HostPhases::record_prep_us`]。
+    pub record_prep: TimingStats,
+    /// P3-R286：3D 之后的尾段，见 [`HostPhases::record_tail_us`]。
+    pub record_tail: TimingStats,
+    /// P3-R288：绑定组整段，见 [`HostPhases::record_binds_us`]。
+    pub record_binds: TimingStats,
+    /// P3-R288：逐帧残差，见 [`HostPhases::record_other_us`]。
+    pub record_other: TimingStats,
     /// 渲染器时间戳自报的整帧 GPU 耗时；与 `gpu_passes` 各项之和的对账见 [`GpuPassProfile`]。
     pub gpu_pass_frame: TimingStats,
 }
@@ -988,7 +1069,7 @@ impl FrameProfileSummary {
              \"render_cpu\":{},\"gpu_frame\":{},\
              \"render_acquire\":{},\"render_record\":{},\"render_submit\":{},\
              \"render_present\":{},\"shadow_record\":{},\"point_shadow_record\":{},\
-             \"gpu_pass_frame\":{}}}",
+             \"bind_build\":{},\"bind_bake\":{},\"record_planar\":{},\"record_depth\":{},\"record_prep\":{},\"record_tail\":{},\"record_binds\":{},\"record_other\":{},\"gpu_pass_frame\":{}}}",
             self.host.sim.json(),
             self.host.sim_share_pct,
             self.host.extract.json(),
@@ -1005,6 +1086,14 @@ impl FrameProfileSummary {
             self.host.render_present.json(),
             self.host.shadow_record.json(),
             self.host.point_shadow_record.json(),
+            self.host.bind_build.json(),
+            self.host.bind_bake.json(),
+            self.host.record_planar.json(),
+            self.host.record_depth.json(),
+            self.host.record_prep.json(),
+            self.host.record_tail.json(),
+            self.host.record_binds.json(),
+            self.host.record_other.json(),
             self.host.gpu_pass_frame.json()
         );
         let gpu_passes = self
@@ -1034,7 +1123,8 @@ impl FrameProfileSummary {
              \"worst_stage\":\"{}\",\"worst_parallel_stage\":\"{}\",\
              \"host\":{},\"gpu_passes\":[{}],\
              \"cull\":{{\"frames\":{},\"candidates\":{},\"frustum_culled\":{},\
-             \"gpu_motion_skipped\":{},\"gpu_motion_skipped_instances\":{},\"culled_pct\":{:.3}}},\
+             \"gpu_motion_skipped\":{},\"gpu_motion_skipped_instances\":{},\
+             \"planar_skipped\":{},\"culled_pct\":{:.3}}},\
              \"shadow\":{{\"frames\":{},\"draws\":{},\"draws_culled\":{},\"instances\":{},\
              \"skipped\":{},\"point_skipped\":{},\"distance_skipped\":{},\
              \"point_distance_skipped\":{},\"point_draws\":{},\"point_instances\":{},\
@@ -1063,6 +1153,7 @@ impl FrameProfileSummary {
             self.cull.frustum_culled,
             self.cull.gpu_motion_skipped,
             self.cull.gpu_motion_skipped_instances,
+            self.cull.planar_skipped,
             self.cull.culled_pct,
             self.shadow.frames,
             self.shadow.draws,
@@ -1415,6 +1506,14 @@ mod tests {
             render_present_us: Some(150),
             shadow_record_us: Some(40),
             point_shadow_record_us: Some(90),
+            bind_build_us: Some(120),
+            bind_bake_us: Some(70),
+            record_planar_us: Some(20),
+            record_depth_us: Some(30),
+            record_prep_us: Some(5),
+            record_tail_us: Some(10),
+            record_binds_us: Some(3),
+            record_other_us: Some(2),
             gpu_pass_frame_us: Some(900),
             gpu_passes: vec![("clear", 100), ("depth_opaque", 800)],
             ..HostPhases::default()
@@ -1435,6 +1534,24 @@ mod tests {
         assert_eq!(summary.host.render_present.p50_us(), 150.0);
         assert_eq!(summary.host.shadow_record.p50_us(), 40.0);
         assert_eq!(summary.host.point_shadow_record.p50_us(), 90.0);
+        assert_eq!(summary.host.bind_build.p50_us(), 120.0);
+        assert_eq!(summary.host.bind_bake.p50_us(), 70.0);
+        // P3-R285：两个新子桶也必须各自落到自己的样本里（挂错桶画面上看不出来）。
+        assert_eq!(summary.host.record_planar.p50_us(), 20.0);
+        assert_eq!(summary.host.record_depth.p50_us(), 30.0);
+        // P3-R286：准备段与尾段同样各归各位。
+        assert_eq!(summary.host.record_prep.p50_us(), 5.0);
+        assert_eq!(summary.host.record_tail.p50_us(), 10.0);
+        // P3-R288：绑定组整段与逐帧残差同样各归各位（合成 195+3+2=200，正好等于总录制）。
+        assert_eq!(summary.host.record_binds.p50_us(), 3.0);
+        assert_eq!(summary.host.record_other.p50_us(), 2.0);
+        // 子桶必须套在父桶里：烘焙是绑定组循环的一段，反过来就说明计时挂错了地方。
+        assert!(
+            summary.host.bind_bake.p50_us() <= summary.host.bind_build.p50_us(),
+            "bake sub-bucket must fit inside bind-build: {} vs {}",
+            summary.host.bind_bake.p50_us(),
+            summary.host.bind_build.p50_us()
+        );
         assert_eq!(summary.host.render_record.count, 1);
         assert!(
             summary.host.shadow_record.p50_us() + summary.host.point_shadow_record.p50_us()
@@ -1443,6 +1560,20 @@ mod tests {
             summary.host.shadow_record.p50_us(),
             summary.host.point_shadow_record.p50_us(),
             summary.host.render_record.p50_us()
+        );
+        // P3-R285：四条 pass 子桶（两条阴影 + planar + depth）都套在总录制里。
+        // 合成读数 40+90+20+30=180 <= 200；挂错桶（例如把 depth 累加进 shadow）会在这里红。
+        assert!(
+            summary.host.shadow_record.p50_us()
+                + summary.host.point_shadow_record.p50_us()
+                + summary.host.record_planar.p50_us()
+                + summary.host.record_depth.p50_us()
+                + summary.host.record_prep.p50_us()
+                + summary.host.record_tail.p50_us()
+                + summary.host.record_binds.p50_us()
+                + summary.host.record_other.p50_us()
+                <= summary.host.render_record.p50_us(),
+            "四条 pass 子桶之和不能超过总录制"
         );
         let json = summary.to_json();
         assert!(
@@ -1457,6 +1588,14 @@ mod tests {
             "render_present",
             "shadow_record",
             "point_shadow_record",
+            "bind_build",
+            "bind_bake",
+            "record_planar",
+            "record_depth",
+            "record_prep",
+            "record_tail",
+            "record_binds",
+            "record_other",
         ] {
             assert!(
                 json.contains(&format!("\"{key}\":{{\"count\":1")),
@@ -1576,9 +1715,38 @@ mod tests {
         let json = summary.to_json();
         assert!(
             json.contains(&format!(
-                "\"cull\":{{\"frames\":2,\"candidates\":1500,\"frustum_culled\":350,\"gpu_motion_skipped\":40,\"gpu_motion_skipped_instances\":2400,\"culled_pct\":{expected:.3}}}"
+                "\"cull\":{{\"frames\":2,\"candidates\":1500,\"frustum_culled\":350,\"gpu_motion_skipped\":40,\"gpu_motion_skipped_instances\":2400,\"planar_skipped\":0,\"culled_pct\":{expected:.3}}}"
             )),
             "JSON 缺少剔除累计或口径不对: {json}"
+        );
+    }
+
+    /// P3-R275：反射排除档的计数与主视图剔除互不共用分母。
+    ///
+    /// 抓两种假绿：① 排除数被并进 `cull_frustum` ⇒ A/B 里"少画了反射"会被读成
+    /// "视锥剔得更狠"；② 0 候选帧上的排除数没进桶 ⇒ 只开反射排除、不开剔除的场景读到 0。
+    #[test]
+    fn planar_skipped_counts_independently_of_frustum_buckets() {
+        let mut profile = FrameProfile::new();
+        for (candidates, skipped) in [(0, 3), (1_000, 5)] {
+            profile.record(&report(1, vec![]), Duration::from_micros(1_000));
+            profile.record_host_phases(HostPhases {
+                sim: Duration::from_micros(100),
+                extract: Duration::from_micros(100),
+                submit: Duration::from_micros(100),
+                cull_candidates: Some(candidates),
+                cull_frustum: Some(0),
+                planar_skipped: (skipped > 0).then_some(skipped),
+                ..HostPhases::default()
+            });
+        }
+        let summary = profile.summary();
+        assert_eq!(summary.cull.frames, 1, "0 候选帧仍不进剔除桶");
+        assert_eq!(summary.cull.frustum_culled, 0);
+        assert_eq!(summary.cull.planar_skipped, 8, "排除数独立累计，跨帧求和");
+        assert!(
+            summary.to_json().contains("\"planar_skipped\":8"),
+            "帧剖面 JSON 必须带 planar_skipped，A/B 才能读到"
         );
     }
 

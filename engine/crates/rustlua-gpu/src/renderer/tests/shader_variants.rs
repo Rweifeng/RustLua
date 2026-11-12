@@ -1084,18 +1084,38 @@ fn water_cheap_lighting_gates_are_present() {
         "水档标志必须从 animation.z 读取"
     );
     assert!(
-        source.contains("select(min(u32(light.params.x), 16u), 0u, water_cheap)"),
-        "点光循环必须被 water_cheap 关掉"
+        source.contains("select(min(u32(light.params.x), 16u), 0u, water_cheap || mesh_cheap)"),
+        "点光循环必须被 water_cheap（与 P3-R277 的 mesh_cheap）关掉"
     );
     assert!(
         source.contains(
-            "if (!water_cheap) {\n        shadow_visibility = shadow_visibility_four_cascades("
-        ) || source.contains("shadow_visibility = shadow_visibility_four_cascades("),
+            "if (!water_cheap && !mesh_cheap) {\n        shadow_visibility = shadow_visibility_four_cascades("
+        ),
         "级联阴影必须被 water_cheap 门控"
     );
     assert!(
-        source.contains("if (!water_cheap) {"),
+        source.contains("if (!water_cheap && !mesh_cheap) {"),
         "SH9 漫反射必须被 water_cheap 门控"
+    );
+}
+
+/// P3-R277：普通网格廉价着色档的源文本门——读源只防删，语义证据是
+/// `crowd_cheap_override_changes_generic_mesh_pixels` 的像素对照。
+#[test]
+fn crowd_cheap_lighting_gates_are_present() {
+    let source = include_str!("../../../shaders/mesh3d_pbr.wgsl");
+    assert!(
+        source
+            .contains("let mesh_cheap = material.animation.x < 0.5 && material.animation.z > 0.5;"),
+        "普通网格档标志必须与水面/地形互斥"
+    );
+    assert!(
+        source.contains("} else if (mesh_cheap) {"),
+        "SH9 被跳过后必须退回常数环境光"
+    );
+    assert!(
+        source.contains("if (!mesh_cheap) {\n        let cc_factor = material.clearcoat.x;"),
+        "镜面 IBL 必须被 mesh_cheap 门控"
     );
 }
 

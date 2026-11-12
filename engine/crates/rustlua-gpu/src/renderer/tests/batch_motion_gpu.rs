@@ -22,6 +22,20 @@ fn headless_renderer() -> Option<Renderer> {
 }
 
 /// 64 只实例：align / 前向轴 / 速度倍率 / 起始偏移 / 缩放都各不相同，覆盖两个前向轴分支。
+/// P3-R289：帧路径把烘焙封好后随图形**一次**提交。测试里没有图形编码器，用一条空的
+/// 走同一条合并提交路径，保证读回之前 compute 真的进了队列。
+fn submit_baked(renderer: &mut Renderer) {
+    renderer.seal_pending_compute();
+    let encoder = renderer
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    renderer.submit_frame_commands(encoder);
+    assert!(
+        renderer.pending_compute_sealed.is_none(),
+        "合并提交之后不许留封好的 compute（否则下一帧会重复提交同一份烘焙）"
+    );
+}
+
 fn motion_batch(closed: bool) -> InstanceBatch3D {
     // 第四个点与前一个重合（退化点）：CPU 建弧长表时会剔除，GPU 拿到的节点表必须一致。
     let path = vec![
@@ -802,4 +816,817 @@ fn gpu_bake_frustum_cull_keeps_only_instances_whose_sphere_reaches_the_view() {
         cpu.len(),
         "关档一只都不许剔（实测 {off_count}）"
     );
+}
+
+#[test]
+fn gpu_cached_bake_reuses_buffers_and_matches_uncached_pose_set() {
+    let Some(mut renderer) = headless_renderer() else {
+        return gpu_skipped("device has no compute");
+    };
+    let batch = std::sync::Arc::new(motion_batch(false));
+    let origin = rustlua_math::math3d::Vec3::new(0.0, 0.0, 0.0);
+    let radius = 12.0f32;
+    let index_count = 321u32;
+    let cpu_all = batch.matrices_at(0.0);
+    let size = cpu_all.len() as u64 * BATCH_MOTION_MATRIX_BYTES;
+    let translation = |model: &Mat4| {
+        [
+            model.columns[3][0],
+            model.columns[3][1],
+            model.columns[3][2],
+        ]
+    };
+    let survivors = |time: f32| {
+        let mut kept: Vec<Mat4> = batch
+            .matrices_at(time)
+            .iter()
+            .filter(|model| {
+                let [x, y, z] = translation(model);
+                x * x + y * y + z * z <= radius * radius
+            })
+            .cloned()
+            .collect();
+        kept.sort_by(|a, b| {
+            let (a, b) = (translation(a), translation(b));
+            a[0].total_cmp(&b[0])
+                .then(a[1].total_cmp(&b[1]))
+                .then(a[2].total_cmp(&b[2]))
+        });
+        kept
+    };
+    let expected = survivors(0.0);
+    assert!(
+        !expected.is_empty() && expected.len() < cpu_all.len(),
+        "夹具必须同时覆盖保留/剔除两侧，实际 {}/{}",
+        expected.len(),
+        cpu_all.len()
+    );
+    let target = |renderer: &Renderer| {
+        renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-batch-motion-cache-target"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    };
+    // 压缩前缀按平移列排序后对账（原子加顺序不稳定，画面与顺序无关）。
+    let packed_sorted = |renderer: &Renderer, buffer: &wgpu::Buffer, kept: usize| {
+        let bytes = renderer
+            .read_storage_buffer(buffer, size)
+            .unwrap_or_else(|error| panic!("压缩结果回读失败：{error}"));
+        let mut packed: Vec<Mat4> = bytes
+            .chunks_exact(BATCH_MOTION_MATRIX_BYTES as usize)
+            .take(kept)
+            .map(|chunk| {
+                let mut columns = [[0.0f32; 4]; 4];
+                for (column, slot) in columns.iter_mut().enumerate() {
+                    for (row, value) in slot.iter_mut().enumerate() {
+                        let start = (column * 4 + row) * 4;
+                        *value = f32::from_le_bytes([
+                            chunk[start],
+                            chunk[start + 1],
+                            chunk[start + 2],
+                            chunk[start + 3],
+                        ]);
+                    }
+                }
+                Mat4 { columns }
+            })
+            .collect();
+        packed.sort_by(|a, b| {
+            let (a, b) = (translation(a), translation(b));
+            a[0].total_cmp(&b[0])
+                .then(a[1].total_cmp(&b[1]))
+                .then(a[2].total_cmp(&b[2]))
+        });
+        packed
+    };
+    let indirect = |renderer: &Renderer, args: &wgpu::Buffer| {
+        let bytes = renderer
+            .read_storage_buffer(args, 20)
+            .unwrap_or_else(|error| panic!("参数回读失败：{error}"));
+        let word = |i: usize| {
+            u32::from_le_bytes([
+                bytes[i * 4],
+                bytes[i * 4 + 1],
+                bytes[i * 4 + 2],
+                bytes[i * 4 + 3],
+            ])
+        };
+        [word(0), word(1), word(2), word(3), word(4)]
+    };
+
+    // ① 非缓存入口（对账门/回读走的那条）不许碰持久缓存。
+    let plain_target = target(&renderer);
+    let plain_args = renderer
+        .bake_batch_motion_compact(
+            &batch,
+            0.0,
+            &plain_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("非缓存压缩烘焙失败：{error}"))
+        .expect("剔除档必须给出 indirect 参数缓冲");
+    assert_eq!(renderer.bake_input_allocs, 0, "非缓存入口不许分配持久缓冲");
+    assert!(renderer.bake_inputs.is_empty(), "非缓存入口不许写缓存");
+    assert!(
+        renderer.pending_compute.is_none(),
+        "非缓存入口必须自己 submit，不许留待提交编码器"
+    );
+    let plain_pose = packed_sorted(&renderer, &plain_target, expected.len());
+    let plain_args_words = indirect(&renderer, &plain_args);
+    assert_matrices_close(&expected, &plain_pose, "非缓存前缀 vs CPU");
+    assert_eq!(plain_args_words[0], index_count);
+    assert_eq!(plain_args_words[1] as usize, expected.len());
+
+    // ② 缓存路径首帧：建 5 块、位姿与 indirect 参数都和非缓存一致。
+    let dispatches_before = renderer.compute_stats().dispatches;
+    let cached_target = target(&renderer);
+    let cached_args = renderer
+        .bake_batch_motion_compact_cached_with_lod(
+            &batch,
+            0.0,
+            &cached_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_or_else(|error| panic!("缓存压缩烘焙失败：{error}"))
+        .expect("剔除档必须给出 indirect 参数缓冲");
+    assert!(
+        renderer.pending_compute.is_some(),
+        "缓存路径必须把 dispatch 攒进共享编码器（否则又是每 dispatch 一次 submit）"
+    );
+    // P3-R271：收尾 kernel 已折进主 kernel——一次压缩烘焙只该录一次 dispatch。
+    // 这条是反面对照的落点：把 finalize 加回来（或再加一次 dispatch）这里就红。
+    assert_eq!(
+        renderer.compute_stats().dispatches - dispatches_before,
+        1,
+        "压缩烘焙必须只录一次 dispatch（finalize 已折进主 kernel）"
+    );
+    submit_baked(&mut renderer);
+    assert!(
+        renderer.pending_compute.is_none(),
+        "封好并提交之后不许留待提交编码器"
+    );
+    assert_eq!(renderer.bake_input_allocs, 5, "首帧该建 5 块输入缓冲");
+    assert_eq!(renderer.bake_inputs.len(), 1);
+    let cached_pose = packed_sorted(&renderer, &cached_target, expected.len());
+    assert_matrices_close(&plain_pose, &cached_pose, "缓存 vs 非缓存前缀");
+    assert_eq!(
+        indirect(&renderer, &cached_args),
+        plain_args_words,
+        "indirect 参数必须与非缓存逐字相同"
+    );
+
+    // ③ 稳态第二帧：零新分配，位姿仍与同时间的非缓存路径一致；且 time 真的动了位姿。
+    let later = 0.25f32;
+    let later_expected = survivors(later);
+    let later_target = target(&renderer);
+    let later_args = renderer
+        .bake_batch_motion_compact_cached_with_lod(
+            &batch,
+            later,
+            &later_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+            None,
+            // P3-R284：目标缓冲每帧新建 ⇒ 声明"不是 arena"，绑定组不许缓存。
+            false,
+        )
+        .unwrap_or_else(|error| panic!("第二帧缓存烘焙失败：{error}"))
+        .expect("第二帧必须给出 indirect 参数缓冲");
+    submit_baked(&mut renderer);
+    assert_eq!(
+        renderer.bake_input_allocs, 5,
+        "稳态帧不许再分配输入缓冲（实测累计 {}）",
+        renderer.bake_input_allocs
+    );
+    assert_eq!(
+        renderer.bake_static_uploads, 3,
+        "稳态帧不许重传静态输入（只有首帧那 nodes/cumulative/instances 三块）"
+    );
+    assert_eq!(renderer.bake_inputs.len(), 1, "同一批次不许长出第二条缓存");
+    let later_plain_target = target(&renderer);
+    let later_plain_args = renderer
+        .bake_batch_motion_compact(
+            &batch,
+            later,
+            &later_plain_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("第二帧非缓存烘焙失败：{error}"))
+        .expect("第二帧非缓存必须给出 indirect 参数缓冲");
+    let later_pose = packed_sorted(&renderer, &later_target, later_expected.len());
+    let later_plain_pose = packed_sorted(&renderer, &later_plain_target, later_expected.len());
+    assert_matrices_close(&later_expected, &later_pose, "第二帧缓存前缀 vs CPU");
+    assert_matrices_close(&later_plain_pose, &later_pose, "第二帧缓存 vs 非缓存");
+    assert_eq!(
+        indirect(&renderer, &later_args),
+        indirect(&renderer, &later_plain_args),
+        "第二帧 indirect 参数必须与非缓存逐字相同"
+    );
+    // 比整张排序后的平移表，不能只比首项：开口路径末端的实例被夹在终点，两个时刻的
+    // 排序首项是同一个 [-5,2,4]，只比首项会把"时间真的动了"误判成空洞。
+    let translations = |pose: &[Mat4]| -> Vec<[f32; 3]> { pose.iter().map(translation).collect() };
+    assert_ne!(
+        translations(&later_pose),
+        translations(&cached_pose),
+        "夹具必须让 time 真的改变位姿，否则第二帧对账是空洞的"
+    );
+
+    // ③b 身份变化（`Arc::make_mut` 换地址 ⇒ 新键）= 整批重传，位姿按新实例表求值。
+    let mut rebuilt_batch = (*batch).clone();
+    rebuilt_batch.instances[0].scale = [3.0, 3.0, 3.0];
+    let rebuilt = std::sync::Arc::new(rebuilt_batch);
+    assert_ne!(
+        std::sync::Arc::as_ptr(&rebuilt),
+        std::sync::Arc::as_ptr(&batch),
+        "夹具必须换地址（否则测的还是同一身份）"
+    );
+    let uploads_before = renderer.bake_static_uploads;
+    let allocs_before = renderer.bake_input_allocs;
+    let rebuilt_target = target(&renderer);
+    let rebuilt_args = renderer
+        .bake_batch_motion_compact_cached_with_lod(
+            &rebuilt,
+            0.0,
+            &rebuilt_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap_or_else(|error| panic!("新身份烘焙失败：{error}"))
+        .expect("新身份必须给出 indirect 参数缓冲");
+    submit_baked(&mut renderer);
+    assert_eq!(
+        renderer.bake_static_uploads,
+        uploads_before + 3,
+        "新身份必须重传静态输入"
+    );
+    assert_eq!(
+        renderer.bake_input_allocs,
+        allocs_before + 5,
+        "新身份必须新建一套输入缓冲"
+    );
+    assert_eq!(renderer.bake_inputs.len(), 2, "两个身份各一条缓存");
+    // 与非缓存路径对账：若复用了旧实例表，实例 0 的缩放还会是 0.1，矩阵对不上。
+    let rebuilt_plain_target = target(&renderer);
+    let rebuilt_plain_args = renderer
+        .bake_batch_motion_compact(
+            &rebuilt,
+            0.0,
+            &rebuilt_plain_target,
+            0,
+            None,
+            1.0,
+            Some((origin, radius)),
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("新身份非缓存烘焙失败：{error}"))
+        .expect("非缓存必须给出 indirect 参数缓冲");
+    let rebuilt_pose = packed_sorted(&renderer, &rebuilt_target, expected.len());
+    let rebuilt_plain_pose = packed_sorted(&renderer, &rebuilt_plain_target, expected.len());
+    assert_matrices_close(&rebuilt_plain_pose, &rebuilt_pose, "新身份缓存 vs 非缓存");
+    assert_eq!(
+        indirect(&renderer, &rebuilt_args),
+        indirect(&renderer, &rebuilt_plain_args),
+        "新身份的 indirect 参数必须与非缓存逐字相同"
+    );
+    // 这一条只能比基向量不能比平移：运动批次的位置由路径决定、`align=true` 的实例
+    // 缩放只进矩阵的 0..3 列 ⇒ 缩放改了平移表也逐字不变，拿平移比是空断言。
+    let basis = |pose: &[Mat4]| -> Vec<[f32; 3]> {
+        pose.iter()
+            .map(|model| {
+                [
+                    model.columns[0][0],
+                    model.columns[0][1],
+                    model.columns[0][2],
+                ]
+            })
+            .collect()
+    };
+    assert_ne!(
+        basis(&rebuilt_pose),
+        basis(&cached_pose),
+        "夹具必须让缩放改动真的改变位姿（否则对账是空洞的）"
+    );
+
+    // ④ 身份回收：本地还持着 Arc 时不许清，Arc 掉了之后必须清。
+    renderer
+        .bake_inputs
+        .retain(|_, inputs| std::sync::Arc::strong_count(&inputs.batch) > 1);
+    assert_eq!(
+        renderer.bake_inputs.len(),
+        2,
+        "本地还持着两个 Arc，都不该被清"
+    );
+    drop(batch);
+    drop(rebuilt);
+    renderer
+        .bake_inputs
+        .retain(|_, inputs| std::sync::Arc::strong_count(&inputs.batch) > 1);
+    assert!(
+        renderer.bake_inputs.is_empty(),
+        "Arc 都掉了之后缓存必须清掉（不再留着指向没人用的批次的缓冲）"
+    );
+}
+
+/// P3-R273：网格 LOD 两侧**互斥且完备**。
+///
+/// 期望值独立于 shader 实现：由 CPU `matrices_at` 的平移列与切换半径算出近/远两份集合。
+/// 判据三连：两侧实例数之和 = 不开 LOD 时的存活数；两侧位姿并集逐矩阵等于基线（压缩
+/// 顺序由原子加决定 ⇒ 按平移列排序后比）；两侧平移集合不重叠。另外钉住两条边界：
+/// `lod = None` 与旧入口逐字节同义、非有限 LOD 半径必须报错，以及近/远两份输入集的
+/// 回收（同一 `Arc` 有两个缓存持有者时不许互相撑住）。
+#[test]
+fn gpu_lod_sides_partition_survivors_exactly() {
+    let Some(mut renderer) = headless_renderer() else {
+        return gpu_skipped("device has no compute");
+    };
+    let batch = motion_batch(false);
+    let time = 0.0f32;
+    let cpu = batch.matrices_at(time);
+    let count = cpu.len();
+    let origin = rustlua_math::math3d::Vec3::new(0.0, 0.0, 0.0);
+    // 夹具在 t=0 沿路径铺开：offset=index*0.7，前 8 个实例距原点 0..4.9，其余 ≥5.6，
+    // 取 5.0 才能把两侧都切出非空集合（否则分区断言没有判别力，夹具会自己先红）。
+    let distance = 5.0f32;
+    let index_count = 96u32;
+    let size = count as u64 * BATCH_MOTION_MATRIX_BYTES;
+
+    let is_far = |model: &Mat4| {
+        let [x, y, z] = translation_of(model);
+        x * x + y * y + z * z > distance * distance
+    };
+    // 压缩顺序由原子加决定 ⇒ 期望集合也要按平移列排序后再逐矩阵比。
+    let near_expected =
+        sort_by_translation(cpu.iter().filter(|model| !is_far(model)).cloned().collect());
+    let far_expected =
+        sort_by_translation(cpu.iter().filter(|model| is_far(model)).cloned().collect());
+    assert!(
+        !near_expected.is_empty() && !far_expected.is_empty(),
+        "夹具必须跨过切换半径（近 {}/远 {}），否则分区断言没有判别力",
+        near_expected.len(),
+        far_expected.len()
+    );
+
+    let target = |renderer: &Renderer| {
+        renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-r273-lod-target"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    };
+    let indirect = |renderer: &Renderer, args: &wgpu::Buffer| {
+        let bytes = renderer
+            .read_storage_buffer(args, 20)
+            .unwrap_or_else(|error| panic!("参数回读失败：{error}"));
+        let word = |index: usize| {
+            u32::from_le_bytes([
+                bytes[index * 4],
+                bytes[index * 4 + 1],
+                bytes[index * 4 + 2],
+                bytes[index * 4 + 3],
+            ])
+        };
+        [word(0), word(1), word(2), word(3), word(4)]
+    };
+    let bake = |renderer: &mut Renderer,
+                lod: Option<(rustlua_math::math3d::Vec3, f32, f32, u32)>| {
+        let destination = target(renderer);
+        let args = renderer
+            .bake_batch_motion_compact_with_lod(
+                &batch,
+                time,
+                &destination,
+                0,
+                None,
+                1.0,
+                None,
+                index_count,
+                None,
+                0.0,
+                None,
+                None,
+                lod,
+            )
+            .unwrap_or_else(|error| panic!("LOD 烘焙失败：{error}"))
+            .expect("压缩档必须给出 indirect 参数缓冲");
+        let words = indirect(renderer, &args);
+        let kept = words[1] as usize;
+        let bytes = renderer
+            .read_storage_buffer(&destination, size)
+            .unwrap_or_else(|error| panic!("LOD 压缩结果回读失败：{error}"));
+        let models: Vec<Mat4> = bytes
+            .chunks_exact(BATCH_MOTION_MATRIX_BYTES as usize)
+            .take(kept)
+            .map(matrix_from_chunk)
+            .collect();
+        (words, sort_by_translation(models))
+    };
+
+    // ① 不开 LOD：全部合法实例存活，且与 CPU 位姿同式。
+    let (baseline_words, baseline_pose) = bake(&mut renderer, None);
+    assert_eq!(
+        baseline_words[0], index_count,
+        "indirect 第 1 项必须是 index_count"
+    );
+    assert_eq!(baseline_pose.len(), count, "不开 LOD 时不该有任何实例被吃");
+    assert_matrices_close(
+        &sort_by_translation(cpu.clone()),
+        &baseline_pose,
+        "基线 vs CPU",
+    );
+
+    // ② 两侧分区：计数、集合、并集三条同时成立。
+    let (near_words, near_pose) = bake(&mut renderer, Some((origin, distance, 0.0, 1)));
+    let (far_words, far_pose) = bake(&mut renderer, Some((origin, distance, 0.0, 2)));
+    assert_eq!(
+        near_words[1] as usize,
+        near_expected.len(),
+        "近侧实例数必须与 CPU 距离判定一致"
+    );
+    assert_eq!(
+        far_words[1] as usize,
+        far_expected.len(),
+        "远侧实例数必须与 CPU 距离判定一致"
+    );
+    assert_eq!(
+        near_words[1] + far_words[1],
+        baseline_words[1],
+        "近 + 远必须等于不开 LOD 的存活数（完备）"
+    );
+    assert_matrices_close(&near_expected, &near_pose, "近侧 vs CPU");
+    assert_matrices_close(&far_expected, &far_pose, "远侧 vs CPU");
+    let near_keys: Vec<[f32; 3]> = near_pose.iter().map(translation_of).collect();
+    assert!(
+        far_pose
+            .iter()
+            .all(|model| !near_keys.contains(&translation_of(model))),
+        "两侧必须互斥（同一个实例不许画两遍）"
+    );
+    let mut union = near_pose;
+    union.extend(far_pose);
+    assert_matrices_close(
+        &baseline_pose,
+        &sort_by_translation(union),
+        "近 ∪ 远 vs 基线",
+    );
+
+    // ③ 关档与旧入口逐字节同义（参数/位姿都一致）——默认路径不许因为新开关变一个字节。
+    let old_target = target(&renderer);
+    let old_args = renderer
+        .bake_batch_motion_compact(
+            &batch,
+            time,
+            &old_target,
+            0,
+            None,
+            1.0,
+            None,
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("旧入口烘焙失败：{error}"))
+        .expect("压缩档必须给出 indirect 参数缓冲");
+    let off_target = target(&renderer);
+    let off_args = renderer
+        .bake_batch_motion_compact_with_lod(
+            &batch,
+            time,
+            &off_target,
+            0,
+            None,
+            1.0,
+            None,
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("lod=None 烘焙失败：{error}"))
+        .expect("压缩档必须给出 indirect 参数缓冲");
+    assert_eq!(
+        indirect(&renderer, &old_args),
+        indirect(&renderer, &off_args)
+    );
+    let old_bytes = renderer
+        .read_storage_buffer(&old_target, size)
+        .expect("旧入口回读失败");
+    let off_bytes = renderer
+        .read_storage_buffer(&off_target, size)
+        .expect("lod=None 回读失败");
+    let old_count = indirect(&renderer, &old_args)[1] as usize;
+    let off_count = indirect(&renderer, &off_args)[1] as usize;
+    assert_eq!(old_count, off_count, "两入口的存活数必须一致");
+    let old_models: Vec<Mat4> = old_bytes
+        .chunks_exact(BATCH_MOTION_MATRIX_BYTES as usize)
+        .take(old_count)
+        .map(matrix_from_chunk)
+        .collect();
+    let off_models: Vec<Mat4> = off_bytes
+        .chunks_exact(BATCH_MOTION_MATRIX_BYTES as usize)
+        .take(off_count)
+        .map(matrix_from_chunk)
+        .collect();
+    assert_matrices_close(
+        &sort_by_translation(old_models),
+        &sort_by_translation(off_models),
+        "lod=None vs 旧入口",
+    );
+
+    // ④ 参数护栏：非有限半径必须报错，不许静默关档。
+    let bad = renderer
+        .bake_batch_motion_compact_with_lod(
+            &batch,
+            time,
+            &target(&renderer),
+            0,
+            None,
+            1.0,
+            None,
+            index_count,
+            None,
+            0.0,
+            None,
+            None,
+            Some((origin, f32::NAN, 0.0, 1)),
+        )
+        .expect_err("NaN LOD 半径必须报错");
+    assert!(matches!(bad, BatchMotionGpuError::InvalidInput(_)), "{bad}");
+
+    // ⑤ LOD 给同一条批次建近/远两份输入集；回收必须按"同一指针有几个持有者"扣自持，
+    //    否则两份互相撑着，实体销毁后缓存永远清不掉。
+    let shared = std::sync::Arc::new(batch.clone());
+    for side in [1u32, 2u32] {
+        renderer
+            .bake_batch_motion_compact_cached_with_lod(
+                &shared,
+                time,
+                &target(&renderer),
+                0,
+                None,
+                1.0,
+                None,
+                index_count,
+                None,
+                0.0,
+                None,
+                None,
+                Some((origin, distance, 0.0, side)),
+                false,
+            )
+            .unwrap_or_else(|error| panic!("缓存 LOD 烘焙失败：{error}"))
+            .expect("压缩档必须给出 indirect 参数缓冲");
+    }
+    renderer.note_material_bind_frame(0);
+    assert_eq!(
+        renderer.bake_inputs.len(),
+        2,
+        "近/远各一份输入集，本地还持着 Arc 时都不该被清"
+    );
+    drop(shared);
+    renderer.note_material_bind_frame(0);
+    assert!(
+        renderer.bake_inputs.is_empty(),
+        "活引用只剩缓存本身时，两份互相撑着的输入集都要回收"
+    );
+}
+
+/// P3-R274：网格 LOD **三档**（近/中/远）两两互斥且完备。
+///
+/// 与 R273 的两档门同一套独立期望值：CPU `matrices_at` 的平移列按两道台阶切成三段，
+/// GPU 侧各烘一次。判据：三段计数逐段等于 CPU 谓词；三段之和 = 不开 LOD 的存活数；
+/// 三段位姿并集逐矩阵等于基线；三段平移集合两两不重叠（同一只不许画两遍）。
+/// 另钉两条护栏：远侧（3）没有合法第二台阶必须报错、侧不在 1..=3 必须报错——静默把
+/// 侧 3 退化成侧 2 会让"远档网格"永远空着而画面看起来正常。
+#[test]
+fn gpu_lod_chain_three_bands_partition_exactly() {
+    let Some(mut renderer) = headless_renderer() else {
+        return gpu_skipped("device has no compute");
+    };
+    let batch = motion_batch(false);
+    let time = 0.0f32;
+    let cpu = batch.matrices_at(time);
+    let count = cpu.len();
+    let origin = rustlua_math::math3d::Vec3::new(0.0, 0.0, 0.0);
+    // 夹具在 t=0 沿路径以 0.7 间距铺开：第一台阶 3 米、第二台阶 8 米，三段都非空。
+    let near_distance = 3.0f32;
+    let far_distance = 8.0f32;
+    let index_count = 96u32;
+    let size = count as u64 * BATCH_MOTION_MATRIX_BYTES;
+
+    let band = |model: &Mat4| -> u32 {
+        let [x, y, z] = translation_of(model);
+        let d2 = x * x + y * y + z * z;
+        if d2 <= near_distance * near_distance {
+            1
+        } else if d2 <= far_distance * far_distance {
+            2
+        } else {
+            3
+        }
+    };
+    let expected = |side: u32| {
+        sort_by_translation(
+            cpu.iter()
+                .filter(|model| band(model) == side)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    let (near_expected, mid_expected, far_expected) = (expected(1), expected(2), expected(3));
+    assert!(
+        !near_expected.is_empty() && !mid_expected.is_empty() && !far_expected.is_empty(),
+        "夹具必须同时切出三段（近 {}/中 {}/远 {}），否则分区断言没有判别力",
+        near_expected.len(),
+        mid_expected.len(),
+        far_expected.len()
+    );
+
+    let target = |renderer: &Renderer| {
+        renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-r274-lod-chain-target"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    };
+    let indirect = |renderer: &Renderer, args: &wgpu::Buffer| {
+        let bytes = renderer
+            .read_storage_buffer(args, 20)
+            .unwrap_or_else(|error| panic!("参数回读失败：{error}"));
+        let word = |index: usize| {
+            u32::from_le_bytes([
+                bytes[index * 4],
+                bytes[index * 4 + 1],
+                bytes[index * 4 + 2],
+                bytes[index * 4 + 3],
+            ])
+        };
+        [word(0), word(1), word(2), word(3), word(4)]
+    };
+    let bake = |renderer: &mut Renderer, side: Option<u32>| {
+        let lod = side.map(|side| (origin, near_distance, far_distance, side));
+        let destination = target(renderer);
+        let args = renderer
+            .bake_batch_motion_compact_with_lod(
+                &batch,
+                time,
+                &destination,
+                0,
+                None,
+                1.0,
+                None,
+                index_count,
+                None,
+                0.0,
+                None,
+                None,
+                lod,
+            )
+            .unwrap_or_else(|error| panic!("LOD 链烘焙失败：{error}"))
+            .expect("压缩档必须给出 indirect 参数缓冲");
+        let words = indirect(renderer, &args);
+        let kept = words[1] as usize;
+        let bytes = renderer
+            .read_storage_buffer(&destination, size)
+            .unwrap_or_else(|error| panic!("LOD 链压缩结果回读失败：{error}"));
+        let models: Vec<Mat4> = bytes
+            .chunks_exact(BATCH_MOTION_MATRIX_BYTES as usize)
+            .take(kept)
+            .map(matrix_from_chunk)
+            .collect();
+        (words, sort_by_translation(models))
+    };
+
+    // ① 基线：不开 LOD 时全部存活。
+    let (baseline_words, baseline_pose) = bake(&mut renderer, None);
+    assert_eq!(baseline_pose.len(), count, "不开 LOD 时不该有任何实例被吃");
+
+    // ② 三段分区：计数、位姿、和、并集、两两互斥一起成立。
+    let (near_words, near_pose) = bake(&mut renderer, Some(1));
+    let (mid_words, mid_pose) = bake(&mut renderer, Some(2));
+    let (far_words, far_pose) = bake(&mut renderer, Some(3));
+    for (side, words, expected) in [
+        (1u32, &near_words, &near_expected),
+        (2u32, &mid_words, &mid_expected),
+        (3u32, &far_words, &far_expected),
+    ] {
+        assert_eq!(
+            words[1] as usize,
+            expected.len(),
+            "侧 {side} 实例数必须与 CPU 距离判定一致"
+        );
+    }
+    assert_eq!(
+        (near_words[1] + mid_words[1] + far_words[1]) as usize,
+        baseline_words[1] as usize,
+        "近 + 中 + 远必须等于不开 LOD 的存活数（完备）"
+    );
+    assert_matrices_close(&near_expected, &near_pose, "近侧 vs CPU");
+    assert_matrices_close(&mid_expected, &mid_pose, "中侧 vs CPU");
+    assert_matrices_close(&far_expected, &far_pose, "远侧 vs CPU");
+    let key_sets: Vec<Vec<[f32; 3]>> = [&near_pose, &mid_pose, &far_pose]
+        .iter()
+        .map(|pose| pose.iter().map(translation_of).collect())
+        .collect();
+    for (a, b) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        assert!(
+            key_sets[a].iter().all(|key| !key_sets[b].contains(key)),
+            "侧 {} 与侧 {} 必须互斥（同一个实例不许画两遍）",
+            a + 1,
+            b + 1
+        );
+    }
+    let mut union = near_pose;
+    union.extend(mid_pose);
+    union.extend(far_pose);
+    assert_matrices_close(
+        &baseline_pose,
+        &sort_by_translation(union),
+        "近 ∪ 中 ∪ 远 vs 基线",
+    );
+
+    // ③ 护栏：远侧缺第二台阶、侧越界都要报错，不许静默退化。
+    for (lod, label) in [
+        (Some((origin, near_distance, 0.0, 3)), "远侧缺第二台阶"),
+        (Some((origin, near_distance, far_distance, 4)), "侧越界"),
+        (
+            Some((origin, near_distance, 2.0, 2)),
+            "第二台阶不大于第一台阶",
+        ),
+    ] {
+        let bad = renderer
+            .bake_batch_motion_compact_with_lod(
+                &batch,
+                time,
+                &target(&renderer),
+                0,
+                None,
+                1.0,
+                None,
+                index_count,
+                None,
+                0.0,
+                None,
+                None,
+                lod,
+            )
+            .expect_err(label);
+        assert!(
+            matches!(bad, BatchMotionGpuError::InvalidInput(_)),
+            "{label}: {bad}"
+        );
+    }
 }

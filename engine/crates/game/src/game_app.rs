@@ -81,6 +81,8 @@ pub struct GameApp {
     skip_mesh: Option<String>,
     /// P3-R185：不透明前到后排序；`false`（`--no-depth-sort`）= A/B 回滚档。
     depth_sort_enabled: bool,
+    /// P3-R270：GPU 位姿烘焙的持久输入缓冲 + 共享 compute 编码器；`false`（`--no-bake-cache`）= 回滚档。
+    bake_cache_enabled: bool,
     /// P3-R191：平面反射镜像视锥剔除；`false`（`--no-planar-cull`）= A/B 回滚档。
     planar_cull_enabled: bool,
     /// P3-R194：点光阴影逐面剔除；`false`（`--no-point-face-cull`）= A/B 回滚档。
@@ -91,6 +93,8 @@ pub struct GameApp {
     water_cheap: bool,
     /// P3-R203：全部地形强制廉价细节档（`--terrain-cheap`，A/B 用）。
     terrain_cheap: bool,
+    /// P3-R277：全部普通网格强制廉价着色档（`--crowd-cheap`，A/B 用）。
+    crowd_cheap: bool,
     /// P3-R206：3D 最大绘制距离（米，0 = 关闭；植被 LOD 的硬截断档，低端机用）。
     draw_distance: u32,
     /// P3-R206 分类档：距离只掐网格路径含该子串的实例（`None` = 全体）。
@@ -217,11 +221,13 @@ impl GameApp {
             instancing_enabled,
             skip_mesh: None,
             depth_sort_enabled: true,
+            bake_cache_enabled: true,
             planar_cull_enabled: true,
             point_face_cull_enabled: true,
             planar_reflection_divisor: 2,
             water_cheap: false,
             terrain_cheap: false,
+            crowd_cheap: false,
             draw_distance: 0,
             draw_distance_filter: None,
             shadow_caster_skip: None,
@@ -293,6 +299,13 @@ impl GameApp {
         self
     }
 
+    /// P3-R270：烘焙输入缓冲持久化 + 共享 compute 编码器；`false` = `--no-bake-cache` 回滚档。
+    #[must_use]
+    pub fn with_bake_cache(mut self, enabled: bool) -> Self {
+        self.bake_cache_enabled = enabled;
+        self
+    }
+
     /// P3-R191：平面反射镜像视锥剔除；`false` = `--no-planar-cull` 回滚档。
     #[must_use]
     pub fn with_planar_cull(mut self, enabled: bool) -> Self {
@@ -325,6 +338,13 @@ impl GameApp {
     #[must_use]
     pub fn with_terrain_cheap(mut self, enabled: bool) -> Self {
         self.terrain_cheap = enabled;
+        self
+    }
+
+    /// P3-R277：全部普通网格强制廉价着色档（A/B 开关）。
+    #[must_use]
+    pub fn with_crowd_cheap(mut self, enabled: bool) -> Self {
+        self.crowd_cheap = enabled;
         self
     }
 
@@ -1201,9 +1221,14 @@ impl GameApp {
         if self.gpu_motion
             && let Some(scene) = self.runtime_scene.as_ref()
         {
-            for (entity, batch, time) in scene.take_staged_motion_batches() {
-                renderer.stage_motion_batch(entity, batch, time);
+            for (entity, batch, time, lod) in scene.take_staged_motion_batches() {
+                renderer.stage_motion_batch_with_lod(entity, batch, time, lod);
             }
+        }
+        // P3-R275：平面反射排除档——提取阶段按批次实体登记，这里整体换给渲染器。
+        // 与 GPU 位姿档无关（静态批次也支持），所以不放在上面的条件里。
+        if let Some(scene) = self.runtime_scene.as_ref() {
+            renderer.set_planar_skip_entities(&scene.take_planar_skip_entities());
         }
         // WP5：把本帧的相机侧视图交给渲染器——清屏色与 2D overlay 的视口由这些声明决定，
         // 渲染器不再自己写死。2D 视图与上面 `vertices()` 用的是同一个 `RuntimeScene` 相机，
@@ -1379,6 +1404,15 @@ impl GameApp {
         {
             renderer.set_water_refract_steps(steps);
         }
+        // P3-R283：脚本推进阴影投射距离预算（`render.set_shadow_caster_distance`）；只在变化时写入。
+        if let Some(meters) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_shadow_caster_distance())
+            && (renderer.shadow_caster_max_distance() - meters as f32).abs() > 1e-6
+        {
+            renderer.set_shadow_caster_max_distance(meters as f32);
+        }
         host_phases.extract = extract_started.elapsed();
         let submit_started = Instant::now();
         let outcome = renderer.render(&mesh, scene3d.as_ref());
@@ -1395,6 +1429,20 @@ impl GameApp {
             host_phases.render_present_us = Some(metrics.cpu_present_us);
             host_phases.shadow_record_us = Some(metrics.record_shadow_us);
             host_phases.point_shadow_record_us = Some(metrics.record_point_shadow_us);
+            // P3-R268：record 的固定面不在 pass 里，而在「逐 draw 建绑定组」那段循环
+            // （含 GPU 位姿烘焙）。取走式读数：没有 3D draw 的帧报 0，不留上一帧残值。
+            host_phases.bind_build_us = Some(renderer.take_frame_bind_build_us());
+            host_phases.bind_bake_us = Some(renderer.take_frame_bind_bake_us());
+            // P3-R285：record 残差里最大的两段 3D 录制单列（planar / 主视图不透明网格）。
+            // 与阴影子桶同口径：都是 `cpu_record_us` 的子段，不是并列阶段。
+            host_phases.record_planar_us = Some(metrics.record_planar_us);
+            host_phases.record_depth_us = Some(metrics.record_depth_us);
+            // P3-R286：把 record 残差的另外两大段也带上（pass 前准备 / 3D 之后的 2D+后处理）。
+            host_phases.record_prep_us = Some(metrics.record_prep_us);
+            host_phases.record_tail_us = Some(metrics.record_tail_us);
+            // P3-R288：绑定组整段 + 逐帧残差（判「p50 相加剩下的 2.4 ms」是不是真的）。
+            host_phases.record_binds_us = Some(metrics.record_binds_us);
+            host_phases.record_other_us = Some(metrics.record_other_us);
             // P3-R183：剔除计数进台账——「剔掉多少实例」与逐 pass GPU 时间同帧对账，
             // 下一刀（遮挡剔除/LOD）的收益才有基准。纯 2D 帧两者皆 0，累计桶自动跳过。
             host_phases.cull_candidates = Some(metrics.cull_candidates);
@@ -1404,6 +1452,9 @@ impl GameApp {
             host_phases.gpu_motion_culled = Some(renderer.frame_gpu_motion_culled());
             host_phases.gpu_motion_culled_instances =
                 Some(renderer.frame_gpu_motion_culled_instances());
+            // P3-R275：反射排除档挡掉的 draw 数——"反射图里少了一批"必须能从台账读到，
+            // 否则 A/B 里 planar pass 变快会被误读成镜像视锥剔除变强。
+            host_phases.planar_skipped = Some(metrics.planar_draws_skipped);
             // P3-R247：方向光阴影的提交/剔除计数——"阴影便宜了"要能拆成 draw 粒度，
             // 否则只能靠机制推断（§21.527 的归因段就是这么写的）。
             host_phases.shadow_draws = Some(metrics.shadow_draws_drawn);
@@ -1717,11 +1768,16 @@ impl ApplicationHandler for GameApp {
                     tracing::info!(target: "game", "不透明前到后排序已关闭（--no-depth-sort 回滚档）");
                 }
                 renderer.set_depth_sort_enabled(self.depth_sort_enabled);
+                if !self.bake_cache_enabled {
+                    tracing::info!(target: "game", "GPU 位姿烘焙缓存已关闭（--no-bake-cache 回滚档）");
+                }
+                renderer.set_bake_cache_enabled(self.bake_cache_enabled);
                 renderer.set_planar_cull_enabled(self.planar_cull_enabled);
                 renderer.set_point_face_cull_enabled(self.point_face_cull_enabled);
                 renderer.set_planar_reflection_divisor(self.planar_reflection_divisor);
                 renderer.set_water_cheap_override(self.water_cheap);
                 renderer.set_terrain_cheap_override(self.terrain_cheap);
+                renderer.set_crowd_cheap_override(self.crowd_cheap);
                 renderer.set_max_draw_distance(self.draw_distance as f32);
                 renderer.set_max_draw_distance_filter(self.draw_distance_filter.clone());
                 renderer.set_shadow_caster_skip(self.shadow_caster_skip.clone());
@@ -1992,18 +2048,19 @@ struct OverlayRange {
 /// 每行下面一条量条标明当前值占参考上限的比例。
 ///
 /// 指标（与 `[perf]` 日志同源，`PerformanceSnapshot`）：
-/// * `FPS`：最近 1 秒窗口的真实帧率（参考上限 120）；
-/// * `FRAME ms`：上一帧总耗时（上限 33.3ms ≈ 30fps，超过 20ms 变红）；
-/// * `UPDATE ms`：`run_simulation_steps` 的固定步更新耗时（上限 16.7ms = 60fps）；
-/// * `LUA ms`：本帧 Lua `update()` 累计耗时（上限 8ms）；
-/// * `MEM MB`：进程当前工作集 / 常驻内存（参考 1024MB，超过 768/1024 变黄/红）；
-/// * `PEAK MB`：进程峰值工作集（参考 1536MB）；
-/// * `PRIV MB`：私有提交（Windows `PagefileUsage`，Linux `RssAnon`）；
-/// * `FRAMES`：累计帧数（无参考上限，量条按 60 帧窗口的余数显示，仅作心跳）。
+/// * `帧率`：最近 1 秒窗口的真实帧率（参考上限 120）；
+/// * `帧时`：上一帧总耗时（上限 33.3ms ≈ 30fps，超过 20ms 变红）；
+/// * `更新`：`run_simulation_steps` 的固定步更新耗时（上限 16.7ms = 60fps）；
+/// * `脚本`：本帧 Lua `update()` 累计耗时（上限 8ms）；
+/// * `内存`：进程当前工作集 / 常驻内存（参考 1024MB，超过 768/1024 变黄/红）；
+/// * `峰值`：进程峰值工作集（参考 1536MB）；
+/// * `私有`：私有提交（Windows `PagefileUsage`，Linux `RssAnon`）；
+/// * `帧数`：累计帧数（无参考上限，量条按 60 帧窗口的余数显示，仅作心跳）。
 ///
 /// 内存三行走 `crate::memory::sample()`；平台不支持或读取失败时显示 `--`，
-/// 不影响其余指标与日志。文字仍用引擎内置 5x7 位图字模（`TextAtlas::built_in` +
-/// `TextLayout::build_bitmap`），不依赖项目字体。
+/// 不影响其余指标与日志。文字用引擎内置位图字模（`TextAtlas::built_in` +
+/// `TextLayout::build_bitmap`）：ASCII 5x7 区 + 追加的 12x12 汉字区（覆盖本面板
+/// 用到的 33 个字），不依赖项目字体。
 fn build_overlay(
     snapshot: PerformanceSnapshot,
     render_stats: Option<[u64; 12]>,
@@ -2045,12 +2102,15 @@ fn build_overlay(
     } else {
         [0.90, 0.97, 0.90, 1.0]
     };
-    let mem_text = memory.map_or_else(|| "--".to_owned(), |m| format!("{:.1}", m.working_set_mb));
+    let mem_text = memory.map_or_else(
+        || "--".to_owned(),
+        |m| format!("{:.1} MB", m.working_set_mb),
+    );
     let peak_text = memory.map_or_else(
         || "--".to_owned(),
-        |m| format!("{:.1}", m.peak_working_set_mb),
+        |m| format!("{:.1} MB", m.peak_working_set_mb),
     );
-    let priv_text = memory.map_or_else(|| "--".to_owned(), |m| format!("{:.1}", m.private_mb));
+    let priv_text = memory.map_or_else(|| "--".to_owned(), |m| format!("{:.1} MB", m.private_mb));
     let mem_ratio = memory.map_or(0.0, |m| (m.working_set_mb / 1024.0).clamp(0.0, 1.0));
     let peak_ratio = memory.map_or(0.0, |m| (m.peak_working_set_mb / 1536.0).clamp(0.0, 1.0));
     let priv_ratio = memory.map_or(0.0, |m| (m.private_mb / 1024.0).clamp(0.0, 1.0));
@@ -2065,106 +2125,106 @@ fn build_overlay(
     };
     let rows = [
         (
-            "FPS",
+            "帧率",
             format!("{:.1}", snapshot.fps),
             (snapshot.fps / 120.0).clamp(0.0, 1.0),
             fps_color,
         ),
         (
-            "FRAME ms",
-            format!("{:.2}", snapshot.frame_ms),
+            "帧时",
+            format!("{:.2} ms", snapshot.frame_ms),
             (snapshot.frame_ms / 33.3).clamp(0.0, 1.0),
             frame_ms_color,
         ),
         (
-            "UPDATE ms",
-            format!("{:.2}", snapshot.update_ms),
+            "更新",
+            format!("{:.2} ms", snapshot.update_ms),
             (snapshot.update_ms / 16.7).clamp(0.0, 1.0),
             update_color,
         ),
         (
-            "LUA ms",
-            format!("{:.2}", snapshot.lua_ms),
+            "脚本",
+            format!("{:.2} ms", snapshot.lua_ms),
             (snapshot.lua_ms / 8.0).clamp(0.0, 1.0),
             lua_color,
         ),
-        ("MEM MB", mem_text, mem_ratio, mem_color),
-        ("PEAK MB", peak_text, peak_ratio, peak_color),
-        ("PRIV MB", priv_text, priv_ratio, priv_color),
+        ("内存", mem_text, mem_ratio, mem_color),
+        ("峰值", peak_text, peak_ratio, peak_color),
+        ("私有", priv_text, priv_ratio, priv_color),
         (
-            "FRAMES",
+            "帧数",
             format!("{}", snapshot.frames),
             ((snapshot.frames % 600) as f32) / 600.0,
             [0.78, 0.84, 0.80, 1.0],
         ),
         (
-            "DRAW",
+            "绘制",
             format!("{}", stats[0]),
             (stats[0] as f32 / 2048.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "MESH DRAW",
+            "网格绘制",
             format!("{}", stats[5]),
             (stats[5] as f32 / 1024.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "VERT",
+            "顶点",
             format!("{}", stats[1]),
             (stats[1] as f32 / 120_000.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "TRI",
+            "三角",
             format!("{}", stats[2]),
             (stats[2] as f32 / 80_000.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "INST all",
+            "实例",
             format!("{}", stats[3]),
             (stats[3] as f32 / 4096.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "MESH INST",
+            "网格实例",
             format!("{}", stats[4]),
             (stats[4] as f32 / 2048.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "CULL CAND",
+            "候选",
             format!("{}", stats[6]),
             (stats[6] as f32 / 4096.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "CULL REJ",
+            "剔除",
             format!("{}", stats[7]),
             cull_ratio,
             [0.55, 1.0, 0.72, 1.0],
         ),
         (
-            "PCULL",
+            "点剔除",
             format!("{}", stats[8]),
             (stats[8] as f32 / 1024.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "SCULL",
+            "影剔除",
             format!("{}", stats[9]),
             (stats[9] as f32 / 1024.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "PL CULL",
+            "平剔除",
             format!("{}", stats[10]),
             (stats[10] as f32 / 1024.0).clamp(0.0, 1.0),
             [0.72, 0.90, 1.0, 1.0],
         ),
         (
-            "FACE CULL",
+            "面剔除",
             format!("{}", stats[11]),
             (stats[11] as f32 / 2048.0).clamp(0.0, 1.0),
             [0.55, 1.0, 0.72, 1.0],
@@ -2176,6 +2236,8 @@ fn build_overlay(
     const PAD_Y: f32 = 8.0;
     const ROW_H: f32 = 27.0;
     const SCALE: f32 = 2.0;
+    // 汉字标签用 1.0（12px 字模）落在行内 18px 的标签带里；数值仍按 2.0 的 ASCII。
+    const LABEL_SCALE: f32 = 1.0;
     const PANEL_W: f32 = 340.0;
     // 小窗放不下全部行时按可用高度截断：面板底与文字都不许越出 NDC（640×480 档只剩
     // 16 行可放）。行数只增不减的设计在小窗上会整块画出界。
@@ -2230,34 +2292,36 @@ fn build_overlay(
 
     let atlas = rustlua_render::text::TextAtlas::built_in();
     let mut text_vertices: Vec<OverlayVertex> = Vec::new();
-    let push_text = |text: &str, x: f32, y: f32, color: [f32; 4], out: &mut Vec<OverlayVertex>| {
-        let style = rustlua_render::text::TextStyle {
-            scale: SCALE,
-            spacing: 1.0,
-            line_spacing: 2.0,
-            color,
-            ..Default::default()
-        };
-        if let Ok(mesh) =
-            rustlua_render::text::TextLayout::build_bitmap(text, [x, y], style, &atlas)
-        {
-            for vertex in mesh.vertices {
-                out.push(OverlayVertex {
-                    position: [
-                        vertex.position[0] / width * 2.0 - 1.0,
-                        1.0 - vertex.position[1] / height * 2.0,
-                    ],
-                    uv: vertex.uv,
-                    color: vertex.color,
-                    sdf: 0,
-                });
+    let push_text =
+        |text: &str, x: f32, y: f32, scale: f32, color: [f32; 4], out: &mut Vec<OverlayVertex>| {
+            let style = rustlua_render::text::TextStyle {
+                scale,
+                spacing: 1.0,
+                line_spacing: 2.0,
+                color,
+                ..Default::default()
+            };
+            if let Ok(mesh) =
+                rustlua_render::text::TextLayout::build_bitmap(text, [x, y], style, &atlas)
+            {
+                for vertex in mesh.vertices {
+                    out.push(OverlayVertex {
+                        position: [
+                            vertex.position[0] / width * 2.0 - 1.0,
+                            1.0 - vertex.position[1] / height * 2.0,
+                        ],
+                        uv: vertex.uv,
+                        color: vertex.color,
+                        sdf: 0,
+                    });
+                }
             }
-        }
-    };
+        };
     push_text(
-        "PERF  (F3)",
+        "性能 (F3)",
         PAD_X,
         PAD_Y,
+        SCALE,
         [0.55, 1.0, 0.62, 1.0],
         &mut text_vertices,
     );
@@ -2291,12 +2355,20 @@ fn build_overlay(
             label,
             PAD_X,
             row_y,
+            LABEL_SCALE,
             [0.64, 0.78, 0.74, 1.0],
             &mut text_vertices,
         );
         // 5x7 字模放大 2 倍后每个字符约 12px，右对齐到面板内边距。
         let value_x = (PANEL_W - PAD_X - value.chars().count() as f32 * 12.0).max(PAD_X + 110.0);
-        push_text(value, value_x, row_y, *value_color, &mut text_vertices);
+        push_text(
+            value,
+            value_x,
+            row_y,
+            SCALE,
+            *value_color,
+            &mut text_vertices,
+        );
     }
     let bars_count = vertices.len() as u32 - bars_start;
     ranges.push(OverlayRange {
@@ -2577,7 +2649,8 @@ mod tests {
         }
     }
 
-    /// 调试 overlay 必须**带标签的文字 + 量条**，且文字用内置 5x7 字模图集绘制
+    /// 调试 overlay 必须**带标签的文字 + 量条**，且文字用内置位图字模图集
+    /// （ASCII 5x7 + 汉字 12x12）绘制
     /// （`ranges` 里恰好一段 `atlas = true`），面板/量条走白色纹理。
     #[test]
     fn debug_overlay_draws_labeled_text_and_bars() {
@@ -2612,6 +2685,24 @@ mod tests {
                 vertex.position[1]
             );
         }
+    }
+
+    /// 汉字标签必须命中内置 CJK 字模：字号表与图集一旦失配，`TextAtlas::uv`
+    /// 会静默退化成 '?'——文字照画、肉眼才看得出。这里按 UV 身份判退化。
+    #[test]
+    fn debug_overlay_labels_never_fall_back_to_question_mark() {
+        let overlay = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, None, 1280, 720);
+        let atlas = rustlua_render::text::TextAtlas::built_in();
+        let (fallback_min, _) = atlas.uv('?');
+        let text = &overlay.ranges[2];
+        assert!(text.count > 0);
+        let text_vertices =
+            &overlay.vertices[text.start as usize..(text.start + text.count) as usize];
+        let fallbacks = text_vertices
+            .iter()
+            .filter(|vertex| vertex.uv == fallback_min)
+            .count();
+        assert_eq!(fallbacks, 0, "有标签字符退化成 '?'（内置图集缺少字模）");
     }
 
     /// 图标边长按 DPI 走，但不得小于逻辑尺寸、也不得超过 winit 给 `ICON_BIG`

@@ -1150,3 +1150,84 @@ fn terrain_cheap_skips_near_detail_pixels() {
         "cheap=1 必须改变近细节像素（changed={changed}）"
     );
 }
+
+/// P3-R277：普通网格廉价着色档（`--crowd-cheap`）的像素级门：
+/// 1. 关档必须逐字节回到缺省路径（默认不变）；
+/// 2. 开档必须改变输出——砍掉的是点光循环/级联阴影/SH9/镜面 IBL，
+///    用一盏点光把地面照亮，关档后该处必须变暗。
+#[test]
+fn crowd_cheap_override_changes_generic_mesh_pixels() {
+    let Some((mut renderer, device)) = renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    let (target_texture, target_view) = target(&device, SIZE, SIZE);
+    let viewport = Viewport::new(SIZE as f32, SIZE as f32).expect("viewport");
+    let camera = Camera3D::perspective(
+        Vec3::new(0.0, 6.0, 12.0),
+        Vec3::new(0.0, 0.0, 0.0),
+        std::f32::consts::FRAC_PI_3,
+        0.1,
+        120.0,
+    )
+    .expect("camera");
+    let scene_view = RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR);
+    renderer.set_frame_views(FrameViews {
+        main: Some(scene_view),
+        overlay: None,
+    });
+    renderer.set_render_settings(
+        RenderSettings::default()
+            .with_hdr(ToggleMode::On)
+            .with_pbr(true),
+    );
+    let scene = Scene3d {
+        camera,
+        view: scene_view,
+        light: Light::default(),
+        point_lights: vec![PointLight {
+            position: Vec3::new(0.0, 2.0, 0.0),
+            color: [1.0, 1.0, 1.0],
+            intensity: 40.0,
+            range: 20.0,
+        }],
+        drawables: vec![Scene3dDrawable {
+            entity: rustlua_scene::scene::SceneEntityId(1),
+            name: "Ground".to_owned(),
+            mesh_path: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+            material: None,
+            mesh_handle: None,
+            model: rustlua_math::math3d::Mat4::identity(),
+            palette: Vec::new(),
+            instances: Vec::new(),
+            bounds: Scene3dBounds {
+                local_aabb: Aabb3 {
+                    min: Vec3::new(-4.0, -0.1, -4.0),
+                    max: Vec3::new(4.0, 0.1, 4.0),
+                },
+                source: BoundsSource::Fallback,
+            },
+        }],
+    };
+    let overlay = empty_mesh();
+    let render = |renderer: &mut Renderer| {
+        renderer.render_into_texture(&overlay, Some(&scene), &target_view, SIZE, SIZE, true);
+        renderer
+            .copy_texture_to_cpu(&target_texture, SIZE, SIZE)
+            .expect("crowd cheap readback")
+    };
+    let default_pixels = render(&mut renderer);
+    renderer.set_crowd_cheap_override(true);
+    let cheap_pixels = render(&mut renderer);
+    renderer.set_crowd_cheap_override(false);
+    let restored = render(&mut renderer);
+    assert_eq!(default_pixels, restored, "关档必须与缺省路径逐字节一致");
+    let changed = default_pixels
+        .iter()
+        .zip(&cheap_pixels)
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        changed > 0,
+        "开档必须改变像素（点光/IBL 被砍，changed={changed}）"
+    );
+}

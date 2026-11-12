@@ -63,6 +63,13 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
          assert(render.set_water_refract_steps('16') == false, 'refract steps string rejected')\n\
          local rsok, rsreason = render.set_water_refract_steps(16)\n\
          assert(rsok, rsreason)\n\
+         assert(render.set_shadow_caster_distance(1001) == false, 'caster distance range')\n\
+         assert(render.set_shadow_caster_distance(-1) == false, 'caster distance negative')\n\
+         assert(render.set_shadow_caster_distance(20.5) == false, 'caster distance integer')\n\
+         assert(render.set_shadow_caster_distance(0/0) == false, 'caster distance finite')\n\
+         assert(render.set_shadow_caster_distance('20') == false, 'caster distance string rejected')\n\
+         local cdok, cdreason = render.set_shadow_caster_distance(20)\n\
+         assert(cdok, cdreason)\n\
          local stats = render.stats()\n\
          assert(stats.draw_calls == 0 and stats.vertices == 0 and stats.triangles == 0, 'stats defaults')\n\
          function update() end",
@@ -86,5 +93,35 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
     // None 才是「脚本没碰过、保持宿主档」。
     assert_eq!(runtime.render_clip_cap_both_sides(), Some(false));
     assert_eq!(runtime.render_water_refract_steps(), Some(16));
+    assert_eq!(runtime.render_shadow_caster_distance(), Some(20));
     let _ = fs::remove_file(path);
+}
+
+/// P3-R283：距离预算的「没碰过 = None」与「显式关 = Some(0)」必须分得开——
+/// 宿主每帧只在 `Some` 时写入渲染器，若 0 被当成 None，脚本就永远关不掉
+/// 启动期的 `--shadow-caster-distance`。抓的假绿：把 0 归一成 None。
+#[test]
+fn shadow_caster_distance_keeps_explicit_off_distinct_from_untouched() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    assert_eq!(runtime.render_shadow_caster_distance(), None, "脚本没碰过");
+    let path = script(
+        "local ok, reason = render.set_shadow_caster_distance(40)\n\
+         assert(ok, reason)\n\
+         function update() end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(runtime.render_shadow_caster_distance(), Some(40));
+    let _ = fs::remove_file(path);
+    let off = script(
+        "local ok, reason = render.set_shadow_caster_distance(0)\n\
+         assert(ok, reason)\n\
+         function update() end",
+    );
+    runtime.execute_project_script(&off).unwrap();
+    assert_eq!(
+        runtime.render_shadow_caster_distance(),
+        Some(0),
+        "显式关必须留痕，才能覆盖宿主启动档"
+    );
+    let _ = fs::remove_file(off);
 }

@@ -488,7 +488,7 @@ impl Renderer {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
         let submit_started = Instant::now();
-        let submission = self.queue.submit([encoder.finish()]);
+        let submission = self.submit_frame_commands(encoder);
         metrics.cpu_submit_us = submit_started.elapsed().as_micros() as u64;
         if let Some(slot) = timestamp_slot {
             self.arm_timestamp_slot(slot, submission, timestamp_layout);
@@ -887,7 +887,7 @@ impl Renderer {
             self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
         let submit_started = Instant::now();
-        let submission = self.queue.submit([encoder.finish()]);
+        let submission = self.submit_frame_commands(encoder);
         metrics.cpu_submit_us = submit_started.elapsed().as_micros() as u64;
         if let Some(slot) = timestamp_slot {
             self.arm_timestamp_slot(slot, submission, timestamp_layout);
@@ -915,6 +915,8 @@ impl Renderer {
         // E06-3：查询集暂时移出字段，避免 `&mut self` 的借用与跨通道写入冲突；函数末尾归还。
         let timestamp_query_set = self.timestamp_query_set.take();
         let mut pass_timestamps = PassTimestamps::new(timestamp_query_set.as_ref());
+        // P3-R286：pass 前准备段计时起点（函数入口）。
+        let prep_started = Instant::now();
         // 清屏：宿主声明了主视图就按声明走（`ClearPolicy::None` = 不清，叠在已有内容上）；
         // 没声明则保持收敛前的历史默认色，因此"不调用 set_frame_views"像素完全不变。
         let clear = match self.frame_views.clear() {
@@ -1251,6 +1253,9 @@ impl Renderer {
         let want_normals = shading == Shading::Pbr && plan.contains(RenderPass::DepthOpaque);
         // P3-R251：第三条并列表是"压缩档的 indirect 参数缓冲"（`Some` = 该 draw 的实例
         // 已压进前缀，按参数里的存活数绘制；`None` = 沿用 `draw.instance_count()`）。
+        metrics.record_prep_us += prep_started.elapsed().as_micros() as u64;
+        // P3-R288：绑定组整段计时（与只包住单次调用的 `bind_build` 对照）。
+        let binds_started = Instant::now();
         let (material_binds, normal_slices, indirect_args): (
             Vec<wgpu::BindGroup>,
             Vec<Option<super::arena::NormalMatrixSlice>>,
@@ -1277,6 +1282,7 @@ impl Renderer {
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
+        metrics.record_binds_us += binds_started.elapsed().as_micros() as u64;
         if plan.contains(RenderPass::Shadow) {
             pass_timestamps.begin(encoder);
             // P3-R180：阴影链是 pass 数的最大乘数（4 级联 + 4 ESM + 最多 8×6 点光面，每面把
@@ -1555,6 +1561,8 @@ impl Renderer {
             && let (Some(scene), Some(plane)) = (scene3d, water_plane)
             && let Some(matrix) = main_matrix.or_else(|| scene.view.matrix())
         {
+            // P3-R285：planar 录制 CPU 单列（与 GPU 时间戳的 planar 桶同名不同口径）。
+            let planar_record_started = Instant::now();
             self.ensure_planar_reflection_target(target.0, target.1);
             let reflected = super::planar_reflection_view_projection(&matrix, plane[0]);
             let mirrored_position = Vec3::new(
@@ -1623,6 +1631,11 @@ impl Renderer {
                 if draw.water || draw.material.alpha_mode == MaterialAlphaMode::Blend {
                     continue;
                 }
+                // P3-R275：平面反射排除档——先于视锥剔除判，跳过的 draw 不算"被剔除"。
+                if !draw.cast_planar {
+                    metrics.planar_draws_skipped += 1;
+                    continue;
+                }
                 if self.planar_cull_enabled && !frustum_may_contain(planar_frustum, &draw.bounds) {
                     metrics.planar_draws_culled += 1;
                     continue;
@@ -1672,8 +1685,11 @@ impl Renderer {
             pass_timestamps.end(encoder, RenderPass::PlanarReflection);
             metrics.planar_reflection_active = true;
             executed.push(RenderPass::PlanarReflection);
+            metrics.record_planar_us += planar_record_started.elapsed().as_micros() as u64;
         }
         if plan.contains(RenderPass::DepthOpaque) {
+            // P3-R285：主视图不透明网格录制 CPU 单列。
+            let depth_record_started = Instant::now();
             self.ssao_depth_view = self.depth_view.clone();
             pass_timestamps.begin(encoder);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1760,7 +1776,10 @@ impl Renderer {
             drop(pass);
             pass_timestamps.end(encoder, RenderPass::DepthOpaque);
             executed.push(RenderPass::DepthOpaque);
+            metrics.record_depth_us += depth_record_started.elapsed().as_micros() as u64;
         }
+        // P3-R286：3D 之后的尾段（2D/HUD/后处理）计时起点。
+        let tail_started = Instant::now();
         if plan.contains(RenderPass::WorldSprite)
             && let Some(world) = world_view
         {
@@ -2141,6 +2160,17 @@ impl Renderer {
                 "[runtime] render plan mismatch: {mismatch}"
             );
         }
+        metrics.record_tail_us += tail_started.elapsed().as_micros() as u64;
+        // P3-R288：逐帧残差。`prep_started` 就在函数入口，这里的 elapsed 即总时长。
+        metrics.record_other_us = (prep_started.elapsed().as_micros() as u64).saturating_sub(
+            metrics.record_prep_us
+                + metrics.record_binds_us
+                + metrics.record_shadow_us
+                + metrics.record_point_shadow_us
+                + metrics.record_planar_us
+                + metrics.record_depth_us
+                + metrics.record_tail_us,
+        );
         self.last_frame_plan = plan;
         self.last_frame_passes = executed;
         let timestamp_layout = pass_timestamps.finish();

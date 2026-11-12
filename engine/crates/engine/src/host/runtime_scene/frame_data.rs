@@ -29,6 +29,7 @@ use rustlua_render::sprite::{Sprite, SpriteAsset, SpriteSorting};
 use rustlua_render::sprite_batch::{SpriteBatchItem, SpriteDrawBatch};
 use rustlua_scene::scene::SceneEntityId;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws, texture_id_of};
 use crate::host::runtime_scene::tilemap::sort_world_ranges;
@@ -83,6 +84,8 @@ impl RuntimeScene {
         // docs/54 §4.2：3D 网格同样吃**世界视图**的可见遮罩。
         let view_mask = self.view_world_mask;
         let mut filtered = 0usize;
+        // P3-R275：平面反射排除表每帧重建——上一帧的排除不能黏到这一帧（脚本可以每帧改）。
+        self.planar_skip_entities.borrow_mut().clear();
         // P1-②：LOD 距离用相机位置。优先级：编辑器覆盖相机 → 本帧已定帧相机。
         // 刻意不在这里兜底 `active_camera3d()`：那是一次解析（有账本断言钉住解析次数）；
         // 没有覆盖/定帧时 LOD 退基础级（`renderer.mesh`），行为与未启用 LOD 逐字节相同。
@@ -271,21 +274,81 @@ impl RuntimeScene {
         }
         let batch_drawables = self.script.with_world(|world| {
             let mut batches = Vec::new();
-            world.for_each::<rustlua_render::instance_batch::InstanceBatch3D>(|id, batch| {
+            world.for_each::<Arc<rustlua_render::instance_batch::InstanceBatch3D>>(|id, batch| {
                 // 可见性与普通网格同口径：按**批次实体**判（批次内不逐实例判）。
                 if !rustlua_render::visibility::entity_visible_in(world, id, view_mask) {
                     batch_filtered += 1;
                     return;
                 }
+                // P3-R275：平面反射排除档——排除表按**实体**登记，渲染器按 drawable 的实体
+                // 身份查表（静态合批组取"组内全部实体都排除"才排除，见 world_sprite）。
+                let planar_skip = world
+                    .get::<rustlua_render::instance_batch::InstanceBatchPlanar3D>(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|planar| !planar.enabled);
+                if planar_skip {
+                    self.planar_skip_entities
+                        .borrow_mut()
+                        .push(id.index() as u64);
+                }
                 // P3-R246：带运动且开档 ⇒ 不求 CPU 矩阵，把批次交给渲染器（实例数按批次）。
                 // 静态批次照旧求矩阵——没有运动的批次 `matrices_at` 就是静态表，省不了什么，
                 // 还会让渲染器走一遍"没有可求值运动 ⇒ 回退 CPU"的弯路。
                 let gpu_path = gpu_motion && batch.motion.is_some() && !batch.instances.is_empty();
+                // P3-R273：批次网格 LOD 链。只在 GPU 位姿档下生效（各档各烘一次 draw、
+                // 共用同一份位姿）；关档或组件不存在时这一段零改动。
+                // P3-R274：第二台阶同样按"非法就丢"处理——只丢 far、保留中档，一个坏的
+                // 第三档不该把整条 LOD 链废掉。两道清洗都要在宿主侧再做一遍：组件可以被
+                // 别的路径直接写进 ECS，Lua 入口的校验不是唯一来源。
+                let lod = if gpu_path {
+                    world
+                        .get::<rustlua_render::instance_batch::InstanceBatchLod3D>(id)
+                        .ok()
+                        .flatten()
+                        .filter(|lod| {
+                            lod.distance > 0.0
+                                && lod.distance.is_finite()
+                                && !lod.mesh.is_empty()
+                                && lod.mesh != batch.mesh
+                        })
+                        .map(|lod| {
+                            let far = match (&lod.far_mesh, lod.far_distance) {
+                                (Some(far_mesh), Some(far_distance))
+                                    if far_distance.is_finite()
+                                        && far_distance > lod.distance
+                                        && !far_mesh.is_empty()
+                                        && *far_mesh != lod.mesh
+                                        && *far_mesh != batch.mesh =>
+                                {
+                                    Some((far_mesh.clone(), far_distance))
+                                }
+                                _ => None,
+                            };
+                            let (far_mesh, far_distance) = match far {
+                                Some((far_mesh, far_distance)) => {
+                                    (Some(far_mesh), Some(far_distance))
+                                }
+                                None => (None, None),
+                            };
+                            rustlua_render::instance_batch::InstanceBatchLod3D {
+                                mesh: lod.mesh.clone(),
+                                distance: lod.distance,
+                                far_mesh,
+                                far_distance,
+                            }
+                        })
+                } else {
+                    None
+                };
                 let instances = if gpu_path {
+                    // P3-R272：登记的是**同一个 Arc**（组件本身就存 Arc）——以前这里克隆整批
+                    // 实例表（6 万只 ≈3.8 MB/帧），现在只加一个引用计数。
                     self.staged_motion.borrow_mut().push((
                         id.index() as u64,
-                        batch.clone(),
+                        Arc::clone(batch),
                         scene_time,
+                        lod.clone(),
                     ));
                     Vec::new()
                 } else {
@@ -295,30 +358,62 @@ impl RuntimeScene {
                     }
                     instances
                 };
-                let mesh_path = batch.mesh.clone();
-                let mesh_handle = self.model_handle_for(mesh_path.as_str());
                 let name = self
                     .script
                     .entity_name(id)
                     .unwrap_or_else(|| format!("Batch {}", id.index()));
-                batches.push(Scene3dDrawable {
-                    entity: SceneEntityId(id.index() as u64),
-                    name,
-                    mesh_path,
-                    material: batch.material.clone(),
-                    mesh_handle: Some(mesh_handle),
-                    // 实例坐标是**世界坐标**：批次实体自身的变换不参与（口径见 `instance_batch`）。
-                    model: Mat4::identity(),
-                    palette: Vec::new(),
-                    instances,
-                    bounds: Scene3dBounds {
-                        local_aabb: rustlua_math::math3d::Aabb3 {
-                            min: Vec3::new(-0.5, -0.5, -0.5),
-                            max: Vec3::new(0.5, 0.5, 0.5),
+                let mut emit = |mesh_path: String| {
+                    let mesh_handle = self.model_handle_for(mesh_path.as_str());
+                    batches.push(Scene3dDrawable {
+                        entity: SceneEntityId(id.index() as u64),
+                        name: name.clone(),
+                        mesh_path,
+                        material: batch.material.clone(),
+                        mesh_handle: Some(mesh_handle),
+                        // 实例坐标是**世界坐标**：批次实体自身的变换不参与（口径见 `instance_batch`）。
+                        model: Mat4::identity(),
+                        palette: Vec::new(),
+                        instances: Vec::new(),
+                        bounds: Scene3dBounds {
+                            local_aabb: rustlua_math::math3d::Aabb3 {
+                                min: Vec3::new(-0.5, -0.5, -0.5),
+                                max: Vec3::new(0.5, 0.5, 0.5),
+                            },
+                            source: BoundsSource::Fallback,
                         },
-                        source: BoundsSource::Fallback,
-                    },
-                });
+                    });
+                };
+                if gpu_path {
+                    // 近侧主网格 + （可选）中档/远档 LOD 网格：2~3 条 draw 两两互斥且完备，
+                    // 各自只画自己那一档的实例。
+                    emit(batch.mesh.clone());
+                    if let Some(lod) = &lod {
+                        emit(lod.mesh.clone());
+                        if let Some(far_mesh) = &lod.far_mesh {
+                            emit(far_mesh.clone());
+                        }
+                    }
+                } else {
+                    let mesh_path = batch.mesh.clone();
+                    let mesh_handle = self.model_handle_for(mesh_path.as_str());
+                    batches.push(Scene3dDrawable {
+                        entity: SceneEntityId(id.index() as u64),
+                        name,
+                        mesh_path,
+                        material: batch.material.clone(),
+                        mesh_handle: Some(mesh_handle),
+                        model: Mat4::identity(),
+                        palette: Vec::new(),
+                        instances,
+                        bounds: Scene3dBounds {
+                            local_aabb: rustlua_math::math3d::Aabb3 {
+                                min: Vec3::new(-0.5, -0.5, -0.5),
+                                max: Vec3::new(0.5, 0.5, 0.5),
+                            },
+                            source: BoundsSource::Fallback,
+                        },
+                    });
+                }
             });
             batches
         });

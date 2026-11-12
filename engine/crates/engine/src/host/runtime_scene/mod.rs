@@ -98,6 +98,14 @@ pub(crate) struct FrameView3d {
     view: RenderView,
 }
 
+/// P3-R246/R273：本帧提取登记的一条运动批次 `(实体, 批次, 场景时刻, 可选 LOD)`。
+pub type StagedMotionBatch = (
+    u64,
+    std::sync::Arc<InstanceBatch3D>,
+    f32,
+    Option<rustlua_render::instance_batch::InstanceBatchLod3D>,
+);
+
 pub struct RuntimeScene {
     /// Lua 桥。**crate 内可见**：工程级门（`host::sample_project`）要用它驱动
     /// `on_click` / `scene.load` / 控制台表达式，验证示例工程的菜单与演示真的能跑；
@@ -397,9 +405,12 @@ pub struct RuntimeScene {
     ///
     /// 默认关：关档时提取路径一个字节都不变（照旧求 CPU 矩阵）。
     pub(crate) gpu_motion_batches: bool,
-    /// 本帧提取登记下来的运动批次 `(实体, 批次, 场景时刻)`；宿主在 `render` 前
+    /// 本帧提取登记下来的运动批次 `(实体, 批次, 场景时刻, 可选 LOD)`；宿主在 `render` 前
     /// `take_staged_motion_batches()` 取走并推进渲染器。
-    pub(crate) staged_motion: std::cell::RefCell<Vec<(u64, InstanceBatch3D, f32)>>,
+    pub(crate) staged_motion: std::cell::RefCell<Vec<StagedMotionBatch>>,
+    /// P3-R275：本帧被 [`rustlua_render::instance_batch::InstanceBatchPlanar3D`] 排除出
+    /// 平面反射 pass 的实体（`EntityId::index`）。每帧重建；宿主取走后交给渲染器。
+    pub(crate) planar_skip_entities: std::cell::RefCell<Vec<u64>>,
 }
 
 /// P3-R07-1：一步里**场景声明的发射器**的落点分布（诊断/验收用，不参与玩法）。
@@ -708,6 +719,11 @@ impl RuntimeScene {
     /// P3-R242：脚本设置的水面折射步进数（`None` = 保持宿主启动档）。
     pub fn render_water_refract_steps(&self) -> Option<u32> {
         self.script.render_water_refract_steps()
+    }
+
+    /// P3-R283：脚本设置的阴影投射距离预算（米，0 = 关；`None` = 保持宿主启动档）。
+    pub fn render_shadow_caster_distance(&self) -> Option<u32> {
+        self.script.render_shadow_caster_distance()
     }
 
     /// P3-R151：写入上一帧渲染统计，供 `render.stats()` 读取。

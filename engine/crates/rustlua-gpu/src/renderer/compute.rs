@@ -275,6 +275,70 @@ impl super::Renderer {
         &mut self,
         request: &ComputeRequest<'_>,
     ) -> Result<ComputeDispatch, ComputeError> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rustlua-compute-encoder"),
+            });
+        let dispatch = self.record_compute(request, &mut encoder)?;
+        self.queue.submit([encoder.finish()]);
+        Ok(dispatch)
+    }
+
+    /// P3-R270：把 compute 录进**本帧共享**的编码器，不立即提交。帧路径里 41 个批次各
+    /// 两次 dispatch ⇒ 原来 82 次 `queue.submit`/帧（每次都要建编码器、提交命令列表、打
+    /// 栅栏），R269 实测 `bind_bake` 6.57 ms 且与实例数无关（2 千只档仍 5.61 ms）。
+    /// P3-R271 把压缩烘焙的收尾 kernel 折进主 kernel 后，帧路径是 41 次 dispatch。
+    /// 共享编码器由 [`Self::seal_pending_compute`] 在绑定组循环收尾封好，随图形**一次**提交
+    /// ⇒ 「compute 先于图形」的队列顺序不变。外部调用方仍用 [`Self::dispatch_compute`]。
+    pub(super) fn dispatch_compute_deferred(
+        &mut self,
+        request: &ComputeRequest<'_>,
+    ) -> Result<ComputeDispatch, ComputeError> {
+        let mut encoder = match self.pending_compute.take() {
+            Some(encoder) => encoder,
+            None => self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rustlua-compute-encoder-frame"),
+                }),
+        };
+        let result = self.record_compute(request, &mut encoder);
+        // 校验失败时编码器里只有此前成功的 pass（record_compute 先校验后录制），放回不丢。
+        self.pending_compute = Some(encoder);
+        result
+    }
+
+    /// P3-R270：封好本帧攒下的 compute（没有则什么都不做）。必须在图形提交之前调用；
+    /// 帧路径的调用点是绑定组循环收尾的 `note_material_bind_frame`。
+    ///
+    /// P3-R289：这里**不再提交**。R288 实测绑定循环里 `bind_build` 之外还有 2.31 ms，
+    /// 那就是这次独立 `queue.submit` 的 CPU 代价；改成封好后由 [`Self::submit_frame_commands`]
+    /// 与图形合成一次提交，每帧少一次提交，队列顺序不变。
+    pub(super) fn seal_pending_compute(&mut self) {
+        if let Some(encoder) = self.pending_compute.take() {
+            self.pending_compute_sealed = Some(encoder.finish());
+        }
+    }
+
+    /// P3-R289：本帧唯一的提交点——封好的 compute 在前、图形编码器在后，合成**一次**
+    /// `queue.submit`。两个命令缓冲在同一次提交里按数组顺序执行，与「先提交 compute 再提交
+    /// 图形」的队列顺序逐条一致；没有烘焙时退化成原来的单缓冲提交。
+    pub(super) fn submit_frame_commands(
+        &mut self,
+        encoder: wgpu::CommandEncoder,
+    ) -> wgpu::SubmissionIndex {
+        match self.pending_compute_sealed.take() {
+            Some(compute) => self.queue.submit([compute, encoder.finish()]),
+            None => self.queue.submit([encoder.finish()]),
+        }
+    }
+
+    fn record_compute(
+        &mut self,
+        request: &ComputeRequest<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<ComputeDispatch, ComputeError> {
         if !self.compute_state.active(&self.capabilities) {
             return Err(self.compute_not_available());
         }
@@ -408,11 +472,6 @@ impl super::Renderer {
             }
         };
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rustlua-compute-encoder"),
-            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(request.label),
@@ -427,7 +486,6 @@ impl super::Renderer {
                 request.workgroups[2],
             );
         }
-        self.queue.submit([encoder.finish()]);
         let total: u64 = request
             .workgroups
             .iter()

@@ -1,6 +1,6 @@
 # Lua 模块 `render`
 
-> 运行期 API 面基线里本模块有 17 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 18 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -142,6 +142,20 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 返回：`(ok, reason)`。
 - 失败：非有限。
 - 示例：`render.set_ripple(12.0, -4.0)`（落水）。
+
+## `render.set_shadow_caster_distance(meters: Value)`
+
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:274`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+把阴影投射者的距离预算调到 `meters`（0..=1000 的整数米；`0` = 关）。相机到 drawable 超过预算的投射者
+不进方向光 CSM 与点光 6 面链，**主视图与平面反射照画**——远处物体的阴影会消失，属观感取舍档。
+宿主每帧只在值变化时写入渲染器。脚本没碰过时是 `None`，保持宿主启动档 `--shadow-caster-distance`；
+显式写 `0` 会留痕 `Some(0)`，因此脚本能把启动档关掉。
+
+- 参数：`meters` 0..=1000 的整数；`0` 关闭。
+- 返回：`(ok, reason)`。
+- 失败：非数、非有限、带小数（`20.5`）或越界（`1001` / `-1`）。
+- 示例：`render.set_shadow_caster_distance(20)`（P3-R282 实测 6 万蚁档 shadow 11.4 → 0.22 ms）。
 
 ## `render.set_surface_cover(snow: f32, wet: f32)`
 

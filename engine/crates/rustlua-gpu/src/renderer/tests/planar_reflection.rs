@@ -463,6 +463,74 @@ fn planar_pass_culls_draws_outside_the_mirror_frustum() {
     );
 }
 
+/// P3-R275：排除集合里的实体整条 draw 不进反射 pass——计数走 `skipped` 而不是 `culled`，
+/// 镜像图回到全透明。跳过的 draw 必须真的短路，否则计数照涨而像素不变。
+#[test]
+fn planar_pass_skips_entities_marked_in_the_skip_set() {
+    let Some(mut fixture) = fixture("rustlua-test-planar-skip-target") else {
+        return gpu_skipped("request_adapter");
+    };
+    fixture.renderer.set_render_settings(
+        RenderSettings::default()
+            .with_pbr(true)
+            .with_hdr(ToggleMode::On)
+            .with_ssr(true)
+            .with_ssao(true),
+    );
+
+    let scene = fixture.scene(vec![water_drawable(), plinth_drawable()]);
+    if !fixture.render(&scene) {
+        return gpu_skipped("hdr_active");
+    }
+    let baseline = fixture.renderer.last_frame_metrics();
+    assert!(
+        baseline.planar_reflection_draws > 0 && baseline.planar_draws_skipped == 0,
+        "基线：基座必须进反射、排除数为 0：{baseline:?}"
+    );
+    let covered = fixture
+        .renderer
+        .read_planar_reflection_to_cpu()
+        .expect("planar map readback")
+        .pixels
+        .iter()
+        .filter(|pixel| pixel[3] >= 0.5)
+        .count();
+    assert!(covered > 0, "基线镜像图必须有覆盖，否则这条门没有反面可测");
+
+    let plinth_entity = plinth_drawable().entity.0;
+    fixture.renderer.set_planar_skip_entities(&[plinth_entity]);
+    let scene = fixture.scene(vec![water_drawable(), plinth_drawable()]);
+    if !fixture.render(&scene) {
+        return gpu_skipped("hdr_active");
+    }
+    let metrics = fixture.renderer.last_frame_metrics();
+    assert_eq!(
+        metrics.planar_draws_skipped, 1,
+        "排除集合里的基座必须恰好记一次跳过：{metrics:?}"
+    );
+    assert_eq!(
+        metrics.planar_draws_culled, 0,
+        "排除先于视锥剔除判，跳过的 draw 不算被剔除：{metrics:?}"
+    );
+    assert_eq!(
+        metrics.planar_reflection_draws,
+        baseline.planar_reflection_draws - 1,
+        "被排除的 draw 不许再进反射 pass：{metrics:?}"
+    );
+    let planars = fixture
+        .renderer
+        .read_planar_reflection_to_cpu()
+        .expect("planar map readback")
+        .pixels
+        .iter()
+        .filter(|pixel| pixel[3] >= 0.5)
+        .count();
+    assert_eq!(
+        planars, 0,
+        "唯一的反射源被排除后镜像图必须回到全透明（计数与像素两处同时绿才算跳过生效）"
+    );
+}
+
 /// P3-R196：平面反射目标分辨率除数生效——4 档把 64² 目标压到 16²，pass 照常执行；
 /// 默认（不调 setter）仍是 2 档半分辨率，既有像素门守护。
 #[test]

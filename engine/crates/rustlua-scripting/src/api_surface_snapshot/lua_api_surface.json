@@ -314,12 +314,17 @@
     {
       "funcs": [
         "batch_count",
+        "batch_lod",
+        "batch_planar",
         "batch_pose",
         "clear",
         "clear_batch",
+        "clear_batch_lod",
         "get",
         "set",
         "set_batch",
+        "set_batch_lod",
+        "set_batch_planar",
         "set_batch_range",
         "set_material"
       ],
@@ -450,6 +455,7 @@
         "set_post_fx",
         "set_quality",
         "set_ripple",
+        "set_shadow_caster_distance",
         "set_surface_cover",
         "set_water_refract_steps",
         "set_water_tint",

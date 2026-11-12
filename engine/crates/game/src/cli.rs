@@ -51,6 +51,8 @@ pub struct Arguments {
     pub skip_mesh: Option<String>,
     /// P3-R185：关闭不透明前到后排序（early-Z 优化的 A/B 回滚档）。
     pub no_depth_sort: bool,
+    /// P3-R270：关闭 GPU 位姿烘焙的持久输入缓冲 + 共享 compute 编码器（A/B 回滚档）。
+    pub no_bake_cache: bool,
     /// P3-R191：关闭平面反射的镜像视锥剔除（A/B 回滚档）。
     pub no_planar_cull: bool,
     /// P3-R194：关闭点光阴影逐面方向锥剔除（A/B 回滚档）。
@@ -61,6 +63,8 @@ pub struct Arguments {
     pub water_cheap: bool,
     /// P3-R203：全部地形强制廉价细节档（`--terrain-cheap`，A/B 用；默认只按 spec 的 `cheap=1`）。
     pub terrain_cheap: bool,
+    /// P3-R277：全部普通网格强制廉价着色档（`--crowd-cheap`，A/B 用；默认全价 PBR）。
+    pub crowd_cheap: bool,
     /// P3-R206：3D 最大绘制距离（米，0 = 关闭）。超出者并入剔除计数，是植被 LOD 的第一级
     /// 硬截断档（低端机用；默认关闭 = 像素逐字节不变）。
     pub draw_distance: u32,
@@ -177,9 +181,11 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
             "--no-cull" => args.no_cull = true,
             "--no-instance" => args.no_instance = true,
             "--no-depth-sort" => args.no_depth_sort = true,
+            "--no-bake-cache" => args.no_bake_cache = true,
             "--no-planar-cull" => args.no_planar_cull = true,
             "--no-point-face-cull" => args.no_point_face_cull = true,
             "--water-cheap" => args.water_cheap = true,
+            "--crowd-cheap" => args.crowd_cheap = true,
             "--clip-cap-both-sides" => args.clip_cap_both_sides = true,
             "--prewarm-particles" => args.prewarm_particles = true,
             "--gpu-motion" => args.gpu_motion = true,
@@ -451,6 +457,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                      --skip-mesh <子串>  开发期归因开关：跳过网格路径含该子串的 3D drawable\n\
                                        （A/B 量某类网格的 GPU 成本；不给 = 不跳过）\n\
                      --no-depth-sort   关闭不透明前到后排序（P3-R185 的 A/B 回滚档）\n\
+                     --no-bake-cache    关闭烘焙输入缓冲持久化与共享 compute 编码器（P3-R270 回滚档）\n\
                      --no-planar-cull  关闭平面反射的镜像视锥剔除（P3-R191 的 A/B 回滚档）\n\
                      --no-point-face-cull  关闭点光阴影逐面方向锥剔除（P3-R194 的 A/B 回滚档）\n\
                      --planar-divisor <n>  平面反射目标分辨率除数（默认 2 = 半分辨率；4 = 1/4 档）\n\
@@ -1030,6 +1037,15 @@ mod tests {
             |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
         assert!(!parse(&[]).unwrap().prewarm_particles, "默认不预热");
         assert!(parse(&["--prewarm-particles"]).unwrap().prewarm_particles);
+    }
+
+    /// P3-R270：`--no-bake-cache` 默认关（缓存开）、出现即关。
+    #[test]
+    fn no_bake_cache_flag_parses() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        assert!(!parse(&[]).unwrap().no_bake_cache, "默认开烘焙缓存");
+        assert!(parse(&["--no-bake-cache"]).unwrap().no_bake_cache);
     }
 
     /// P3-R246：`--gpu-motion` 默认关、出现即开。

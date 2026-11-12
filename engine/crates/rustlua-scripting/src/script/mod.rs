@@ -274,6 +274,8 @@ pub(crate) struct ScriptState {
     render_clip_cap_both_sides: Option<bool>,
     /// P3-R242：水面折射的 Snell 屏幕空间步进数（0 = 关 = R207 的偏移近似）。
     render_water_refract_steps: Option<u32>,
+    /// P3-R283：阴影投射者的距离预算（米，0 = 关）；`None` = 脚本没碰过，保持宿主启动档。
+    render_shadow_caster_distance: Option<u32>,
     /// P3-R151：上一帧渲染统计（draws/vertices/triangles/set-passes）。
     render_stats: Option<[u64; 4]>,
     /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
@@ -908,6 +910,10 @@ impl LuaRuntime {
     /// 脚本设置的水面折射步进数；`None` = 渲染器保持宿主启动值（`--water-refract-steps`）。
     pub fn render_water_refract_steps(&self) -> Option<u32> {
         self.state.borrow().render_water_refract_steps
+    }
+    /// 脚本设置的阴影投射距离预算（米，0 = 关）；`None` = 保持宿主启动值（`--shadow-caster-distance`）。
+    pub fn render_shadow_caster_distance(&self) -> Option<u32> {
+        self.state.borrow().render_shadow_caster_distance
     }
     /// 写入上一帧渲染统计。
     pub fn set_render_stats(&self, stats: [u64; 4]) {
