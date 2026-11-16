@@ -109,6 +109,10 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
 
 - 4 条真红未修：属水面/IBL shader 契约的拥有方工作，且需先确认 P3-R277 / P3-R208 / 折射步进的
   既定语义；本任务只提供定性与修法方向，不做猜测性改动。
-- 本机 autocrlf 检出会让所有"多行 `contains`"型源码断言假红；除已修的 2 条外，其余同类测试
-  目前恰好只做单行断言，暂未暴露。若要根治，应向 `.gitattributes` 增加 `*.rs text eol=lf`
-  （代价是全仓一次换行归一化提交），本轮不做。
+- 本机 autocrlf 检出的行尾问题**已根治（2026-11-16）**：`.gitattributes` 新增 `*.rs text eol=lf`，
+  并把工作区 946 个干净 `.rs` 一次性归一为 LF（0 个 CRLF 残留；对方在途的 WIP 文件未触碰）。
+  仓库 blob 本就是 LF，所以 `git add --renormalize -- '*.rs'` 无内容 diff，根治只花了一行规则。
+  两条 `replace("\r\n","\n")` 仍然保留——对尚未重新检出的旧克隆是兜底，不改变判据。
+  验证：`check-vendor-patches.ps1` 30/30 通过（说明 LF 归一化没有破坏字节敏感的 fork 断言）。
+- `.gitattributes` 未加 `* text=auto`：`scripts/**/*.ps1` 必须是 UTF-8 BOM + CRLF（PS 5.1 口径），
+  通配会一次性改写它们；因此只钉 `*.rs`。
