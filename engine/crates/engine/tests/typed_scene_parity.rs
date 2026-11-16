@@ -77,17 +77,17 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                 "{label} 旧提取产生诊断：{:?}",
                 serialized.diagnostics
             );
-            let old_3d: BTreeMap<&str, (Mat4, &str)> = serialized
+            let old_3d: BTreeMap<&str, (Mat4, String)> = serialized
                 .entities
                 .iter()
                 .map(|entity| {
                     (
                         entity.name.as_str(),
-                        (entity.model, entity.mesh.mesh.as_str()),
+                        (entity.model, entity.mesh.mesh.clone()),
                     )
                 })
                 .collect();
-            let typed_3d: BTreeMap<&str, (Mat4, &str)> = typed
+            let typed_3d: BTreeMap<&str, (Mat4, String)> = typed
                 .entities
                 .iter()
                 .filter_map(|entity| {
@@ -96,7 +96,7 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                     else {
                         return None;
                     };
-                    let Some(TypedComponent::Opaque { assets, .. }) =
+                    let Some(TypedComponent::Opaque { payload, assets }) =
                         entity.components.get(&ComponentId::MeshRenderer)
                     else {
                         return None;
@@ -104,8 +104,16 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                     // 与旧提取一致：非法变换的实体在旧路径会变成诊断而不是 drawable，
                     // 上面的诊断断言已保证这里不会静默丢实体。
                     let model = transform.model_matrix().ok()?;
-                    // `MeshRenderer` 的 mesh 路径由 render 的 codec 报告，typed 侧只做搬运。
-                    let mesh = assets.first()?.0.as_str();
+                    // 内置哨兵网格（`__ground_plane__` / `__primitive__…` 等）在 typed 侧
+                    // **故意**不报资源路径（`rustlua-render::scene_codec::mesh_assets`：依赖图
+                    // 不该把哨兵当文件，否则每张内置地面都变成假断链），所以 `assets` 为空时
+                    // 必须回 payload 取真实 mesh 串，否则这条对拍会把 Ground 静默漏掉。
+                    let mesh = match assets.first() {
+                        Some((path, _)) => path.clone(),
+                        None => rustlua_render::mesh3d::MeshRenderer::from_component_str(payload)
+                            .ok()?
+                            .mesh,
+                    };
                     Some((entity.name.as_str(), (model, mesh)))
                 })
                 .collect();
@@ -136,8 +144,7 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                     matrices_match(*model, *typed_model),
                     "{label} {name} 模型矩阵不一致"
                 );
-                assert_eq!(*mesh, *typed_mesh, "{label} {name} mesh 路径不一致");
-            }
+                assert_eq!(*mesh, *typed_mesh, "{label} {name} mesh 路径不一致");            }
 
             // 相机与光源集合必须一致（旧路径按同一实体顺序收集）。
             let old_cameras: Vec<SceneEntityId> = serialized
