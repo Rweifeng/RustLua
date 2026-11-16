@@ -275,6 +275,53 @@ if (-not $SkipDeny) {
     }
 }
 
+# ── 2b. deny 例外的到期强制 ─────────────────────────────────────────────────
+# 为什么要有这一段：`cargo-deny` 的 `ignore` 只接受 id/reason 两个键，**没有到期字段**。
+# 于是 `engine/deny.toml` 里"过期后本门会重新变红"这句话，在没有解析器之前是**不成立的**——
+# 2027-10-20 到了也不会有任何门变红，只会继续带着一条 unmaintained 例外走下去。
+# 这里把 reason 里的"复核截止 YYYY-MM-DD"解析出来并强制：过期即判红，
+# 逼人在到期前给出替换/自维护/接受的书面结论（口径见 docs/69 §4.2.1）。
+$denyTomlPath = Join-Path $engineRoot "deny.toml"
+if (Test-Path -LiteralPath $denyTomlPath) {
+    # 先剥掉注释行：deny.toml 里有一条**注释**形式的格式示例
+    # （`# 例外格式：{ id = "RUSTSEC-0000-0000", ... }`），不剥会把示例当成真例外。
+    $denyText = [System.IO.File]::ReadAllText($denyTomlPath, [System.Text.UTF8Encoding]::new($false))
+    $denyCode = (($denyText -split "`r?`n") | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+    $ignores = [regex]::Matches(
+        $denyCode,
+        'id\s*=\s*"(RUSTSEC-\d{4}-\d{4})"\s*,\s*reason\s*=\s*"([^"]*)"')
+    if ($ignores.Count -eq 0) {
+        Add-Pass "deny-exception-expiry no_ignore_entries"
+    }
+    else {
+        $today = (Get-Date).Date
+        $expired = @()
+        $soonest = $null
+        foreach ($m in $ignores) {
+            $id = $m.Groups[1].Value
+            $reason = $m.Groups[2].Value
+            $dateMatch = [regex]::Match($reason, '复核截止\s*(\d{4}-\d{2}-\d{2})')
+            if (-not $dateMatch.Success) {
+                Add-Fail "deny-exception-expiry" ($id + " 的 reason 里没有「复核截止 YYYY-MM-DD」；到期日不可考")
+                continue
+            }
+            $due = [datetime]::ParseExact($dateMatch.Groups[1].Value, 'yyyy-MM-dd', $null)
+            if ($null -eq $soonest -or $due -lt $soonest) { $soonest = $due }
+            if ($due -lt $today) {
+                $expired += ($id + "（复核截止 " + $dateMatch.Groups[1].Value + "）")
+            }
+        }
+        if ($expired.Count -gt 0) {
+            Add-Fail "deny-exception-expiry" (
+                "已到期仍保留 ignore：" + ($expired -join '; ') +
+                "；按 docs/69 §4.2.1 给出替换/自维护/接受结论并更新 deny.toml")
+        }
+        elseif ($null -ne $soonest) {
+            Add-Pass ("deny-exception-expiry soonest=" + $soonest.ToString('yyyy-MM-dd'))
+        }
+    }
+}
+
 # ── 3. fork 同步（离线结构检查）──────────────────────────────────────────────
 if (-not $SkipForkSync) {
     $node = Get-Command node -ErrorAction SilentlyContinue

@@ -103,20 +103,31 @@ struct Config {
     /// `--cull-headroom`：只用引擎自己的视锥判据数一遍"有多少实例根本看不见"，
     /// 不跑渲染、不写报告。它回答的是"剔除这个方向值不值得动手"，见 `cull_headroom`。
     cull_headroom: bool,
+    /// `--scatter`（M83-05）：把网格铺开到 1000×1000 量级的"散开布局"，相机贴近一角。
+    /// 现有默认布局的 100×100 网格整体落在视锥里（`outside_pct=0.0`），在任何剔除结构上
+    /// 读数都不会动——那等于没有基准。散开布局让 `--cull-headroom` 报出**非零**上限，
+    /// 将来判"做不做 BVH/遮挡剔除"才有可比的读数。默认关闭：默认布局与报告格式逐字不变。
+    scatter: bool,
 }
 
 fn main() {
     let config = parse_config();
     if config.cull_headroom {
         for mesh_count in [100usize, 1_000, 10_000] {
-            println!("{}", cull_headroom(mesh_count));
+            println!("{}", cull_headroom(mesh_count, config.scatter));
         }
         return;
     }
     let root = games_dir().join("examples").join("game_api");
     let mut reports = Vec::new();
     for mesh_count in [100usize, 1_000, 10_000] {
-        reports.push(run_stair(&root, mesh_count, config.cycles, config.profile));
+        reports.push(run_stair(
+            &root,
+            mesh_count,
+            config.cycles,
+            config.profile,
+            config.scatter,
+        ));
     }
     let json = format_report(&reports, config.cycles);
     if let Some(path) = config.output {
@@ -135,6 +146,7 @@ fn parse_config() -> Config {
     let mut cycles = 30;
     let mut profile = false;
     let mut cull_headroom = false;
+    let mut scatter = false;
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -152,9 +164,10 @@ fn parse_config() -> Config {
             }
             "--profile" => profile = true,
             "--cull-headroom" => cull_headroom = true,
+            "--scatter" => scatter = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: wp0_3d_stress [--cycles N] [--output PATH] [--profile] [--cull-headroom]"
+                    "Usage: wp0_3d_stress [--cycles N] [--output PATH] [--profile] [--cull-headroom] [--scatter]"
                 );
                 std::process::exit(0);
             }
@@ -167,12 +180,19 @@ fn parse_config() -> Config {
         cycles,
         profile,
         cull_headroom,
+        scatter,
     }
 }
 
-fn run_stair(root: &Path, mesh_count: usize, cycles: usize, profile: bool) -> String {
-    let mut runtime =
-        RuntimeScene::from_scene_edit(Some(root), build_scene(mesh_count)).expect("runtime scene");
+fn run_stair(
+    root: &Path,
+    mesh_count: usize,
+    cycles: usize,
+    profile: bool,
+    scatter: bool,
+) -> String {
+    let mut runtime = RuntimeScene::from_scene_edit(Some(root), build_scene(mesh_count, scatter))
+        .expect("runtime scene");
     let fixture = OffscreenTarget::acquire(
         &OffscreenRequest::new("wp0-3d-stress", 640, 360).with_timestamps(),
     )
@@ -398,18 +418,55 @@ fn instance_position(index: usize, mesh_count: usize) -> (f32, f32) {
     (x, z)
 }
 
-fn build_scene(mesh_count: usize) -> Scene {
+/// `--scatter` 布局的网格边长（`ceil(sqrt(n))`）：10,000 个实例 ⇒ 100×100。
+fn scatter_side(mesh_count: usize) -> usize {
+    let mut side = 1usize;
+    while side * side < mesh_count {
+        side += 1;
+    }
+    side
+}
+
+/// `--scatter` 布局：边长 10 个单位的方格铺开（10,000 ⇒ 约 990×990），整体居中于原点。
+fn instance_position_scatter(index: usize, mesh_count: usize) -> (f32, f32) {
+    const SPACING: f32 = 10.0;
+    let side = scatter_side(mesh_count);
+    let half = (side as f32 - 1.0) * 0.5;
+    let x = (index % side) as f32 * SPACING - half * SPACING;
+    let z = (index / side) as f32 * SPACING - half * SPACING;
+    (x, z)
+}
+
+/// `--scatter` 布局的相机：贴在场地 **+X 一侧**（离最近一排只有 20 个单位）向 -X 看。
+/// 这样 ±(extent/2) 的 z 跨度在近侧张角远超水平半视场（640×360、fov 60 ⇒ ≈45.7°），
+/// 大量实例落在视锥外——那正是剔除该拿的收益。默认布局的相机在 (0,0,20) 看向原点，
+/// 整张 100×100 网格都在视锥内，读数恒为 0。
+fn scatter_camera(mesh_count: usize) -> (f32, f32, f32) {
+    let extent = (scatter_side(mesh_count) as f32 - 1.0) * 10.0;
+    (extent * 0.5 + 20.0, 6.0, 0.0)
+}
+
+fn build_scene(mesh_count: usize, scatter: bool) -> Scene {
     let mut scene = Scene::new(format!("wp0-3d-{mesh_count}"));
     scene.add_entity(SceneEntityId(1), "Camera", None).unwrap();
+    // 默认布局：100×100 网格全部落在视锥里（`--cull-headroom` 报 outside_pct=0.0）。
+    // `--scatter`（M83-05）：网格铺开到千级范围、相机落到一角，让"看不见的实例"占多数——
+    // 这是判"做不做剔除"唯一有意义的基准（没有可剔除对象时，任何结构都不会改善读数）。
+    let camera_component = if scatter {
+        let camera = scatter_camera(mesh_count);
+        format!(
+            "projection=perspective;position={},{},{};target=0,0,0;fov=60;near=0.1;far=5000",
+            camera.0, camera.1, camera.2
+        )
+    } else {
+        "projection=perspective;position=0,0,20;target=0,0,0;fov=60;near=0.1;far=100".into()
+    };
     scene
         .entities
         .get_mut(&SceneEntityId(1))
         .unwrap()
         .components
-        .insert(
-            "Camera".into(),
-            "projection=perspective;position=0,0,20;target=0,0,0;fov=60;near=0.1;far=100".into(),
-        );
+        .insert("Camera".into(), camera_component);
     scene.add_entity(SceneEntityId(2), "Sun", None).unwrap();
     // M83-07 诊断开关（默认不变）：去掉方向光 ⇒ 没有阴影投射者，用来量"阴影链"占多少
     // 固定每帧分配。`WP0_NO_LIGHT=1` 只在诊断时设。
@@ -436,7 +493,11 @@ fn build_scene(mesh_count: usize) -> Scene {
     for index in 0..mesh_total {
         let id = SceneEntityId(index as u64 + 3);
         scene.add_entity(id, format!("Mesh{index}"), None).unwrap();
-        let (x, z) = instance_position(index, mesh_count);
+        let (x, z) = if scatter {
+            instance_position_scatter(index, mesh_count)
+        } else {
+            instance_position(index, mesh_count)
+        };
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
@@ -462,29 +523,62 @@ fn build_scene(mesh_count: usize) -> Scene {
 /// 实例的包围球半径取变换 scale 的外接球（`0.08*sqrt(3)`，单位网格的最坏假设）；视口用基准的 640×360。
 /// 同时给一个**阳性对照**（相机朝反方向看）：它必须报 `outside_pct=100.0`，否则说明这个读数
 /// 自己就是坏的（永远返回"全在里面"的读数比没有读数更糟）。
-fn cull_headroom(mesh_count: usize) -> String {
+fn cull_headroom(mesh_count: usize, scatter: bool) -> String {
     let viewport = rustlua_camera::camera::Viewport::new(640.0, 360.0).expect("viewport");
     let radius = 0.08_f32 * 3.0_f32.sqrt();
+    // 默认布局：相机在 (0,0,20) 看向原点，整张 100×100 网格都在视锥内（outside=0）。
+    // 散开布局：相机贴场地一角，预期**大部分实例在视锥外**——那才是剔除能拿到收益的场景。
+    let (fixture_pos, fixture_target, far) = if scatter {
+        let (x, y, z) = scatter_camera(mesh_count);
+        (
+            rustlua_math::math3d::Vec3::new(x, y, z),
+            rustlua_math::math3d::Vec3::ZERO,
+            5000.0,
+        )
+    } else {
+        (
+            rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
+            rustlua_math::math3d::Vec3::ZERO,
+            100.0,
+        )
+    };
     let fixture = cull_headroom_for(
         mesh_count,
         viewport,
         "fixture",
-        rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
-        rustlua_math::math3d::Vec3::ZERO,
+        fixture_pos,
+        fixture_target,
         radius,
+        far,
+        scatter,
     );
-    // 对照：同一位置、朝 +Z 看（背离整个 100×100 网格）⇒ 理论上一个都看不见。
+    // 阳性对照：同一位置看**反方向**，必须报 100% 外——否则说明读数本身坏了
+    // （永远返回"全在里面"的读数比没有读数更糟）。
+    let (control_pos, control_target) = if scatter {
+        (
+            fixture_pos,
+            rustlua_math::math3d::Vec3::new(fixture_pos.x + 50.0, fixture_pos.y, fixture_pos.z),
+        )
+    } else {
+        (
+            rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
+            rustlua_math::math3d::Vec3::new(0.0, 0.0, 40.0),
+        )
+    };
     let control = cull_headroom_for(
         mesh_count,
         viewport,
         "control_looking_away",
-        rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
-        rustlua_math::math3d::Vec3::new(0.0, 0.0, 40.0),
+        control_pos,
+        control_target,
         radius,
+        far,
+        scatter,
     );
     format!("{fixture}\n{control}")
 }
 
+#[allow(clippy::too_many_arguments)] // 探针参数彼此独立，拆结构体只会加一层映射。
 fn cull_headroom_for(
     mesh_count: usize,
     viewport: rustlua_camera::camera::Viewport,
@@ -492,19 +586,25 @@ fn cull_headroom_for(
     position: rustlua_math::math3d::Vec3,
     target: rustlua_math::math3d::Vec3,
     radius: f32,
+    far: f32,
+    scatter: bool,
 ) -> String {
     let camera = rustlua_camera::camera::Camera3D::perspective(
         position,
         target,
         60.0_f32.to_radians(),
         0.1,
-        100.0,
+        far,
     )
     .expect("benchmark camera");
     let frustum = camera.frustum(viewport).expect("benchmark frustum");
     let mut inside = 0usize;
     for index in 0..mesh_count {
-        let (x, z) = instance_position(index, mesh_count);
+        let (x, z) = if scatter {
+            instance_position_scatter(index, mesh_count)
+        } else {
+            instance_position(index, mesh_count)
+        };
         if frustum.contains_sphere(rustlua_math::math3d::Vec3::new(x, 0.0, z), radius) {
             inside += 1;
         }
@@ -516,8 +616,9 @@ fn cull_headroom_for(
         outside as f64 * 100.0 / mesh_count as f64
     };
     format!(
-        "wp0_3d_cull_headroom camera={label} mesh_count={mesh_count} total={mesh_count} \
-         inside={inside} outside={outside} outside_pct={outside_pct:.1} radius={radius:.3}"
+        "wp0_3d_cull_headroom camera={label} layout={} mesh_count={mesh_count} total={mesh_count} \
+         inside={inside} outside={outside} outside_pct={outside_pct:.1} radius={radius:.3}",
+        if scatter { "scatter" } else { "dense" }
     )
 }
 

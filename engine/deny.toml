@@ -25,7 +25,11 @@ unmaintained = "workspace"
 # cargo-deny 0.20 的 ignore 只接受 id / reason 两个键，不接受单独的 expiry 字段。
 # RUSTSEC-2026-0192：ttf-parser 作者声明不再维护，但没有"已修复版本"可升级。
 # 它是 rustlua-render 的直接字体解析依赖，替换/自维护 fork 是独立工作项（docs/69 §4.2）。
-# 过期后本门会重新变红，迫使重新评估。
+# **到期强制不是 cargo-deny 给的**：ignore 只有 id/reason 两个键、没有 expiry 字段，
+# cargo-deny 自己永远不会因为日期过期而变红。真正的到期门是
+# scripts/verify/check-security.ps1 的 `deny-exception-expiry` 段——它解析本文件 reason 里
+# 的「复核截止 YYYY-MM-DD」，过期即判红（2026-11-16 加了正/反面对照：2020-01-01 必红）。
+# 复核期限与结论口径见 docs/69 §4.2.1。
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser 无维护版本；替换评估见 docs/69 §4.2，复核截止 2027-10-20" },
 ]
