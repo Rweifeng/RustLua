@@ -411,15 +411,22 @@ fn build_scene(mesh_count: usize) -> Scene {
             "projection=perspective;position=0,0,20;target=0,0,0;fov=60;near=0.1;far=100".into(),
         );
     scene.add_entity(SceneEntityId(2), "Sun", None).unwrap();
-    scene
-        .entities
-        .get_mut(&SceneEntityId(2))
-        .unwrap()
-        .components
-        .insert(
-            "Light".into(),
-            "direction=0.4,-0.8,0.5;color=1,1,1;intensity=1".into(),
-        );
+    // M83-07 诊断开关（默认不变）：去掉方向光 ⇒ 没有阴影投射者，用来量"阴影链"占多少
+    // 固定每帧分配。`WP0_NO_LIGHT=1` 只在诊断时设。
+    if std::env::var("WP0_NO_LIGHT")
+        .map(|v| v != "1")
+        .unwrap_or(true)
+    {
+        scene
+            .entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(
+                "Light".into(),
+                "direction=0.4,-0.8,0.5;color=1,1,1;intensity=1".into(),
+            );
+    }
     for index in 0..mesh_count {
         let id = SceneEntityId(index as u64 + 3);
         scene.add_entity(id, format!("Mesh{index}"), None).unwrap();
