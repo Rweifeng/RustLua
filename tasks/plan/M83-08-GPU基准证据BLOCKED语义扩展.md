@@ -1,11 +1,31 @@
 # 任务：GPU 基准证据的 BLOCKED 语义扩展（无适配器不再 panic 判红）
 
 - 任务 ID：M83-08
-- 状态：待定案（等 CI 注解确认 gates 红因）
+- 状态：**已裁定不做（2026-11-16）**——假说 A（CI 无适配器）被注解证伪
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
-## 目标
+## 零、裁定（2026-11-16，本任务不执行）
+
+`4b68a60e` 起 gates 步骤把失败行发成匿名可读 annotation，真因拿到了：
+
+```
+benchmarks: wp0_gpu_particles_golden_ok ... backend=Dx12        ← CI **有** WARP 适配器
+benchmarks: hierarchy stair metrics invalid for entities=1000:
+            propagate_us=0 skips=3 share=0
+benchmarks: Exception: scripts/verify/verify.ps1:1996
+```
+
+- 假说 A（适配器缺失导致示例 panic）**被证伪**：示例确实跑起来了，`backend=Dx12` 说明
+  离屏适配器可用；
+- 真因是 `verify.ps1` 里一条**陈旧 schema 断言**（hierarchy 静态档要求 `propagate_us>0`，
+  而"全跳过"的正确读数就是 0）。已在 `472ada98` 修好，本机 `-Benchmarks` exit 0。
+
+因此本任务要做的"7 个示例 panic → exit 3 + verify.ps1 BLOCKED 语义 + 到期登记"**没有触发条件**，
+裁定不做。若将来 CI 真的失去产物级 GPU（例如换 runner 镜像后 `backend=` 变成缺失或示例 panic），
+按本文件 §一 的清单与 §三 的方案直接执行即可——盘点结果不受本次裁定影响，仍然准确。
+
+## 目标（保留，供未来重新触发时参考）
 
 把 `verify.ps1 -Benchmarks` 里"拿不到离屏适配器"的处置，从**当前两种口径并存**
 （部分示例 `exit 3` = BLOCKED、部分示例 `.expect` panic = 红）统一成一种：
