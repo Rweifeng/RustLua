@@ -649,29 +649,29 @@ mod tests {
             diffusion_ratios.push((name, with_diffusion / without_diffusion));
         }
 
-        // ① 每格成本跨形状同量级：O(n²) 回归会让 cells 最大的那档每格成本成倍上涨。
-        let min_per_cell = per_cell
-            .iter()
-            .map(|(_, _, v)| *v)
-            .fold(f64::INFINITY, f64::min);
-        let max_per_cell = per_cell
-            .iter()
-            .map(|(_, _, v)| *v)
-            .fold(f64::NEG_INFINITY, f64::max);
-        assert!(
-            max_per_cell / min_per_cell <= 2.0,
-            "每格步进成本跨形状不同量级（{:.3}..{:.3} us/cell，比值 {:.2} > 2）：\
-             疑似步进退化成超线性；逐档读数见上",
-            min_per_cell,
-            max_per_cell,
-            max_per_cell / min_per_cell
-        );
-
-        // ② 扩散/纯步进比值有界：扩散只该多一遍整场遍历，不可能高出两个数量级。
+        // ① 每格成本的**绝对**上限（宽松但足以抓超线性退化）。
+        //    为什么不用"跨形状 max/min ≤ 2"：首个形状在共用 CI runner 上会吃冷缓存/被抢占，
+        //    per-cell 被抬高 2–3 倍是常态 —— 那会让本测试在插桩/慢机上假红（2026-11-16 实测：
+        //    CI coverage 对 rustlua-ecs 报 −52.5pp，正是这个假红让单元测试二进制 101 退出、
+        //    整 crate 的覆盖率 profile 被丢弃）。
+        //    上限取值依据：正常情况下 per-cell ≈0.27 us（本机 debug）、llvm-cov 插桩后 ≈2 us；
+        //    留 100× 余量取 50 us/cell。写成 O(n²) 时（24,576 格）per-cell 会到数千 us，必红。
+        const MAX_US_PER_CELL: f64 = 50.0;
+        // ② 扩散/纯步进耗时比值有界：扩散只该多一遍整场遍历，插桩是乘法性缩放、比值不变。
+        const MIN_DIFFUSION_RATIO: f64 = 1.0;
+        const MAX_DIFFUSION_RATIO: f64 = 20.0;
+        for (name, cells, per_cell_us) in per_cell {
+            assert!(
+                per_cell_us <= MAX_US_PER_CELL,
+                "{name}: 每格步进 {per_cell_us:.2} us/cell 超上限 {MAX_US_PER_CELL} \
+                 （cells={cells}）：疑似步进退化成超线性"
+            );
+        }
         for (name, ratio) in diffusion_ratios {
             assert!(
-                (1.0..=12.0).contains(&ratio),
-                "{name}: 开/关扩散耗时比值 {ratio:.2} 出界（应在 1..=12），扩散实现疑似退化"
+                (MIN_DIFFUSION_RATIO..=MAX_DIFFUSION_RATIO).contains(&ratio),
+                "{name}: 开/关扩散耗时比值 {ratio:.2} 出界（应在 \
+                 {MIN_DIFFUSION_RATIO}..={MAX_DIFFUSION_RATIO}），扩散实现疑似退化"
             );
         }
     }

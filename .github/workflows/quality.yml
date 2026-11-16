@@ -222,7 +222,29 @@ jobs:
   # 发布目录自检，若该产物不存在或是陈旧的，这条用例会以"发布应成功"失败——那是
   # 环境问题冒充代码问题（本轮就踩到过：9/14 的旧 runner 不含 `player_data_roots`，
   # 测试红而代码无辜）。
-  build-test:
+  # build-test 在 2026-11-16 拆成 **1 个构建 job + 3 个测试 cell**（M83-09）。
+  #
+  # 为什么拆：原单 job 实测 89.4 min，是整条 quality gate 的唯一关键路径
+  # （`4b68a60e` 的 job 时长：build-test 89.4 / coverage 36.4 / gates 23.2 / lint 6.8）。
+  # 耗时大头是"单线程跑全量测试"：`rustlua-gpu` 的 308 条 GPU 测试与 `editor` bin 的 700+ 条。
+  #
+  # **为什么按 crate 分组、而不是按 target kind**：实测 `cargo test --tests` **包含 lib 单测**
+  # （`rustlua-math`：`--lib` 8 条、`--tests` 也是 8 条）⇒ 用 `--lib` + `--bins --tests` 拆，
+  # GPU 那 47 分钟会在两组里各跑一遍，等于没拆。按 crate 分组的并集**天然等于全集**，
+  # 且 `--exclude` 把边界写在配置里，不依赖 target-kind 语义。
+  # 本地用 `cargo test --workspace --all-features --no-run --message-format=json` 的
+  # compiler-artifact 清单核对：`-p rustlua-gpu` ∪ `-p editor` ∪（workspace 排除两者）== 全集，
+  # missing=0 / extra=0。
+  #
+  # **反面对照（合并前必须做）**：故意弄红一个 `rustlua-gpu` 用例、一个 `editor` 用例、
+  # 一个其余 crate 的用例，必须分别由对应 cell 判红（`fail-fast: false`，不许被吞）。
+  #
+  # 所有测试 cell 仍固定 `RUST_TEST_THREADS=1`：历史 0xC0000005 未定位（M83-02），
+  # 并行测试仍是"随机红"风险；本任务只拆**调度**，不改线程数。
+  #
+  # 失败可见性：每个 cell 把 `test result: FAILED` / `panicked at` 行发成 `::error::`
+  # annotation（job 日志要认证，annotation 匿名可读）。
+  build-and-check:
     runs-on: windows-latest
     defaults:
       run:
@@ -245,33 +267,71 @@ jobs:
       - name: Release build
         run: cargo build --workspace --release
 
-      - name: Tests
-        # 2026-10-21 CI：默认并行 test 线程下 engine --lib 偶发 0xC0000005
-        # （STATUS_ACCESS_VIOLATION）；同一二进制单线程本地与覆盖率采集均通过。
-        # 固定单线程换取可复现性，代价是测试墙钟时间变长。
-        # 2026-10-26：RUST_TEST_THREADS 实际配的是 2（并行），e69fdc53 在
-        # editor 上复现 0xC0000005；改回 1 与注释意图一致，AV 消失。
+      - name: Debug build
+        run: cargo build --workspace
+
+  build-test-suites:
+    name: build-test (${{ matrix.name }})
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: engine
+    strategy:
+      # 三个 cell 互不依赖：一个红不该把另外两个变成 skipped（等于没跑）。
+      fail-fast: false
+      matrix:
+        include:
+          - name: gpu
+            cmd: cargo test -p rustlua-gpu --all-features
+          - name: editor
+            cmd: cargo test -p editor --all-features
+          - name: rest
+            cmd: cargo test --workspace --all-features --exclude rustlua-gpu --exclude editor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Tests (${{ matrix.name }})
+        shell: pwsh
         env:
           RUST_TEST_THREADS: "1"
         run: |
           New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\artifacts\logs\quality" | Out-Null
-          $log = "${{ github.workspace }}\artifacts\logs\quality\build-test-tests.log"
-          cargo test --workspace --all-features 2>&1 | Tee-Object -FilePath $log
+          $log = "${{ github.workspace }}\artifacts\logs\quality\build-test-${{ matrix.name }}.log"
+          ${{ matrix.cmd }} 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
-          if ($code -ne 0) { Write-Host "tests failed (exit $code); full log: $log" }
-          exit $code
+          if ($code -ne 0) {
+            Write-Host "::group::build-test(${{ matrix.name }}) failure tail (last 40 lines of $log)"
+            Get-Content -LiteralPath $log -Tail 40 | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            $tail = @(Get-Content -LiteralPath $log -Tail 10)
+            $picked = @(Get-Content -LiteralPath $log -Tail 200 |
+                Where-Object { $_ -match 'test result: FAILED|panicked at|^---- |error:' } |
+                Select-Object -Last 10)
+            $hints = @($picked + $tail | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Select-Object -Last 14)
+            foreach ($hint in $hints) {
+              $clean = ($hint -replace '[\r\n]+', ' ').Trim()
+              if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + '...' }
+              if ($clean) { Write-Host "::error::build-test(${{ matrix.name }}): $clean" }
+            }
+            exit $code
+          }
 
-      - name: Debug build
-        run: cargo build --workspace
-
-      - name: Upload build-test logs
+      - name: Upload test logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-test-logs
+          name: build-test-${{ matrix.name }}-logs
           path: artifacts/logs/quality/*
           if-no-files-found: warn
-
   # 发布闭包（容器内容）：`assetc closure` 直接读 RLB 索引，断言"计划里的每条逻辑路径都在容器里"、
   # 条目数/块大小/字节数/FNV 与计划一致。此前它只在发布机上有真产物时才跑（apply-bundle-layout /
   # verify-wechat-minigame），CI 完全覆盖不到——于是"容器文件都在、但某个按需组少了一条资源"

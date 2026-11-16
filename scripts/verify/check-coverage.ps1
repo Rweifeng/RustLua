@@ -85,12 +85,20 @@ function Invoke-CoverageCollect {
     # 否则 cargo llvm-cov --workspace 会因找不到 manifest 直接失败。
     Push-Location $engineRoot
     try {
+        # **不要把采集输出丢进 Out-Null**（2026-11-16 踩过）：`--ignore-run-fail` 下测试失败
+        # 不改变退出码，但失败用例本身会让整个 crate 的覆盖率 profile 缺失（例如 rustlua-ecs
+        # 掉 52.5pp）。此前输出被吞掉，CI annotation 只能看到"覆盖率掉了"，看不到"哪个用例
+        # 失败/为什么失败"，把一次定位拖成多轮。现在完整写到 artifacts（失败时上传）并在
+        # 失败分支把尾部倒到 stdout，让 CI 的 annotation 抓得到。
+        $covLog = Join-Path $artifactsRoot "coverage-collect.log"
         & cargo llvm-cov --workspace --all-features --locked --ignore-run-fail --no-cfg-coverage `
             --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --json --summary-only --output-path $covJson 2>&1 | Out-Null
+            --json --summary-only --output-path $covJson 2>&1 | Tee-Object -FilePath $covLog | Out-Null
         if ($LASTEXITCODE -ne 0) {
             # --no-fail-fast 下测试失败会让 cargo 返回非零；覆盖率数字不能掩盖红测试。
             Write-Host "[FAIL] llvm-cov 采集失败或存在测试失败（exit $LASTEXITCODE）；覆盖率门不掩盖红测试" -ForegroundColor Red
+            Write-Host "---- coverage collect tail (last 40 lines of $covLog) ----"
+            Get-Content -LiteralPath $covLog -Tail 40 | ForEach-Object { Write-Host $_ }
             return $null
         }
         # lcov + HTML 作为 artifact 证据（尽力而为，失败不判红但打印原因）。
