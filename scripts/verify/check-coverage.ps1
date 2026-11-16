@@ -101,6 +101,21 @@ function Invoke-CoverageCollect {
             Get-Content -LiteralPath $covLog -Tail 40 | ForEach-Object { Write-Host $_ }
             return $null
         }
+        # **`--ignore-run-fail` 的坑**（2026-11-16 第二次踩到）：它让 cargo 在测试失败时仍返回 0，
+        # 但失败用例会让对应 crate 的覆盖率 profile 缺失（rustlua-ecs 掉 52.5pp 就是这么来的）。
+        # 只看退出码 ⇒ 门会把"测试挂了"误报成"覆盖率回退"，定位只能靠猜。这里主动扫日志：
+        # 命中测试失败标记就判红并打印原始行，让 CI annotation 直接看到"哪个用例失败"。
+        $testFailures = @(Get-Content -LiteralPath $covLog -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match 'test result: FAILED|panicked at|^---- .* stdout ----' } |
+            Select-Object -First 20)
+        if ($testFailures.Count -gt 0) {
+            Write-Host ("[FAIL] coverage 采集期间有测试失败（共 {0}+ 行），覆盖率不可信；" -f $testFailures.Count) -ForegroundColor Red
+            Write-Host "       失败用例的 crate 覆盖率 profile 会缺失，先修测试再看棘轮。" -ForegroundColor Red
+            foreach ($line in $testFailures) { Write-Host "  $line" -ForegroundColor Red }
+            Write-Host "---- $covLog tail ----"
+            Get-Content -LiteralPath $covLog -Tail 30 | ForEach-Object { Write-Host $_ }
+            return $null
+        }
         # lcov + HTML 作为 artifact 证据（尽力而为，失败不判红但打印原因）。
         # lcov + HTML 只从刚生成的 profdata 导出，不再重复跑一遍全量测试（P4-01 门要能在 CI 分钟预算内跑完）。
         & cargo llvm-cov report --lcov --output-path $lcov 2>$null | Out-Null
