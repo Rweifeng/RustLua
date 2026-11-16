@@ -69,9 +69,15 @@ function Invoke-CoverageCollect {
     # cargo-llvm-cov 总会向 stderr 打 `info: ... cfg(coverage)`；脚本全局是 Stop，
     # PowerShell 5.1 会把这类原生 stderr 当成终止错误。命令成功与否只认 $LASTEXITCODE。
     $ErrorActionPreference = "Continue"
-    # 2026-10-21 CI：`engine --lib` 在 runtime_scene 用例上 0xC0000005。libtest 单线程
-    # 会把测试跑在主线程，`RUST_MIN_STACK` 不生效；固定 2 线程让用例进入 64MB 派生线程。
-    $env:RUST_TEST_THREADS = "2"
+    # 2026-11-16（M83-02/M83-08 取证）：这里原来是 2 线程，理由是"libtest 单线程会把测试跑在
+    # 主线程、`RUST_MIN_STACK` 不生效，固定 2 线程让用例进入 64MB 派生线程"（2026-10-21）。
+    # 但同一棵树上的 **build-test** 早已固定 `RUST_TEST_THREADS=1`，并且当前连续多次绿
+    # （2026-11-16 `1864ce63` 实测 build-test success）⇒ 那条"必须 2 线程"的前提已不成立。
+    # 而 coverage 用 2 线程与 build-test 记录过的"并行偶发 0xC0000005"同源：只改文档/ps1 的
+    # `44a27bf3` 与 `1864ce63` 上 coverage 红、内容更早的 `4a440c93` 却绿——典型 flake 形态。
+    # 先与绿色配置对齐（1 线程）验证假设；根因调查仍归 M83-02，若 1 线程反而触发主线程栈问题，
+    # 再改成"显式 `--test-threads` + 单独设 `RUST_MIN_STACK`"之类可控组合，不再靠猜。
+    $env:RUST_TEST_THREADS = "1"
     $covJson = Join-Path $artifactsRoot "coverage.json"
     $lcov = Join-Path $artifactsRoot "lcov.info"
     $htmlDir = Join-Path $artifactsRoot "html"
