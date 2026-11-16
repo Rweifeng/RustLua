@@ -736,7 +736,7 @@ async fn run_render_probe() -> Result<Value, String> {
     set_stage("texture_uploaded");
 
     let mesh = synthetic_mesh();
-    let outcome = renderer.render_into_texture(&mesh, None, &view, RENDER_SIZE, RENDER_SIZE);
+    let outcome = renderer.render_into_texture(&mesh, None, &view, RENDER_SIZE, RENDER_SIZE, true);
     let presented = matches!(outcome, rustlua_gpu::RenderOutcome::Presented);
     set_stage("rendered");
     let pixels = read_back(&mut renderer, &target).await?;
@@ -908,6 +908,7 @@ async fn run_render_probe() -> Result<Value, String> {
                         &frame_view,
                         RENDER_SIZE,
                         RENDER_SIZE,
+                        true,
                     );
                     surface_present["outcome_presented"] =
                         json!(matches!(outcome, rustlua_gpu::RenderOutcome::Presented));

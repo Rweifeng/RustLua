@@ -19,7 +19,7 @@
 | 变更入口 | `engine/crates/editor/src/actions.rs` | set_current_scene_document / undo/redo / save_scene / open_scene_resource / sync_inspector / 批量对齐 |
 | 文档模型 | `engine/crates/rustlua-editor-core/src/document.rs` | SceneDocument / PlaySession / ProjectDocument |
 | 历史 | `engine/crates/rustlua-editor-core/src/history.rs` | CommandKind / EditCommand / execute 合并与 no-op |
-| 层级 | `engine/crates/editor/src/panels/hierarchy.rs` | 选择、过滤、隐藏/锁定、create_scene、sync_hierarchy_metadata |
+| 层级 | `engine/crates/editor/src/panels/hierarchy/` | 选择、过滤、隐藏/锁定、create_scene、sync_hierarchy_metadata（绘制 `panel` / 行模型 `model` / 场景入口 `scene_ops`） |
 | Scene/Game | `engine/crates/editor/src/panels/game_view.rs` | play/stop 状态机与测试 |
 | Header | `engine/crates/editor/src/panels/header.rs` | 菜单、recover_candidate、窗口标题 |
 | 导入 | `engine/crates/editor/src/import.rs` | 项目/资源导入与 apply_progress_result |
@@ -95,7 +95,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 |---|---|---|---|---|
 | `set_current_scene_document` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs) | `current_scene = Some(document)` + `invalidate_scene_view_state()` | **弱**：只做 scene view 缓存/预览清理 | 这是所有入口的“统一底座”，但**不清任何选择/元数据/资源选择** |
 | `open_scene_resource` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs) | `open_scene_document` + history.clear + autosave.reset + play_session=None + tree.clear + delete_target=None + inspector.clear + clear_resource_selection + scene_state.selected/collapsed.clear + `sync_hierarchy_metadata()` | **最强（参考实现）** | 唯一同时清理两处选择 + delete_target + collapsed 并手动 sync metadata 的入口；Prefab 打开同样走这里 |
-| `create_scene` | [hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L243-L264) | `set_current_scene_document(SceneDocument::new)` + history.clear + autosave.reset + tree.clear + inspector.clear | **中** | **不清 scene_state.selected/collapsed/hidden/locked/delete_target** |
+| `create_scene` | [hierarchy/scene_ops.rs](../engine/crates/editor/src/panels/hierarchy/scene_ops.rs#L78-L92) | `set_current_scene_document(SceneDocument::new)` + history.clear + autosave.reset + tree.clear + inspector.clear | **中** | **不清 scene_state.selected/collapsed/hidden/locked/delete_target** |
 | `recover_candidate` | [header.rs](../engine/crates/editor/src/panels/header.rs#L169-L177) | `set_current_scene_document(recovery.recover())` + history.clear + autosave.reset + tree.clear + inspector.clear | **中** | 同上，恢复的文档 `dirty=true, revision=0` |
 | Play `stop()` | [game_view.rs](../engine/crates/editor/src/panels/game_view.rs#L60-L79) | `set_current_scene_document(session.stop())` + tree.clear + delete_target(Hierarchy→None) + inspector.clear + preview_input.clear + 回 Scene tab | **中** | 丢弃运行态，恢复 editor_snapshot |
 | 项目导入完成 | [import.rs](../engine/crates/editor/src/import.rs#L100-L131) | 整块替换 project/document/recovery/resources + history.clear + autosave.reset + lua_runtime=None + play_session=None + tree.clear + inspector.clear + 缩略图/字体图集清空 | **强（整体换项目）** | apply_progress_result 内联，无统一入口 |
@@ -107,7 +107,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 | `history.execute(...)` 全系列 | 各面板 | 传入 `&mut SceneDocument`（**注意：EditorApp 大多传 `document.current_scene.as_mut()`**） | 是 |
 | `scene_tree_state` 内部（clone 到闭包里的 tree） | delete/rename/reparent | `tree.delete_selected(&mut scene...)` | 由调用方 `history.execute` 包住 |
 | InspectorState 各 `set_*` | `inspector_state.rs` | 直接 `entity.components.insert` + `mark_dirty`，绕过 History | **否**（调用方通常包 history.execute，见 inspector.rs apply_inspector） |
-| `persist_hierarchy_flag`（隐藏/锁定） | [hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L204-L214) | 直接改 `scene.scene.metadata` + mark_dirty | **否（永远）** |
+| `persist_hierarchy_flag`（隐藏/锁定） | [hierarchy_ops.rs](../engine/crates/editor/src/hierarchy_ops.rs#L321-L334) | 直接改 `scene.scene.metadata` + mark_dirty | **否（永远）** |
 | Scene View 提交点 | `commit_scene_drag` / `commit_gizmo_drag3d` / `commit_tilemap_paint` / 资源拖放 | `history.execute` + 成功后 `save_scene()` | 是（**同时立刻保存**） |
 | Tilemap 图块绘制 | `apply_tile_paint_cell` / `commit_tilemap_paint` | 内存 Tilemap 编辑，释放/切工具时一次性 `history.execute` | 是（合并单条） |
 
@@ -162,7 +162,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 
 ### 4.1 场景切换（Hierarchy 顶栏下拉）
 
-[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L34-L70)：
+[hierarchy/panel.rs](../engine/crates/editor/src/panels/hierarchy/panel.rs#L19-L84)：
 1. 下拉列出 `scenes/` 目录（`scene_files()` 2s 缓存）。
 2. 选中其它文件 → `open_scene_resource(path)`（同 Prefab 打开）。
 3. **没有未保存确认**；当前 dirty 文档直接丢弃。
@@ -170,7 +170,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 ### 4.2 新建场景
 
 - Header “编辑 → 场景名 + 新建场景” → `create_scene()`（[header.rs](../engine/crates/editor/src/panels/header.rs#L50-L59)）。
-- `create_scene` 走 `set_current_scene_document(SceneDocument::new(name))`，随后 history.clear / autosave.reset / tree.clear / inspector.clear（[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L243-L264)）。
+- `create_scene` 走 `set_current_scene_document(SceneDocument::new(name))`，随后 history.clear / autosave.reset / tree.clear / inspector.clear（[hierarchy/scene_ops.rs](../engine/crates/editor/src/panels/hierarchy/scene_ops.rs#L78-L92)）。
 
 ### 4.3 打开场景 / Prefab
 
@@ -256,13 +256,13 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 - 修复归属：E02（把清理收敛进 on_document_changed，按 change 类型决定清理范围）。
 
 ### P4：metadata 持久化绕过 History 与保存路径（E02/E04 边界）
-- 位置：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L204-L214) `persist_hierarchy_flag`。
+- 位置：[hierarchy_ops.rs](../engine/crates/editor/src/hierarchy_ops.rs#L321-L334) `persist_hierarchy_flag`。
 - 复现：toggle 某实体 hidden/locked → 直接 `scene.scene.metadata` insert/remove + `mark_dirty()`。**不进 History**（undo 无法撤销），且属于“编辑配置写进场景数据”的边界问题。
 - 影响：hidden/locked 不可撤销；save 时随场景写盘（与 E10“持久化展开状态到编辑器配置、不写入场景数据”冲突方向相同）。
 - 修复归属：E10（区分场景数据与编辑配置）+ 批次内对“该不该进 History”统一口径。
 
 ### P5：`sync_hierarchy_metadata` 只在 (path, revision) 变化时重跑，且多个替换入口漏调（E02/E04）
-- 位置：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L170-L202)。
+- 位置：[hierarchy/scene_ops.rs](../engine/crates/editor/src/panels/hierarchy/scene_ops.rs#L7-L41)。
 - `last_metadata_key` 命中后直接 return。切换场景后若 key 相同不会自动重跑（例如两个刚打开的 revision=0 文档、或 stop 后恢复的文档 revision 与 key 撞上），因此部分入口（create_scene/recover/stop）没有手动调用它，hidden/locked 集合可能与新文档不符。
 - 影响：hidden/locked 状态陈旧。
 - 修复归属：E02（on_document_changed 统一 sync）+ E04（undo/redo 后同步）。
@@ -292,7 +292,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 - 修复归属：E09（保存编辑上下文、按 id 与文档有效性恢复、运行期删除对象安全回退）；依赖 E03/E04。
 
 ### P10：Hierarchy 过滤早期 return 会隐藏“含匹配后代”的祖先（E10）
-- 位置：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L97-L103)。
+- 位置：[hierarchy/model.rs](../engine/crates/editor/src/panels/hierarchy/model.rs#L235-L250)。
 ```rust
 if !self.hierarchy_filter.trim().is_empty()
     && !name.to_lowercase().contains(&self.hierarchy_filter.to_lowercase())

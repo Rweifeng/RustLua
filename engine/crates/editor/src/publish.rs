@@ -860,11 +860,11 @@ mod publish_tests {
     [switch]$SkipBuild,
     [switch]$Compress,
     [switch]$Encrypt,
-    [string]$WechatAppId
-    [string]$ApplicationId
-    [string]$SdkRoot
-    [string]$NdkRoot
-    [string]$JdkHome
+    [string]$WechatAppId,
+    [string]$ApplicationId,
+    [string]$SdkRoot,
+    [string]$NdkRoot,
+    [string]$JdkHome,
     [string]$GradleExecutable
 )
 Write-Output "==> Release build ($Platform)"

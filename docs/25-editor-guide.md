@@ -1112,7 +1112,7 @@ UI 工作室、可视化脚本、材质、动画每个都存着自己的历史�
 
 四条边界，都有门（`cargo test -p editor --bin editor`）：
 
-1. **创建**（`panels/hierarchy.rs` 的 `nesting_problem_at_creation`）：只拒坏数据——子树里挂着
+1. **创建**（`panels/hierarchy/scene_ops.rs` 的 `nesting_problem_at_creation`）：只拒坏数据——子树里挂着
    正在创建的这张（自指）、内层链成环、内层链超过 `prefab_graph::MAX_NESTING_DEPTH`。
    门 `creating_a_nested_prefab_records_the_inner_identity_and_refuses_self_reference` 断言创建成功
    后文件里三个内层标记逐字保住，而自指被拒时**不写出**任何文件。

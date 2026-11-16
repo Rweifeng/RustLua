@@ -344,8 +344,10 @@ local steps = {
             "render.set_post_fx",
             "render.set_clip_cap",
             "render.set_clip_cap_both_sides",
+            "render.set_water_refract_steps",
+            "render.set_shadow_caster_distance",
         },
-        code = "ok, why = render.set_fog(0.01); render.set_exposure(1); render.set_post_fx(0.2, 0.1)",
+        code = "ok, why = render.set_fog(0.01); render.set_exposure(1); render.set_post_fx(0.2, 0.1); render.set_water_refract_steps(8); render.set_shadow_caster_distance(80)",
         enter = function()
             reset_world()
         end,
@@ -393,6 +395,8 @@ local steps = {
                 { "set_post_fx", render.set_post_fx, { 0.2, 0.1 }, { 1.5, 0.0 } },
                 { "set_clip_cap", render.set_clip_cap, { 0.4 }, { 999.0 } },
                 { "set_clip_cap_both_sides", render.set_clip_cap_both_sides, { true }, { 1 } },
+                { "set_water_refract_steps", render.set_water_refract_steps, { 8 }, { 33 } },
+                { "set_shadow_caster_distance", render.set_shadow_caster_distance, { 80 }, { 1001 } },
             }
             for _, row in ipairs(checks) do
                 local name, fn, good, bad = row[1], row[2], row[3], row[4]
@@ -402,6 +406,8 @@ local steps = {
                     name .. " rejects out-of-range with a reason")
             end
             -- 会持续生效的项回到中性值：雾/闪光/曝光/涟漪/覆盖/后处理/剖面封口关，云留在演示值。
+            -- 阴影投射距离复位到上限 1000 米（= 不限制）；写 0 是"关阴影"，不是中性值，
+            -- 会让本场景的 PBR 阴影消失。
             render.set_fog(0.0)
             render.set_flash(0.0)
             render.set_exposure(0.0)
@@ -410,6 +416,8 @@ local steps = {
             render.set_post_fx(0.0, 0.0)
             render.set_clip_cap(0.0)
             render.set_clip_cap_both_sides(false)
+            render.set_water_refract_steps(0)
+            render.set_shadow_caster_distance(1000)
         end,
     },
     {

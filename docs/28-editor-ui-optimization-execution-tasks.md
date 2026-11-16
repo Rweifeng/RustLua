@@ -125,7 +125,7 @@ E20 + E22
 
 **依赖**：E01、E02。
 
-**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)、[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector/mod.rs](../engine/crates/editor/src/panels/inspector/mod.rs)。
+**重点文件**：[hierarchy/](../engine/crates/editor/src/panels/hierarchy/mod.rs)、[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector/mod.rs](../engine/crates/editor/src/panels/inspector/mod.rs)。
 
 **验收标准**：任何入口选择对象后，三个面板在同一帧内显示一致；多选集合不会因面板切换、Undo/Redo 或 Play/Stop 被无故清空。
 
@@ -309,7 +309,7 @@ E20 + E22
 
 **依赖**：E03、E07。
 
-**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)。
+**重点文件**：[hierarchy/](../engine/crates/editor/src/panels/hierarchy/mod.rs)。
 
 **验收标准**：可搜索任意深度节点并保留完整祖先路径；非法重挂载无法提交；上下文菜单操作可 Undo/Redo。
 

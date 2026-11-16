@@ -67,13 +67,23 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // P3-E03-2：画布只改 `GraphDocument`，不写场景文档。
     ("graph.rs", 0),
     ("header.rs", 0),
-    ("hierarchy.rs", 0),
+    // M79 包 2：`hierarchy.rs` 拆成目录（模型/导航/绘制/持久化/场景操作）。拆分**不缩小**
+    // 覆盖面——每个生产文件单独登记；`hierarchy/tests/` 在"只下探一层"的扫描之外。
+    ("hierarchy/mod.rs", 0),
+    ("hierarchy/model.rs", 0),
+    ("hierarchy/navigation.rs", 0),
+    ("hierarchy/panel.rs", 0),
+    ("hierarchy/persist.rs", 0),
+    ("hierarchy/scene_ops.rs", 0),
     // 层级徽标只读索引（记录 + 与源 diff），不写文档。
     ("hierarchy_badges.rs", 0),
     // 导入设置面板只写 `resources.meta`（作者意图的入库文件），不碰场景文档。
     ("import_settings.rs", 0),
     ("input_bindings.rs", 0),
     ("inspector/mod.rs", 0),
+    // M79 包 2：绘制主体与支撑方法再拆两片（`panel.rs` / `actions.rs`），同样逐个登记。
+    ("inspector/actions.rs", 0),
+    ("inspector/panel.rs", 0),
     // P1 结构收口：`inspector.rs` 拆成目录（绘制 `mod.rs` / UI 子编辑器 `ui_editors.rs` /
     // Prefab 侧 `prefab.rs` / 纯文本辅助 `helpers.rs`）。拆分**不缩小**覆盖面——每个生产
     // 文件单独登记；`inspector/tests/` 按既有约定自动跳过（与 `scene_view/tests/` 一致）。

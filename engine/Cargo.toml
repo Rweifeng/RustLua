@@ -44,6 +44,7 @@ edition = "2024"
 version = "0.1.1"
 authors = ["RustLua project"]
 license = "MIT OR Apache-2.0"
+rust-version = "1.97.1"
 repository = ""
 
 # Release 体积优化：strip 符号、LTO、单 codegen 单元、优化尺寸。
