@@ -13,8 +13,8 @@ return {
         label = "Sprite / Quad / Anim / Physics",
         -- 卡片标签只有约 36 个拉丁字符的宽度：粒子与可见性写进 summary，标签里留最显眼的一组。
         summary = "局部与世界变换、换装、帧事件、粒子、物理查询与调试绘制",
-        modules = { "transform", "sprite", "quad", "animation", "particles", "world_text", "visibility", "physics", "camera2d" },
-        steps = 9,
+        modules = { "transform", "sprite", "quad", "animation", "particles", "world_text", "visibility", "physics", "camera2d", "texture" },
+        steps = 10,
     },
     {
         scene = "api_tilemap",
@@ -54,7 +54,7 @@ return {
         label = "PBR / IBL / Skinning / Body",
         summary = "材质球、环境光、骨骼剪辑、3D 物理查询与 XZ 平面导航",
         modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera", "particles" },
-        steps = 12,
+        steps = 13,
     },
     {
         scene = "api_gameplay",

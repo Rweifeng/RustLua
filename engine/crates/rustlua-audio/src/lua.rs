@@ -21,7 +21,7 @@
 //! `load_settings` / `save_settings` 返回 `(bool, 文本)` 而不是抛错——`jhyt` 的脚本靠这两条区分
 //! "没有工程根" / "文件不存在"，改成抛错会破坏既有工程。
 
-use mlua::{Lua, Result as LuaResult};
+use mlua::{Lua, Result as LuaResult, Table};
 use rustlua_lua_api::{Handle, api_error};
 use std::path::PathBuf;
 
@@ -323,7 +323,67 @@ pub fn install(
 
     lua.globals().set("audio", table)?;
 
+    // M82 C 批：`synth` 合成音效表（维度无关基底）。规格表驱动，渲染成采样喂现有总线。
+    // 失败口径照 `audio.play_at`：非法 spec / 无设备 / 平台不支持合成 ⇒ 返回 `false` 并 warn（不静默）。
+    let synth = lua.create_table()?;
+    let synth_handle = audio.clone();
+    synth.set(
+        "play",
+        lua.create_function(move |_, spec: Table| {
+            let parsed = match parse_synth_spec(&spec) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    tracing::warn!(target: "audio", error = %error, "[audio] synth spec rejected");
+                    return Ok(false);
+                }
+            };
+            Ok(synth_handle.borrow_mut()?.synth(AudioBus::Sfx, &parsed))
+        })?,
+    )?;
+    lua.globals().set("synth", synth)?;
+
     Ok(())
+}
+
+/// Lua spec 表 → [`crate::synth::SynthSpec`]。`wave` 缺省 `sine`；`filter` 可选 `{type, cutoff}`。
+fn parse_synth_spec(table: &Table) -> LuaResult<crate::synth::SynthSpec> {
+    use crate::synth::{FilterKind, FilterSpec, SynthSpec, SynthWave};
+    let mut spec = SynthSpec::default();
+    if let Some(token) = table.get::<Option<String>>("wave")? {
+        spec.wave = SynthWave::from_token(&token)
+            .ok_or_else(|| api_error(format!("unknown synth wave `{token}`")))?;
+    }
+    if let Some(value) = table.get::<Option<f32>>("freq")? {
+        spec.freq = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("dur")? {
+        spec.dur = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("attack")? {
+        spec.attack = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("decay")? {
+        spec.decay = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("sustain")? {
+        spec.sustain = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("release")? {
+        spec.release = value;
+    }
+    if let Some(value) = table.get::<Option<f32>>("gain")? {
+        spec.gain = value;
+    }
+    if let Some(filter) = table.get::<Option<Table>>("filter")? {
+        let token = filter
+            .get::<Option<String>>("type")?
+            .unwrap_or_else(|| "lowpass".to_owned());
+        let kind = FilterKind::from_token(&token)
+            .ok_or_else(|| api_error(format!("unknown synth filter type `{token}`")))?;
+        let cutoff = filter.get::<Option<f32>>("cutoff")?.unwrap_or(1_000.0);
+        spec.filter = Some(FilterSpec { kind, cutoff });
+    }
+    Ok(spec)
 }
 
 /// 音量总线名 → [`AudioBus`]；未知名报 Lua 错误（拼写错误可定位，不静默）。

@@ -7,5 +7,7 @@ pub mod lua;
 pub mod sink;
 /// 空间化：听者位姿 → 增益/声像的唯一来源（M74-01；纯函数，可在 headless 用例里逐值断言）。
 pub mod spatial;
+/// 合成音效原语（M82 C 批）：波形 + 噪声 + ADSR + biquad 滤波 → PCM 采样；平台无关、可 headless 断言。
+pub mod synth;
 /// 无障碍音色：单声道与低/高频衰减的纯参数/DSP；桌面设备层负责套在解码器上。
 pub mod tone;

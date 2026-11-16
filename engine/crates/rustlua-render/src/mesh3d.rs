@@ -41,6 +41,7 @@ pub fn is_builtin_mesh_path(mesh: &str) -> bool {
         || crate::terrain::TerrainSpec::is_terrain_path(mesh)
         || crate::water::WaterSpec::is_water_path(mesh)
         || crate::cellmesh::CellMeshSpec::is_cells_path(mesh)
+        || crate::primitives::PrimitiveSpec::is_primitive_path(mesh)
 }
 
 /// 参数级校验：只有 [`is_builtin_mesh_path`] 认下的串才走到这里，逐族解析自己的字段。
@@ -57,6 +58,11 @@ fn parse_builtin_mesh(mesh: &str) -> Result<(), MeshRendererError> {
     }
     if crate::water::WaterSpec::is_water_path(mesh) {
         return crate::water::WaterSpec::parse(mesh)
+            .map(|_| ())
+            .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
+    }
+    if crate::primitives::PrimitiveSpec::is_primitive_path(mesh) {
+        return crate::primitives::PrimitiveSpec::parse(mesh)
             .map(|_| ())
             .map_err(|_| MeshRendererError::InvalidMeshPath(mesh.to_owned()));
     }

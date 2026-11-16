@@ -1,6 +1,6 @@
 # Lua 模块 `mesh`
 
-> 运行期 API 面基线里本模块有 14 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 15 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -335,3 +335,16 @@ mesh.set_batch(crowd, "assets/models/ant.glb", instances, nil, {
   mesh.set_material(nest, nil) -- 回退
   ```
 - 注意：渲染器在首帧加载材质；路径写错只告警并回退，不报错。
+
+## `mesh.set_material_texture(id: i64, tex_id: i64)`
+
+> 绑定：`engine/crates/rustlua-render/src/renderable_lua.rs:547`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+把网格材质的 base_color 贴图换成一张程序化贴图句柄（`texture.generate` / `texture.from_text`）。
+句柄以哨兵键 `__texture__?<tex_id>` 存进 `MeshRenderer.material`；渲染器识别后按生成贴图像素出一张
+默认 PBR 参数（base_color 带贴图）的材质——即"把程序化纹理贴到一个 3D 物体上"。
+
+- 参数：`id`——实体 id（须已有 `mesh` 渲染器）；`tex_id`——`texture.*` 返回的整型句柄。
+- 返回：`true`。
+- 失败：实体 id 非法/已销毁、`tex_id` 为负、或实体没有网格渲染器时抛错。句柄未生成/已 `free` 时退默认材质（不报错）。
+- 示例：`local tex = texture.generate{kind='checker'}; mesh.set_material_texture(entity, tex)`

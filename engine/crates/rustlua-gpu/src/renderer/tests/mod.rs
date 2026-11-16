@@ -46,6 +46,7 @@ mod pbr;
 mod planar_reflection;
 mod point_range;
 mod point_shadow;
+mod primitives_mesh;
 mod readback;
 mod render_metrics;
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +55,8 @@ mod shader_variants;
 mod ssao;
 mod ssr_sky;
 mod submerged_view;
+mod texture_gen_gpu;
+mod texture_material3d;
 mod texture_sampling;
 mod texture_upload;
 mod water_absorption;

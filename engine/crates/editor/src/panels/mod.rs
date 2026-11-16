@@ -35,11 +35,14 @@ pub(crate) mod model_preview;
 pub(crate) mod performance;
 /// 预制体结构差异窗（只读）：变体 ↔ 基础 / 嵌套实例 ↔ 内层源，条目可定位、不写盘。
 pub(crate) mod prefab_structure_view;
+pub(crate) mod procedural;
 pub(crate) mod progress;
 /// 全工程搜索窗：索引 = 文档字段 + 元数据 + 资源路径 + Lua 文本，双击定位到 Inspector 行 / 脚本行。
 pub(crate) mod project_search;
 pub(crate) mod project_settings;
 pub(crate) mod publish;
+/// 项目级渲染质量（`project.toml` 的 `[render]` 段）：生产画质项读写与现场应用。
+pub(crate) mod render_settings;
 pub(crate) mod resource_browser;
 pub(crate) mod runtime_debug;
 pub(crate) mod scene_view;

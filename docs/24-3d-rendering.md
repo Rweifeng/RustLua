@@ -959,6 +959,13 @@ R07-3 的 instanced quad 一直在世界 XY 平面上展开：2D 正交相机下
   `Environment`（P3-R03-4）注册了 typed schema，由**通用** schema 编辑器接管（没有手写面板，
   也没有 match 分支），字段为 `map`（工程内相对路径 + `.rlenv`/`.hdr` 资产选择器）、
   `intensity`（非负）、`rotation`（绕 Y 轴弧度）。
+- **项目级渲染设置（`[render]` 段）**：菜单 **文件 → 渲染设置…** 编辑当前工程
+  `project.toml` 的 `[render]` 段，覆盖生产画质项（阴影、平面反射、水面、几何与植被）。
+  同一份配置被编辑器 Scene 视图、Play 预览与 `game.exe` 读取，优先级为命令行显式项 >
+  `[render]` > 内置默认；`--quality` 预设最后套用。方向光阴影图边长、级联层数、点光 cube
+  面边长是**构建期**参数：保存后编辑器会丢弃并重建 Scene 渲染器，Play 下次进入时生效。
+  未声明 `[render]` 段的工程与收敛前逐字节一致；开发期 A/B 归因旗标（`--no-cull`、
+  `--skip-mesh`、`--gpu-motion` 等）不进该面板。
 - Play 预览与 3D 视口都在创建渲染器时应用一次场景环境；3D 视口的左上角状态行尾显示当前档位
   `IBL <mode>（Tier X）`（场景没声明环境时写 `环境未声明 · Tier X`）；性能面板（P3-R03-4）多两行读数
   `IBL = mode（Tier X）` 与 `环境 = <map>`（读取/上传失败时显示原因并标警示），

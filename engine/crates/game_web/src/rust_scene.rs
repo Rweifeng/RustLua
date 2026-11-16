@@ -280,6 +280,15 @@ impl RustScene {
             .dispatch_gpu_particle_bursts(renderer, delta_seconds)
     }
 
+    /// M82-B2：取走本帧脚本生成的程序化贴图 `(键, 贴图)`。宿主每帧交给渲染器——2D 走
+    /// `upload_texture_rgba8`（`texture_paths` 缓存），3D 材质走 `register_generated_texture`。
+    /// 不接这一段，`__texture__?<id>` 在 web/微信上会退白兜底（与桌面/编辑器同一条宿主通道）。
+    pub fn drain_generated_textures(
+        &mut self,
+    ) -> Vec<(String, rustlua_render::texture::TextureAsset)> {
+        self.scene.drain_generated_textures()
+    }
+
     /// 推进模拟：**与桌面运行器、编辑器预览、headless 运行器同一个入口**（`run_script_steps`）。
     ///
     /// 顺序与桌面一致：先把宿主这一帧的输入落到快照上，再推进定长步，最后清掉边沿与增量。

@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use rustlua_render::render_config::RenderOverrides;
+
 /// P3-R201/R204：画质预设（`--quality default|medium|low`）。
 ///
 /// 预设是一次打开若干**已实测**档位的组合；逐项开关仍在，预设只覆盖它包含的字段
@@ -146,6 +148,10 @@ pub struct Arguments {
     /// P3-R236：把着色器时间钉在给定秒数（`--freeze-clock`）。`None` = 渲染钟（默认不变）；
     /// 钉住后水波/云/后期颗粒的相位在两次运行里一致 ⇒ 逐像素对账成立。
     pub freeze_clock: Option<f32>,
+    /// 生产画质项的**显式**覆盖（`--planar-divisor` 等）。`None` = 该项未指定，
+    /// 交给 `project.toml` 的 `[render]` 段或默认值；预设 `--quality` 不在这里，
+    /// 它在合并后单独套用。
+    pub render: RenderOverrides,
 }
 
 pub fn parse_arguments() -> Result<Arguments, String> {
@@ -184,9 +190,18 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
             "--no-bake-cache" => args.no_bake_cache = true,
             "--no-planar-cull" => args.no_planar_cull = true,
             "--no-point-face-cull" => args.no_point_face_cull = true,
-            "--water-cheap" => args.water_cheap = true,
-            "--crowd-cheap" => args.crowd_cheap = true,
-            "--clip-cap-both-sides" => args.clip_cap_both_sides = true,
+            "--water-cheap" => {
+                args.water_cheap = true;
+                args.render.water_cheap = Some(true);
+            }
+            "--crowd-cheap" => {
+                args.crowd_cheap = true;
+                args.render.crowd_cheap = Some(true);
+            }
+            "--clip-cap-both-sides" => {
+                args.clip_cap_both_sides = true;
+                args.render.clip_cap_both_sides = Some(true);
+            }
             "--prewarm-particles" => args.prewarm_particles = true,
             "--gpu-motion" => args.gpu_motion = true,
             "--gpu-motion-frustum-cull" => args.gpu_motion_frustum_cull = true,
@@ -247,17 +262,22 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                 args.gpu_motion_thin = near;
                 args.gpu_motion_thin_far = far;
             }
-            "--terrain-cheap" => args.terrain_cheap = true,
+            "--terrain-cheap" => {
+                args.terrain_cheap = true;
+                args.render.terrain_cheap = Some(true);
+            }
             "--draw-distance" => {
                 let value = values.next().ok_or("--draw-distance requires meters")?;
                 args.draw_distance = value.parse().map_err(|_| {
                     "--draw-distance must be a non-negative integer (meters)".to_owned()
                 })?;
+                args.render.draw_distance = Some(args.draw_distance as f32);
             }
             "--draw-distance-filter" => {
                 let value = values
                     .next()
                     .ok_or("--draw-distance-filter requires a mesh-path substring")?;
+                args.render.draw_distance_filter = Some(value.clone());
                 args.draw_distance_filter = Some(value);
             }
             "--shadow-caster-skip" => {
@@ -279,6 +299,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                 args.shadow_caster_distance = value.parse().map_err(|_| {
                     "--shadow-caster-distance must be a non-negative integer (meters)".to_owned()
                 })?;
+                args.render.shadow_caster_distance = Some(args.shadow_caster_distance as f32);
             }
             "--water-refraction" => {
                 let value = values
@@ -291,6 +312,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                 } else {
                     0.0
                 };
+                args.render.water_refraction = Some(args.water_refraction);
             }
             "--underwater-view" => {
                 let value = values
@@ -303,6 +325,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                 } else {
                     0.0
                 };
+                args.render.underwater_view = Some(args.underwater_view);
             }
             "--water-refract-steps" => {
                 let value = values
@@ -314,6 +337,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                         "--water-refract-steps must be a non-negative integer (0 = off)".to_owned()
                     })?
                     .min(32);
+                args.render.water_refract_steps = Some(args.water_refract_steps);
             }
             "--clip-cap" => {
                 let value = values
@@ -326,6 +350,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                 } else {
                     0.0
                 };
+                args.render.clip_cap = Some(args.clip_cap);
             }
             "--planar-divisor" => {
                 let value = values
@@ -338,6 +363,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     return Err("--planar-divisor must be within 1..=8".to_owned());
                 }
                 args.planar_divisor = divisor;
+                args.render.planar_divisor = Some(divisor);
             }
             "--shadow-resolution" => {
                 let value = values
@@ -352,6 +378,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     );
                 }
                 args.shadow_resolution = resolution;
+                args.render.shadow_resolution = Some(resolution);
             }
             "--shadow-cascades" => {
                 let value = values
@@ -364,6 +391,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     return Err("--shadow-cascades must be within 1..=4".to_owned());
                 }
                 args.shadow_cascades = cascades;
+                args.render.shadow_cascades = Some(cascades);
             }
             "--point-shadow-resolution" => {
                 let value = values
@@ -376,6 +404,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     return Err("--point-shadow-resolution must be one of 512, 1024".to_owned());
                 }
                 args.point_shadow_resolution = resolution;
+                args.render.point_shadow_resolution = Some(resolution);
             }
             "--point-shadow-lights" => {
                 let value = values
@@ -388,6 +417,7 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     return Err("--point-shadow-lights must be within 1..=8".to_owned());
                 }
                 args.point_shadow_lights = lights;
+                args.render.point_shadow_lights = Some(lights);
             }
             "--quality" => {
                 let value = values
@@ -799,6 +829,34 @@ mod tests {
             error.contains("default") && error.contains("medium") && error.contains("low"),
             "错误提示要列出三档: {error}"
         );
+    }
+
+    /// 只有显式给出的画质旗标才进覆盖集：默认启动必须保留 `project.toml` 的 `[render]`，
+    /// 不能把内置默认当成"用户指定"把文件值盖回去。
+    #[test]
+    fn render_overrides_only_record_explicit_flags() {
+        let parse =
+            |values: &[&str]| parse_arguments_from(values.iter().map(|value| (*value).to_owned()));
+        let default = parse(&[]).unwrap();
+        assert_eq!(
+            default.render,
+            rustlua_render::render_config::RenderOverrides::default()
+        );
+        let explicit = parse(&[
+            "--planar-divisor",
+            "4",
+            "--water-cheap",
+            "--shadow-resolution",
+            "1024",
+            "--draw-distance",
+            "35",
+        ])
+        .unwrap();
+        assert_eq!(explicit.render.planar_divisor, Some(4));
+        assert_eq!(explicit.render.water_cheap, Some(true));
+        assert_eq!(explicit.render.shadow_resolution, Some(1024));
+        assert_eq!(explicit.render.draw_distance, Some(35.0));
+        assert_eq!(explicit.render.shadow_cascades, None, "未出现的旗标不覆盖");
     }
 
     /// P3-R236：确定性帧档的两个开关。默认全关（= 旧行为），非法值必须报错而不是

@@ -9,6 +9,7 @@ mod window_fit;
 use std::path::{Path, PathBuf};
 
 use rustlua_infra::logging::init_logging;
+use rustlua_render::render_config::{QualityPreset, RenderConfig};
 use winit::event_loop::EventLoop;
 
 use cli::{find_project_root, parse_arguments, resolve_window_title, verify_project};
@@ -124,6 +125,30 @@ pub fn run_desktop() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_loop = EventLoop::new()?;
     let window_title = resolve_window_title(project.as_deref(), arguments.title);
+    // 项目级渲染质量：`--xxx` 显式项 > `project.toml` 的 `[render]` 段 > 内置默认；
+    // `--quality` 预设最后套用（与 R204 起"预设覆盖同名单项"的语义一致）。
+    let render_config = match project.as_deref() {
+        Some(root) => match RenderConfig::load_from(root) {
+            Ok(config) => config.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(target: "game", "[render] {error}（按默认值运行）");
+                RenderConfig::default()
+            }
+        },
+        None => RenderConfig::default(),
+    }
+    .overlay(&arguments.render);
+    let render_config = match arguments.quality {
+        cli::Quality::Low => render_config.with_quality(QualityPreset::Low),
+        cli::Quality::Medium => render_config.with_quality(QualityPreset::Medium),
+        cli::Quality::Default => render_config,
+    };
+    tracing::info!(
+        target: "game",
+        "[render] quality={} {}",
+        arguments.quality.as_str(),
+        render_config.summary()
+    );
     // P3：`--pack` 启动的发布包把存档与玩家设置写到用户数据目录
     // （`rustlua_infra::user_dir`），不写程序目录。
     let mut app = GameApp::new(
@@ -141,30 +166,30 @@ pub fn run_desktop() -> Result<(), Box<dyn std::error::Error>> {
     .with_bake_cache(!arguments.no_bake_cache)
     .with_planar_cull(!arguments.no_planar_cull)
     .with_point_face_cull(!arguments.no_point_face_cull)
-    .with_planar_divisor(arguments.planar_divisor)
-    .with_water_cheap(arguments.water_cheap)
-    .with_terrain_cheap(arguments.terrain_cheap)
-    .with_crowd_cheap(arguments.crowd_cheap)
-    .with_draw_distance(arguments.draw_distance)
-    .with_draw_distance_filter(arguments.draw_distance_filter.clone())
+    .with_planar_divisor(render_config.planar_divisor)
+    .with_water_cheap(render_config.water_cheap)
+    .with_terrain_cheap(render_config.terrain_cheap)
+    .with_crowd_cheap(render_config.crowd_cheap)
+    .with_draw_distance(render_config.draw_distance.round() as u32)
+    .with_draw_distance_filter(render_config.draw_distance_filter.clone())
+    .with_shadow_caster_distance(render_config.shadow_caster_distance.round() as u32)
+    .with_water_refraction(render_config.water_refraction)
+    .with_underwater_view(render_config.underwater_view)
+    .with_water_refract_steps(render_config.water_refract_steps)
+    .with_clip_cap(render_config.clip_cap)
+    .with_clip_cap_both_sides(render_config.clip_cap_both_sides)
+    .with_shadow_resolution(render_config.shadow_resolution)
+    .with_shadow_cascades(render_config.shadow_cascades)
+    .with_point_shadow_resolution(render_config.point_shadow_resolution)
+    .with_point_shadow_lights(render_config.point_shadow_lights)
     .with_shadow_caster_skip(arguments.shadow_caster_skip.clone())
     .with_point_shadow_caster_skip(arguments.point_shadow_caster_skip.clone())
-    .with_shadow_caster_distance(arguments.shadow_caster_distance)
-    .with_water_refraction(arguments.water_refraction)
-    .with_underwater_view(arguments.underwater_view)
-    .with_water_refract_steps(arguments.water_refract_steps)
     .with_prewarm_particles(arguments.prewarm_particles)
     .with_gpu_motion(arguments.gpu_motion)
     .with_gpu_motion_cull(arguments.gpu_motion_cull)
     .with_gpu_motion_frustum_cull(arguments.gpu_motion_frustum_cull)
     .with_gpu_motion_thin(arguments.gpu_motion_thin)
     .with_gpu_motion_thin_far(arguments.gpu_motion_thin_far)
-    .with_clip_cap(arguments.clip_cap)
-    .with_clip_cap_both_sides(arguments.clip_cap_both_sides)
-    .with_shadow_resolution(arguments.shadow_resolution)
-    .with_shadow_cascades(arguments.shadow_cascades)
-    .with_point_shadow_resolution(arguments.point_shadow_resolution)
-    .with_point_shadow_lights(arguments.point_shadow_lights)
     .with_quality_low(arguments.quality == cli::Quality::Low)
     .with_quality_medium(arguments.quality == cli::Quality::Medium)
     .with_fixed_step(arguments.fixed_step)
@@ -210,7 +235,27 @@ fn run_android(
     rustlua_infra::logging::install_crash_handler(log_dir.join("crash.log"));
 
     let title = resolve_window_title(Some(&project_root), None);
-    let mut game = GameApp::new(Some(project_root), title, true, true, true, true, None);
+    let render_config = RenderConfig::load_from(&project_root)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut game = GameApp::new(Some(project_root), title, true, true, true, true, None)
+        .with_planar_divisor(render_config.planar_divisor)
+        .with_water_cheap(render_config.water_cheap)
+        .with_terrain_cheap(render_config.terrain_cheap)
+        .with_crowd_cheap(render_config.crowd_cheap)
+        .with_draw_distance(render_config.draw_distance.round() as u32)
+        .with_draw_distance_filter(render_config.draw_distance_filter.clone())
+        .with_shadow_caster_distance(render_config.shadow_caster_distance.round() as u32)
+        .with_water_refraction(render_config.water_refraction)
+        .with_underwater_view(render_config.underwater_view)
+        .with_water_refract_steps(render_config.water_refract_steps)
+        .with_clip_cap(render_config.clip_cap)
+        .with_clip_cap_both_sides(render_config.clip_cap_both_sides)
+        .with_shadow_resolution(render_config.shadow_resolution)
+        .with_shadow_cascades(render_config.shadow_cascades)
+        .with_point_shadow_resolution(render_config.point_shadow_resolution)
+        .with_point_shadow_lights(render_config.point_shadow_lights);
     let mut builder = EventLoop::builder();
     builder.with_android_app(app);
     let event_loop = builder.build()?;

@@ -368,6 +368,23 @@ impl EngineCore {
                 )));
             }
         }
+        // M82-B2：脚本生成的程序化贴图每帧上传（2D 缓存 + 3D 材质像素），与桌面/编辑器同一条通道。
+        // 不接这一段，web/微信上 `__texture__?<id>`（sprite 与材质）都会退白兜底。
+        if let Some(sim) = self.sim.as_mut() {
+            for (key, asset) in sim.drain_generated_textures() {
+                if let Err(error) = self.renderer.upload_texture_rgba8(
+                    &key,
+                    asset.width(),
+                    asset.height(),
+                    asset.pixels(),
+                ) {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "[gpu] 程序化贴图 {key} 上传失败：{error}"
+                    )));
+                }
+                self.renderer.register_generated_texture(&key, asset);
+            }
+        }
         if !first_frame {
             self.sum_step_ms += step_ms;
             self.sum_mesh_ms += mesh_ms;
@@ -540,6 +557,8 @@ impl EngineCore {
             if path == rustlua_render::frame::WHITE_TEXTURE_PATH
                 || path == rustlua_render::frame::ATLAS_TEXTURE_PATH
                 || path == rustlua_render::frame::FONT_ATLAS_TEXTURE_PATH
+                // `__texture__?<id>` 生成贴图由 drain 每帧上传，不是文件——别当资源去解码。
+                || rustlua_render::texture_lua::is_texture_sentinel(path)
             {
                 continue;
             }

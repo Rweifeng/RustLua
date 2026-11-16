@@ -1247,6 +1247,22 @@ impl GameApp {
                 renderer.set_world_sprite_camera(view_projection);
             }
         }
+        // M82-B2：脚本生成的程序化贴图先上传——消费侧按哨兵键 `__texture__?<id>` 取样，
+        // 必须在渲染前就位（与文件贴图同一条缓存键路径）。失败不静默：留告警，该四边形退白兜底。
+        if let Some(scene) = self.runtime_scene.as_ref() {
+            for (key, asset) in scene.drain_generated_textures() {
+                if let Err(error) = renderer.upload_texture_rgba8(
+                    &key,
+                    asset.width(),
+                    asset.height(),
+                    asset.pixels(),
+                ) {
+                    tracing::warn!(target: "render", "[render] 程序化贴图 {key} 上传失败：{error}");
+                }
+                // 3D 材质按哨兵键消费时要 CPU 像素（材质池与 2D 缓存是两套），一并登记。
+                renderer.register_generated_texture(&key, asset);
+            }
+        }
         // P3-R76/77：脚本覆盖雾密度/颜色；只在值变化时重建 RenderSettings。
         if let Some(scene) = self.runtime_scene.as_ref()
             && (scene.render_fog_density().is_some() || scene.render_fog_color().is_some())

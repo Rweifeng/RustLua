@@ -646,6 +646,11 @@ impl RuntimeScene {
         self.script.render_fog_density()
     }
 
+    /// M82-B2：取走本帧待上传的程序化贴图 `(键, 贴图)`，宿主上传到渲染器。
+    pub fn drain_generated_textures(&self) -> Vec<(String, rustlua_render::texture::TextureAsset)> {
+        self.script.drain_generated_textures()
+    }
+
     /// 脚本 `render.set_fog_color` 的当前值（线性 RGB）。
     pub fn render_fog_color(&self) -> Option<[f32; 3]> {
         self.script.render_fog_color()

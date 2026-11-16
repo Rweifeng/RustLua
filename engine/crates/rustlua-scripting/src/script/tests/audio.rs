@@ -30,6 +30,23 @@ fn audio_bus_lua_api_groups_volumes_and_rejects_unknown_bus() {
         .unwrap();
 }
 
+/// M82 C 批：`synth.play` 规格表驱动；非法 spec 返回 `false`（不静默成功），合法 spec 返回 bool。
+#[test]
+fn synth_play_rejects_invalid_specs_and_returns_bool() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    runtime
+        .execute_console(
+            "assert(synth.play{wave='bogus'} == false, 'unknown wave -> false')\n\
+             assert(synth.play{freq=1, dur=0.1} == false, 'freq out of range -> false')\n\
+             assert(synth.play{dur=0} == false, 'dur out of range -> false')\n\
+             assert(synth.play{gain=1.5} == false, 'gain out of range -> false')\n\
+             assert(synth.play{filter={type='nope', cutoff=100}} == false, 'unknown filter -> false')\n\
+             assert(type(synth.play{wave='sine', freq=440, dur=0.1}) == 'boolean', 'valid spec returns a bool')\n\
+             return 'ok'",
+        )
+        .unwrap();
+}
+
 /// M20-02：`audio.play_on`（总线播放）与 `settings_text`/`apply_settings` 往返。
 #[test]
 fn audio_lua_settings_text_round_trips_and_rejects_bad_version() {

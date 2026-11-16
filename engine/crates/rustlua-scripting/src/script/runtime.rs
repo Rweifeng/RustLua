@@ -127,6 +127,8 @@ impl LuaRuntime {
             physics: crate::script::domain::physics::physics_state::PhysicsState::handle(),
             // 渲染域的脚本可见状态（P1 ⑤-10）：本帧主光的选择。
             renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
+            // M82-B2：程序化贴图注册表（维度无关基底）。
+            texture_gen: crate::script::domain::render::texture_lua::TextureGenState::handle(),
             // 动画域能力单元（P1 ⑤-10）：帧事件的一次性队列。
             animation: crate::script::domain::animation::animation_lua::AnimationState::handle(),
             // UI 域能力单元（P1 ⑤-12）：动态文本/条/面板/图/网格/拖拽/视口。

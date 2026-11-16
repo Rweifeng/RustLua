@@ -425,7 +425,7 @@ local steps = {
         id = "playback",
         title = "Playback",
         claim = "play / play_on / play_at / music 只登记播放，stop_music 对未播放状态是空操作",
-        api = { "audio.play", "audio.play_on", "audio.play_at", "audio.music", "audio.stop_music", "audio.settings_text" },
+        api = { "audio.play", "audio.play_on", "audio.play_at", "audio.music", "audio.stop_music", "audio.settings_text", "synth.play" },
         code = 'audio.play_on("sfx", "hit"); audio.play_at("attack", 4, 0); audio.music("bgm")',
         enter = function()
             find_ids()
@@ -488,6 +488,12 @@ local steps = {
             local text = audio.settings_text()
             t:eq(type(text), "string", "settings_text returns a string")
             t:ok(text:find("rustlua-audio-v1", 1, true) ~= nil, "settings_text carries the version header")
+
+            -- M82 C 批：合成音效原语（规格表 → PCM 采样 → 总线）。headless 无设备时返回 false 但不报错。
+            local synth_ok = lab.try(function()
+                return synth.play({ wave = "square", freq = 220, dur = 0.05, gain = 0.4 })
+            end)
+            t:ok(type(synth_ok) == "boolean", "synth.play returns an ok flag")
         end,
     },
     {

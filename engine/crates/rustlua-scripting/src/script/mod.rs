@@ -242,6 +242,9 @@ pub(crate) struct ScriptState {
     animation: Handle<crate::script::domain::animation::animation_lua::AnimationState>,
     /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
     renderable: Handle<crate::script::domain::render::renderable_lua::RenderableState>,
+    /// M82-B2：程序化贴图注册表（`texture.generate/free` 写、宿主每帧取走上传）。
+    /// 维度无关基底，与 `renderable` 同属渲染域能力单元。
+    texture_gen: Handle<crate::script::domain::render::texture_lua::TextureGenState>,
     /// P3-R76：脚本覆盖的雾密度（`render.set_fog`）；宿主每帧读一次应用到渲染器。
     render_fog: Option<f32>,
     /// P3-R77：脚本覆盖的雾颜色（线性 RGB）。
@@ -850,6 +853,16 @@ impl LuaRuntime {
     /// 脚本覆盖的雾密度；`None` = 用场景/渲染器默认值。
     pub fn render_fog_density(&self) -> Option<f32> {
         self.state.borrow().render_fog
+    }
+    /// M82-B2：取走本帧待上传的程序化贴图 `(键, 贴图)`。宿主上传到渲染器后即清空，
+    /// 队列长度恒 ≤ 一帧的生成量（与 `gpu_bursts` 同一"宿主每帧接走"纪律）。
+    pub fn drain_generated_textures(
+        &self,
+    ) -> Vec<(String, crate::script::domain::render::texture::TextureAsset)> {
+        self.state
+            .borrow()
+            .texture_gen
+            .with_mut(|registry| registry.take_pending())
     }
     /// 脚本覆盖的雾颜色（线性 RGB）；`None` = 用渲染器默认。
     pub fn render_fog_color(&self) -> Option<[f32; 3]> {

@@ -929,7 +929,7 @@ function map.state(name, value) end
 function map.state_clear(name) end
 
 --- `mesh` 给实体挂/换 3D 网格与材质覆盖。网格路径来自 `.glb/.gltf`，或引擎哨兵
---- mesh：运行期 API 面基线里的 14 个函数
+--- mesh：运行期 API 面基线里的 15 个函数
 mesh = {}
 
 --- 读这个实体上的实例批次里有多少份实例变换。实体没有批次时返回 `0`（不是 `nil`）。
@@ -1015,6 +1015,12 @@ function mesh.set_batch_range(id, start, instances) end
 ---@param path string?
 ---@return any
 function mesh.set_material(id, path) end
+
+--- 把网格材质的 base_color 贴图换成一张程序化贴图句柄（`texture.generate` / `texture.from_text`）。
+---@param id integer
+---@param tex_id integer
+---@return any
+function mesh.set_material_texture(id, tex_id) end
 
 --- nav：运行期 API 面基线里的 11 个函数
 nav = {}
@@ -1717,7 +1723,7 @@ function shop.price(name, item_id) end
 ---@return any
 function shop.set_catalog(name, spec) end
 
---- sprite：运行期 API 面基线里的 2 个函数
+--- sprite：运行期 API 面基线里的 3 个函数
 sprite = {}
 
 ---@param id integer
@@ -1728,6 +1734,21 @@ function sprite.get(id) end
 ---@param component string
 ---@return any
 function sprite.set(id, component) end
+
+--- 把实体的精灵贴图换成一张程序化贴图句柄：只写 `SpriteAsset` 为哨兵键 `__texture__?<tex_id>`，
+---@param id integer
+---@param tex_id integer
+---@return any
+function sprite.set_texture(id, tex_id) end
+
+--- 合成音效原语（M82 C 批）：按规格表在 CPU 侧合成 PCM 采样（振荡器 + 噪声 + ADSR 包络 + biquad 滤波），
+--- synth：运行期 API 面基线里的 1 个函数
+synth = {}
+
+--- 按规格表合成并播放一次性音效。桌面走音频设备（与 `audio.play` 同一条 Sink 通道）；规格非法 / 无设备 /
+---@param spec table
+---@return any
+function synth.play(spec) end
 
 --- tag：运行期 API 面基线里的 2 个函数
 tag = {}
@@ -1800,6 +1821,26 @@ function terrain3d.slope_at(spec, x, z) end
 ---@param z number
 ---@return any
 function terrain3d.splat_at(spec, x, z) end
+
+--- 程序化贴图（M82-B2）：按规格表在 CPU 侧确定性生成像素（棋盘/噪声/渐变/条纹），返回整型句柄，
+--- texture：运行期 API 面基线里的 3 个函数
+texture = {}
+
+--- 释放一个程序化贴图句柄：从运行期注册表移除该贴图，此后再消费该 id 会退白兜底（同文件贴图缺失）。
+---@param id integer
+---@return any
+function texture.free(id) end
+
+--- 把一段文本用工程字体栅格化成一张独立 RGBA 贴图（容器编号/限重标签那种"画一次贴一张"），返回句柄；
+---@param text string
+---@param opts table?
+---@return any
+function texture.from_text(text, opts) end
+
+--- 按规格表生成一张 `size×size` 的 RGBA8 贴图，登记并返回句柄。生成是纯 CPU、seed 确定的：同 spec
+---@param spec table
+---@return any
+function texture.generate(spec) end
 
 --- tilemap：运行期 API 面基线里的 17 个函数
 tilemap = {}

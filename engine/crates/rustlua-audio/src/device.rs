@@ -555,6 +555,29 @@ mod imp {
             Ok(())
         }
 
+        /// 播放一段**已渲染好的 PCM 采样**（M82 C 批合成音效）。与 [`Self::play`] 同一条 Sink 通道，
+        /// 只是源不是解码器而是 `SamplesBuffer`（单声道 f32）。
+        pub(crate) fn play_samples(
+            &mut self,
+            samples: Vec<f32>,
+            volume: f32,
+        ) -> Result<(), AudioError> {
+            let Some(handle) = self.handle.as_ref() else {
+                return Ok(());
+            };
+            let sink =
+                Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
+            sink.set_volume(volume);
+            sink.append(rodio::buffer::SamplesBuffer::new(
+                1,
+                crate::synth::SYNTH_SAMPLE_RATE,
+                samples,
+            ));
+            self.sinks.push(sink);
+            self.sinks.retain(|sink| !sink.empty());
+            Ok(())
+        }
+
         /// 按位置播放（M74-01 桌面路径）：`folded`/`left`/`right` 已由
         /// [`crate::spatial::fold_to_ears`] 从 `pan` 折算好，这里只负责建 `SpatialSink`。
         #[allow(clippy::too_many_arguments)]

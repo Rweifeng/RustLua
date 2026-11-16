@@ -2395,6 +2395,7 @@ impl Renderer {
             linear_textures: Vec::new(),
             texture_content_cache: HashMap::new(),
             material_cache: HashMap::new(),
+            generated_textures: HashMap::new(),
             material_preview_path: None,
             material_preview_textures: None,
             material_preview_indices: None,

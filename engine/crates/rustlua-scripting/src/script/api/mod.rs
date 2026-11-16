@@ -71,6 +71,12 @@ pub(super) fn register_all(
             &project_root,
         )?;
     }
+    // M82-B2：`texture` 程序化贴图属维度无关基底（2D/3D 都登记）；from_text 要工程根解析字体。
+    {
+        let texture_gen = state.borrow().texture_gen.clone();
+        let project_root = state.borrow().project_root.clone();
+        crate::script::domain::render::texture_lua::install(lua, &texture_gen, &project_root)?;
+    }
     // world_text 归 UI 域（WorldText 的排版规则住在 ustlua-ui，不拉 ender → ui 的边）。
     {
         let world = state.borrow().world.clone();

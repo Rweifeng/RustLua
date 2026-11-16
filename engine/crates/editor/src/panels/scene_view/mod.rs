@@ -36,6 +36,7 @@ use rustlua_gpu::{ReadbackStatus, Renderer};
 use rustlua_math::math3d::{Quat, Vec3};
 use rustlua_physics::physics::ColliderDesc;
 use rustlua_render::light::Light;
+use rustlua_render::render_config::RenderConfig;
 use rustlua_render::sprite::SpriteComponent;
 use rustlua_scene::scene::{SceneEntity, SceneEntityId};
 use rustlua_scene::typed_scene::{ComponentId, TypedComponent, TypedScene};

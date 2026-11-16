@@ -17,6 +17,7 @@ use rustlua_render::async_loader::AsyncLoader;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::{Light, MAX_POINT_LIGHTS, PointLight};
 use rustlua_render::post_process::{PostProcess, Tonemap};
+use rustlua_render::render_config::RenderConfig;
 use rustlua_render::render_plan::{RenderPass, RenderPlan};
 use rustlua_render::render_settings::{
     EnvironmentLighting, EnvironmentSettings, IblMode, IblTier, RenderSettings, SceneColorFormat,
@@ -1164,6 +1165,9 @@ pub struct Renderer {
     /// `.material` 路径 → 已解析的 GPU 材质。`None` = 加载/解析失败（已告警，
     /// 后续帧不再重复尝试，绘制回退到 glTF 内嵌材质）。
     material_cache: HashMap<String, Option<GpuMaterial>>,
+    /// `__texture__?<id>` 生成贴图的 CPU 像素（宿主每帧经 `register_generated_texture` 交进来）。
+    /// 3D 材质按哨兵键消费时从这里取像素——材质池与 2D 缓存（`texture_paths`）是两套。
+    generated_textures: HashMap<String, rustlua_render::texture::TextureAsset>,
     /// P3-E02：编辑器实时预览（不改盘）覆盖的路径；同一时刻只有一个路径处于预览。
     material_preview_path: Option<String>,
     /// 预览材质最近一次使用的五个贴图路径。路径集合不变时复用已上传的纹理槽，
@@ -1929,6 +1933,26 @@ impl Renderer {
             // 3D draw 时在通道里编译。重复调用是空操作，统计里的变体数不会涨。
             self.ensure_pbr_pipelines();
         }
+    }
+
+    /// 把项目级渲染质量配置（`project.toml` 的 `[render]`）落到渲染器。
+    ///
+    /// 只覆盖运行期可改的档位；三项**构建期**参数（阴影图边长/级联数/点光面边长）不在这里
+    /// 生效——调用方必须在创建时用 [`RenderConfig::shadow_settings`] 传给 `new_*`。
+    pub fn apply_render_config(&mut self, config: &RenderConfig) {
+        self.set_planar_reflection_divisor(config.planar_divisor);
+        self.set_water_cheap_override(config.water_cheap);
+        self.set_terrain_cheap_override(config.terrain_cheap);
+        self.set_crowd_cheap_override(config.crowd_cheap);
+        self.set_point_shadow_light_budget(config.point_shadow_lights);
+        self.set_shadow_caster_max_distance(config.shadow_caster_distance);
+        self.set_max_draw_distance(config.draw_distance);
+        self.set_max_draw_distance_filter(config.draw_distance_filter.clone());
+        self.set_water_refraction_gain(config.water_refraction);
+        self.set_submerged_view_gain(config.underwater_view);
+        self.set_water_refract_steps(config.water_refract_steps);
+        self.set_clip_cap_depth(config.clip_cap);
+        self.set_clip_cap_both_sides(config.clip_cap_both_sides);
     }
 
     /// 设置运行期云量（0..=1）；返回是否接受。P3-R80。

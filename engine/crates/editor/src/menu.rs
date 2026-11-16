@@ -212,6 +212,8 @@ pub(crate) enum MenuAction {
     /// docs/55 阶段 3：明知磁盘被外部改动也覆盖（显式动作，不绑快捷键）。
     ForceSaveScene,
     ProjectSettings,
+    /// 文件 ▸ 渲染设置…：项目级生产画质项（`project.toml` 的 `[render]` 段）。
+    RenderSettings,
     PublishProject,
     /// M79-03：把内置的 LuaLS 类型定义装进工程（`.cache/rustlua_api.d.lua` + `.luarc.json`）。
     ExportLuaTypeHints,
@@ -326,6 +328,9 @@ const FILE_MENU: &[MenuRow] = &[
     MenuRow::Separator,
     MenuRow::Item(
         MenuItem::new("项目设置…", MenuAction::ProjectSettings).gate(MenuGate::ProjectLoaded),
+    ),
+    MenuRow::Item(
+        MenuItem::new("渲染设置…", MenuAction::RenderSettings).gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Item(MenuItem::new("发布项目…", MenuAction::PublishProject)),
     MenuRow::Item(
@@ -805,6 +810,7 @@ impl EditorApp {
                 self.save_scene_force();
             }
             MenuAction::ProjectSettings => self.open_project_settings(),
+            MenuAction::RenderSettings => self.open_render_settings(),
             MenuAction::PublishProject => self.publish.show_panel = true,
             MenuAction::ExportLuaTypeHints => self.export_lua_type_hints(),
             MenuAction::Quit => {

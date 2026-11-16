@@ -335,6 +335,39 @@ impl AudioSystem {
         Ok(())
     }
 
+    /// 合成并播放一次音效（M82 C 批）。返回是否真的发出了声音：规格非法 / 平台出口不支持合成 /
+    /// 无设备 / 设备播放失败时返回 `false` 并 warn（不静默成功，口径同 `audio.play_at`）。
+    pub fn synth(&mut self, bus: AudioBus, spec: &crate::synth::SynthSpec) -> bool {
+        let samples = match crate::synth::render_samples(spec, crate::synth::SYNTH_SAMPLE_RATE) {
+            Ok(samples) => samples,
+            Err(error) => {
+                tracing::warn!(target: "audio", error = %error, "[audio] synth spec rejected");
+                return false;
+            }
+        };
+        // web/微信的平台出口只播文件（HTMLAudioElement / InnerAudioContext），本批没有合成通道。
+        if crate::sink::is_installed() {
+            tracing::warn!(target: "audio", "[audio] synth not supported by platform sink (web/微信待接)");
+            return false;
+        }
+        self.ensure_device();
+        if !self.device.is_open() {
+            tracing::warn!(target: "audio", "[audio] no device; synth not played");
+            return false;
+        }
+        let volume = self.effective_gain(bus, "synth", 1.0);
+        match self.device.play_samples(samples, volume) {
+            Ok(()) => {
+                tracing::info!(target: "audio", bus = bus.key(), "[audio] synth played");
+                true
+            }
+            Err(error) => {
+                tracing::warn!(target: "audio", bus = bus.key(), error = %error, "[audio] synth failed");
+                false
+            }
+        }
+    }
+
     /// 设置听者位姿（M74-01）：宿主**每帧**调用一次（通常直接来自活动相机）。
     ///
     /// 为什么不做成"每次 `play_at` 传听者"：那会把同一份位姿抄到 120 个示例与所有调用点，

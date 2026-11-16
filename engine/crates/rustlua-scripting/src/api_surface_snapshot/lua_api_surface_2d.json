@@ -381,9 +381,16 @@
     {
       "funcs": [
         "get",
-        "set"
+        "set",
+        "set_texture"
       ],
       "name": "sprite"
+    },
+    {
+      "funcs": [
+        "play"
+      ],
+      "name": "synth"
     },
     {
       "funcs": [
@@ -391,6 +398,14 @@
         "set"
       ],
       "name": "tag"
+    },
+    {
+      "funcs": [
+        "free",
+        "from_text",
+        "generate"
+      ],
+      "name": "texture"
     },
     {
       "funcs": [

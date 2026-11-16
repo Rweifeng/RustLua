@@ -192,6 +192,18 @@ impl Renderer {
             }
             return;
         }
+        if rustlua_render::primitives::PrimitiveSpec::is_primitive_path(path) {
+            // M82-A：参数化基本体同样是内建几何（零外部素材）。规格非法只记 warning。
+            let Some(spec) = rustlua_render::primitives::PrimitiveSpec::parse(path).ok() else {
+                tracing::warn!(target: "render", path = %path, "[render] invalid primitive spec; skipped");
+                return;
+            };
+            let mesh = spec.build_mesh();
+            if let Some(cached) = self.cached_from_meshes(path, &[mesh]) {
+                self.mesh_cache.insert(path.to_owned(), cached);
+            }
+            return;
+        }
         let resolved = self
             .project_root
             .as_ref()
@@ -534,6 +546,13 @@ impl Renderer {
             .unwrap_or_else(|| PathBuf::from(path))
     }
 
+    /// 登记一张 `__texture__?<id>` 生成贴图的 CPU 像素，供 3D 材质按哨兵键消费。
+    /// 同 key 覆盖时同时失效该 key 的材质缓存——重生成后下一帧重新解析像素。
+    pub fn register_generated_texture(&mut self, key: &str, asset: TextureAsset) {
+        self.generated_textures.insert(key.to_owned(), asset);
+        self.material_cache.remove(key);
+    }
+
     /// 取（并缓存）`.material` 覆盖。解析失败只告警一次并返回 `None`，由绘制侧回退到
     /// glTF 内嵌材质——"覆盖文件坏了"绝不能变成"这个物体不见了"。
     pub(super) fn material_override(&mut self, path: &str) -> Option<GpuMaterial> {
@@ -546,6 +565,18 @@ impl Renderer {
     }
 
     fn load_material_override(&mut self, path: &str) -> Option<GpuMaterial> {
+        // `__texture__?<id>`：程序化贴图当材质 = 一张 base_color 贴图 + 默认 PBR 参数，不读盘。
+        if rustlua_render::texture_lua::is_texture_sentinel(path) {
+            let material = MaterialAsset {
+                base_color_texture: Some(MaterialTexture {
+                    path: Some(path.to_owned()),
+                    image: None,
+                }),
+                ..MaterialAsset::default()
+            };
+            let textures = self.load_override_textures(path, &material);
+            return Some(GpuMaterial::from_material(&material, textures, false));
+        }
         let resolved = self.resolve_project_path(path);
         let bytes = match rustlua_infra::vfs::read(&resolved) {
             Ok(bytes) => bytes,
@@ -668,6 +699,23 @@ impl Renderer {
         color_space: TextureColorSpace,
     ) -> Option<u32> {
         let path = texture.as_ref()?.path.as_deref()?;
+        // `__texture__?<id>`：从生成贴图注册表取像素（base_color 是 Srgb，其它槽 Linear）。
+        if rustlua_render::texture_lua::is_texture_sentinel(path) {
+            let Some((pixels, width, height)) = self
+                .generated_textures
+                .get(path)
+                .map(|asset| (asset.pixels().to_vec(), asset.width(), asset.height()))
+            else {
+                tracing::warn!(
+                    target: "render",
+                    material = %material_path,
+                    texture = %path,
+                    "[render] generated texture not registered; default texture used"
+                );
+                return None;
+            };
+            return Some(self.upload_material_texture(&pixels, width, height, color_space));
+        }
         let resolved = self.resolve_project_path(path);
         match TextureAsset::load_png(&resolved, color_space) {
             Ok(asset) => Some(self.upload_material_texture(

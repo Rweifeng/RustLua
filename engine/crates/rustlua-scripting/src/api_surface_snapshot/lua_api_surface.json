@@ -326,7 +326,8 @@
         "set_batch_lod",
         "set_batch_planar",
         "set_batch_range",
-        "set_material"
+        "set_material",
+        "set_material_texture"
       ],
       "name": "mesh"
     },
@@ -508,9 +509,16 @@
     {
       "funcs": [
         "get",
-        "set"
+        "set",
+        "set_texture"
       ],
       "name": "sprite"
+    },
+    {
+      "funcs": [
+        "play"
+      ],
+      "name": "synth"
     },
     {
       "funcs": [
@@ -530,6 +538,14 @@
         "splat_at"
       ],
       "name": "terrain3d"
+    },
+    {
+      "funcs": [
+        "free",
+        "from_text",
+        "generate"
+      ],
+      "name": "texture"
     },
     {
       "funcs": [

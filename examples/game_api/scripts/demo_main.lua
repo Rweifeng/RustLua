@@ -58,6 +58,8 @@ local BAR_QUAD = "size=96,10;color=0.200,0.900,0.300,1.000;pivot=0.500,0.500;"
 local PLATE_TEXT = "text=Player;font_size=14;color=0.600,1.000,0.800;offset=0,10;centered=true"
 -- Sparks 本来只有粒子发射器：`animation.attach` 演示"运行期给实体补一台状态机"。
 local SPARKS_ANIM = "default=pulse;clip:pulse:assets/textures/slime.png:2:6:true"
+local CRATE_SPRITE = "texture=assets/textures/red-1x1.png;size=36x36;pivot=0.500,0.500;"
+    .. "tint=1.000,0.900,0.700,1.000;sorting_layer=default;order=0"
 
 -- 帧动画状态循环（I 键用；与场景里的三条片段同名）。
 local STATES = { "idle", "move", "hit" }
@@ -86,6 +88,9 @@ local detach_ok = false
 local attach2_ok = false
 local plate_attached = true
 local vis_alt = false
+local texture_handle = nil
+local freed_ok = false
+local text_ok = false
 
 --- `entity.find` + 存活校验：缺实体时返回 nil，调用方跳过而不是让 API 报错。
 local function live(name)
@@ -134,6 +139,7 @@ local function reset_stage()
     if crate then
         physics.set_position(crate, CRATE_HOME.x, CRATE_HOME.y)
         physics.set_velocity(crate, 0.0, 0.0)
+        sprite.set(crate, CRATE_SPRITE)
     end
     local platform = live(PLATFORM)
     if platform then
@@ -747,6 +753,72 @@ local steps = {
             t:eq(debug_off, true, "debug_draw(false) returns false")
         end,
     },
+    {
+        id = "procedural_texture",
+        title = "Procedural texture",
+        claim = "texture.generate 参数化生成贴图并返回句柄；sprite.set_texture 换成该句柄（哨兵键 __texture__?<id>）；texture.free 显式释放——一张贴图零素材文件",
+        api = { "texture.generate", "sprite.set_texture", "texture.free", "sprite.get" },
+        code = "tex = texture.generate{kind='checker', size=32, scale=4, colors={{255,80,80},{80,80,255}}}; sprite.set_texture(crate, tex)",
+        enter = function()
+            reset_stage()
+            if texture_handle then
+                texture.free(texture_handle)
+                texture_handle = nil
+            end
+            local crate = live(CRATE)
+            if not crate then
+                return
+            end
+            freed_ok = false
+            -- Crate 是纯 Sprite（无动画覆盖），生成的棋盘会真的画出来。
+            local tex = texture.generate({
+                kind = "checker",
+                size = 32,
+                scale = 4,
+                colors = { { 255, 80, 80 }, { 80, 80, 255 } },
+            })
+            texture_handle = tex
+            sprite.set_texture(crate, tex)
+            -- 再生成一张噪声图并立即释放：演示 generate/free 的完整生命周期。
+            local scratch = texture.generate({ kind = "noise", size = 8, seed = 3 })
+            freed_ok = texture.free(scratch)
+            -- 文字栅格化（容器编号/限重标签）：画一张文本贴图，演示后释放。
+            local label = texture.from_text("B2-42", { size = 12, color = { 255, 220, 120 } })
+            text_ok = label ~= nil
+            texture.free(label)
+        end,
+        run = function()
+            local crate = live(CRATE)
+            if crate then
+                local value = sprite.get(crate)
+                lab.note(string.format("procedural tex=%s freed=%s", tostring(value.texture), tostring(freed_ok)))
+            end
+        end,
+        read = function()
+            local crate = live(CRATE)
+            local value = crate and sprite.get(crate) or {}
+            return {
+                handle = tostring(texture_handle),
+                texture = tostring(value.texture),
+                freed = tostring(freed_ok),
+            }
+        end,
+        check = function(t)
+            local crate = live(CRATE)
+            if not crate then
+                t:ok(false, "Crate is required")
+                return
+            end
+            t:ok(texture_handle ~= nil, "texture.generate returned a handle")
+            t:eq(
+                sprite.get(crate).texture,
+                "__texture__?" .. tostring(texture_handle),
+                "sprite.set_texture writes the sentinel key"
+            )
+            t:eq(freed_ok, true, "texture.free releases the scratch texture")
+            t:eq(text_ok, true, "texture.from_text returned a handle")
+        end,
+    },
 }
 
 function M.on_create()
@@ -854,6 +926,10 @@ function M.on_destroy()
     local hidden = live(HIDDEN)
     if hidden then
         visibility.set(hidden, visibility.all())
+    end
+    if texture_handle then
+        texture.free(texture_handle)
+        texture_handle = nil
     end
     lab.stop()
 end

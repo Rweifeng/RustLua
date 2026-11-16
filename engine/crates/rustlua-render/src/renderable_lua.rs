@@ -416,6 +416,24 @@ pub fn install(
             Ok(table)
         })?,
     )?;
+    // M82-B2：把实体贴图换成程序化贴图句柄。只写 `SpriteAsset` 为哨兵键
+    // `__texture__?<id>`（宿主每帧已上传该键），尺寸/轴心/染色仍由 `sprite.set` 决定。
+    // 键解析不到（id 未生成/已 free）时渲染器退白兜底——与文件贴图缺失同一口径。
+    let s = Bindings::new(world, state, project_root);
+    sprite.set(
+        "set_texture",
+        lua.create_function(move |_, (id, tex_id): (i64, i64)| {
+            let id = entity_from_lua(id)?;
+            let tex_id = u32::try_from(tex_id).map_err(|_| api_error("invalid texture id"))?;
+            let state = &s;
+            require_alive(state, id)?;
+            state
+                .world_mut()?
+                .insert(id, SpriteAsset(crate::texture_lua::texture_key(tex_id)))
+                .map_err(world_error)?;
+            Ok(())
+        })?,
+    )?;
     lua.globals().set("sprite", sprite)?;
     // docs/54 §4.3：一等 Quad 的运行时入口。与 `sprite` 分开是因为两者语义不同（Quad 没有纹理
     // 区域、不参与帧动画），而不是同一个东西的两种写法——脚本要"一个纯色矩形"时不该被迫写
@@ -516,6 +534,29 @@ pub fn install_3d(
             // `None`/空串清除覆盖，回到 glTF 内嵌材质；路径存在性由渲染器加载时
             // 校验，失败会告警并回退，不会把实体变成不可见。
             renderer.material = path.filter(|value| !value.is_empty());
+            state
+                .world_mut()?
+                .insert(id, renderer)
+                .map_err(world_error)?;
+            Ok(true)
+        })?,
+    )?;
+    // M82-B2：把网格材质的 base_color 贴图换成程序化贴图句柄。哨兵键当"材质路径"存进
+    // `MeshRenderer.material`，渲染器识别 `__texture__?` 后按生成贴图像素出默认 PBR 材质。
+    let s = Bindings::new(world, state, project_root);
+    mesh.set(
+        "set_material_texture",
+        lua.create_function(move |_, (id, tex_id): (i64, i64)| {
+            let id = entity_from_lua(id)?;
+            let tex_id = u32::try_from(tex_id).map_err(|_| api_error("invalid texture id"))?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut renderer = {
+                let world = state.world()?;
+                world.get::<MeshRenderer>(id).map_err(world_error)?.cloned()
+            }
+            .ok_or_else(|| api_error("entity has no mesh renderer"))?;
+            renderer.material = Some(crate::texture_lua::texture_key(tex_id));
             state
                 .world_mut()?
                 .insert(id, renderer)

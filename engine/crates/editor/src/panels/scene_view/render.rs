@@ -52,8 +52,30 @@ impl EditorApp {
             return;
         }
         let root = strip_verbatim_prefix(&self.project.root);
-        match Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false) {
-            Ok(renderer) => {
+        // 项目级渲染质量：构建期三项必须在这里给定；其余项创建后逐项落到渲染器。
+        // 文件缺失/读取失败 ⇒ 内置默认（与收敛前的编辑器行为一致）。
+        let config = match RenderConfig::load_from(&root) {
+            Ok(config) => config.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(target: "editor", "[render] {error}（按默认值创建渲染器）");
+                RenderConfig::default()
+            }
+        };
+        let (shadow_resolution, shadow_cascades, point_shadow_resolution) =
+            config.shadow_settings();
+        match Renderer::new_offscreen_with_shadow_settings(
+            device.clone(),
+            queue.clone(),
+            Some(root),
+            false,
+            false,
+            shadow_resolution,
+            shadow_cascades,
+            point_shadow_resolution,
+        ) {
+            Ok(mut renderer) => {
+                renderer.apply_render_config(&config);
+                tracing::info!(target: "editor", "[render] scene view: {}", config.summary());
                 self.scene_renderer = Some(renderer);
                 // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
                 // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。

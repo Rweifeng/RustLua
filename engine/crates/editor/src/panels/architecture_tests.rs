@@ -95,10 +95,14 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("performance/trends.rs", 0),
     // 预制体结构差异窗只读比较结果；点条目只改选区（`locate_structural_change` 在 shell 里）。
     ("prefab_structure_view.rs", 0),
+    // M82：程序化素材窗只改窗内参数并生成预览，不写场景文档。
+    ("procedural.rs", 0),
     ("progress.rs", 0),
     // ③：全工程搜索窗只读索引、只发定位动作（`activate_search_hit` 在 shell 里走 E06 闸门）。
     ("project_search.rs", 0),
     ("project_settings.rs", 0),
+    // 渲染设置窗只写 `project.toml` 的 `[render]` 段与渲染器状态，不碰场景文档/历史。
+    ("render_settings.rs", 0),
     ("publish.rs", 0),
     ("resource_browser.rs", 0),
     ("runtime_debug.rs", 0),

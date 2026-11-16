@@ -41,6 +41,7 @@ mod render_tuning;
 mod sample_project;
 mod save_data;
 mod scene_spawn;
+mod texture_gen;
 mod tilemap;
 mod transform;
 mod ui;

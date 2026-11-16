@@ -15,6 +15,7 @@ use rustlua_infra::time_step::FixedTimeStep;
 use rustlua_input::input::InputSnapshot;
 use rustlua_render::font::FontAtlas;
 use rustlua_render::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
+use rustlua_render::render_config::RenderConfig;
 use rustlua_scene::scene::Scene;
 use rustlua_scripting::script::{Breakpoint, CrashSnapshot, DebugAction, PauseSnapshot};
 use std::cell::RefCell;
@@ -218,14 +219,30 @@ impl PreviewSession {
         runtime.set_custom_vector_atlases(custom_vector_atlases);
         // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
         runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
-        let mut renderer = Renderer::new_offscreen(
+        // 项目级渲染质量：Play 每次新建渲染器，因此读取一次 `project.toml` 的 `[render]`
+        // 就能让"编辑器里保存的档位"在下次 Play 生效；构建期三项只能在这里给定。
+        let render_config = match RenderConfig::load_from(project_root) {
+            Ok(config) => config.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(target: "editor", "[preview][render] {error}（按默认值创建渲染器）");
+                RenderConfig::default()
+            }
+        };
+        let (shadow_resolution, shadow_cascades, point_shadow_resolution) =
+            render_config.shadow_settings();
+        let mut renderer = Renderer::new_offscreen_with_shadow_settings(
             device.clone(),
             queue.clone(),
             Some(project_root.to_path_buf()),
             false,
             false,
+            shadow_resolution,
+            shadow_cascades,
+            point_shadow_resolution,
         )
         .map_err(|error| error.to_string())?;
+        renderer.apply_render_config(&render_config);
+        tracing::info!(target: "editor", "[preview][render] {}", render_config.summary());
         // P3-R05-4：Play 预览用与 Scene View **同一份**生效源（两条路径读不同的 shader 会让
         // "Game 视图和 Scene 长得不一样"变成无法解释的现象）。失败只记日志——渲染器保留旧管线，
         // Play 继续跑。预览每次 Play 新建，改完文件重 Play 即生效（预览不做轮询）。
@@ -750,6 +767,19 @@ impl PreviewSession {
         // P3-R07-2：脚本步之后、构建网格之前派发 GPU 粒子（与 Play 宿主同一条通道）。
         // 必须在 `render_into_texture` 之前：那一步只提交本帧已推进的缓冲。
         self.dispatch_gpu_particles(report.delta_seconds);
+        // M82-B2：脚本生成的程序化贴图先上传（2D 缓存 + 3D 材质像素），与独立 game 宿主同一条通道。
+        // 不接这一段，编辑器 Play 里 sprite/材质的 `__texture__?<id>` 会退白兜底（宿主不 drain）。
+        for (key, asset) in self.runtime.drain_generated_textures() {
+            if let Err(error) = self.renderer.upload_texture_rgba8(
+                &key,
+                asset.width(),
+                asset.height(),
+                asset.pixels(),
+            ) {
+                tracing::warn!(target: "editor", "[preview] 程序化贴图 {key} 上传失败：{error}");
+            }
+            self.renderer.register_generated_texture(&key, asset);
+        }
         // 容错档下脚本错误不再中断 Play，因此必须**主动显示**：否则"某个回调已经停用"
         // 在编辑器里只表现为"游戏莫名其妙不动了"，没有任何线索。
         self.refresh_script_error_note();
@@ -1495,6 +1525,76 @@ mod tests {
         assert!(session.downscales(), "0.6 倍需要降采样");
         session.set_display_size(Some(&device), (640, 360));
         assert!(!session.downscales(), "回到 1:1 应退出降采样");
+    }
+
+    /// M82-B2 编辑器验收：Play 预览里脚本 `texture.generate` + `mesh.set_material_texture` 生成的贴图
+    /// 必须真的画到 3D 网格上（而非白/默认材质）。走**真实 PreviewSession 渲染路径**（脚本步 → 宿主
+    /// drain 上传 → 渲染）+ 回读预览纹理断言红绿棋盘。没有 `preview_session` 的 drain，这条会红。
+    #[test]
+    fn preview_renders_generated_material_texture() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let scene = Scene::new("generated-material");
+        let (width, height) = (128u32, 128u32);
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            Path::new("."),
+            &scene,
+            (width, height),
+            None,
+            FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
+            None,
+        )
+        .expect("create preview session");
+        // 用脚本建一个盒子并贴程序化红绿棋盘材质（无项目 main.lua，直接跑一段控制台语句）。
+        session.runtime.with_script(|lua| {
+            lua.execute_console(
+                "local box = entity.spawn('Box')\n\
+                 transform3d.attach(box)\n\
+                 mesh.set(box, '__primitive__?kind=box&w=2&h=2&d=2')\n\
+                 local tex = texture.generate{kind='checker', size=8, scale=2, colors={{255,0,0},{0,255,0}}}\n\
+                 mesh.set_material_texture(box, tex)",
+            )
+            .expect("setup lua");
+        });
+        // 跑几帧 Play（force_tick 让节流立即到期）：脚本步 → drain 上传 → 渲染到预览纹理。
+        session.force_tick();
+        for _ in 0..3 {
+            session.update(&ctx, &InputSnapshot::default());
+        }
+        let pixels = session
+            .renderer
+            .copy_texture_to_cpu(&session.texture, width, height)
+            .expect("readback preview texture");
+        assert_eq!(
+            pixels.len(),
+            (width * height * 4) as usize,
+            "回读尺寸必须是整帧 RGBA8"
+        );
+        let (mut reds, mut greens) = (0usize, 0usize);
+        for p in pixels.chunks_exact(4) {
+            let (r, g, b) = (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]));
+            if r >= g + 30 && r >= b + 30 {
+                reds += 1;
+            }
+            if g >= r + 30 && g >= b + 30 {
+                greens += 1;
+            }
+        }
+        assert!(
+            reds >= 4,
+            "生成棋盘的红格必须出现在 3D 网格表面（reds={reds}）；0 意味着贴图没被 drain 上传或没贴到材质"
+        );
+        assert!(
+            greens >= 4,
+            "生成棋盘的绿格必须出现在 3D 网格表面（greens={greens}）"
+        );
     }
 
     fn temp_root(tag: &str) -> std::path::PathBuf {

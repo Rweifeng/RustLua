@@ -230,6 +230,71 @@ local function reset_world()
     lab.try(physics3d.debug_draw, false)
 end
 
+-- 程序化 primitive（M82-A）：六种参数化几何哨兵，串就是全部输入、零外部素材。
+-- 经 mesh.set 消费、mesh.get 逐字节读回；实例化经 mesh.set_batch 复用同一条几何缓存路径。
+-- 这些实体只有 Transform3D + MeshRenderer（不带碰撞体），不改 physics_queries 的射线/重叠读数。
+local PRIMITIVE_KINDS = {
+    { name = "PrimBox", spec = "__primitive__?kind=box&w=1&h=1&d=1" },
+    { name = "PrimSphere", spec = "__primitive__?kind=sphere&r=0.6&seg=16" },
+    { name = "PrimCylinder", spec = "__primitive__?kind=cylinder&r=0.5&h=1&seg=16" },
+    { name = "PrimCone", spec = "__primitive__?kind=cone&r=0.5&h=1&seg=16" },
+    { name = "PrimTorus", spec = "__primitive__?kind=torus&R=0.5&r=0.2&seg=24&ring_seg=12" },
+    { name = "PrimPlane", spec = "__primitive__?kind=plane&w=1.5&h=1.5" },
+}
+local PRIMITIVE_BATCH_NAME = "PrimBatch"
+local primitive_ids = {}
+local primitive_batch_id = nil
+local primitive_batch_count = 0
+local primitive_reject_kind = false
+local primitive_reject_param = false
+local primitive_reject_shape = false
+local primitive_material_ok = false
+
+--- 复用式 spawn：重复 enter 不重复造实体。六个排成一排（背景行），第七个收 4 份实例。
+local function ensure_primitives()
+    for i, row in ipairs(PRIMITIVE_KINDS) do
+        local id = primitive_ids[i]
+        if not (id and entity.is_alive(id)) then
+            id = entity.spawn(row.name)
+            primitive_ids[i] = id
+            if id then
+                transform3d.attach(id)
+            end
+        end
+        if id and entity.is_alive(id) then
+            transform3d.set(id, -3.75 + (i - 1) * 1.5, 1.0, -2.0, 0, 0, 0, 1, 1, 1, 1)
+            mesh.set(id, row.spec)
+        end
+    end
+    if not (primitive_batch_id and entity.is_alive(primitive_batch_id)) then
+        primitive_batch_id = entity.spawn(PRIMITIVE_BATCH_NAME)
+        if primitive_batch_id then
+            transform3d.attach(primitive_batch_id)
+        end
+    end
+    if primitive_batch_id and entity.is_alive(primitive_batch_id) then
+        transform3d.set(primitive_batch_id, -1.8, 1.0, -4.0, 0, 0, 0, 1, 1, 1, 1)
+        -- 实例化复用同一条 primitive 缓存路径：一个实体收 4 份球实例（渲染侧一次实例化绘制）。
+        mesh.set_batch(primitive_batch_id, PRIMITIVE_KINDS[2].spec, {
+            { x = 0.0, y = 0.0, z = 0.0 },
+            { x = 1.2, y = 0.0, z = 0.0 },
+            { x = 2.4, y = 0.0, z = 0.0 },
+            { x = 3.6, y = 0.0, z = 0.0 },
+        })
+        primitive_batch_count = mesh.batch_count(primitive_batch_id)
+    end
+    -- 反面对照：非法 kind / 越界参数 / 缺 ? 的形状都必须在 mesh.set 当场被拒（不静默落空）。
+    local probe = primitive_ids[1]
+    if probe and entity.is_alive(probe) then
+        primitive_reject_kind = not pcall(mesh.set, probe, "__primitive__?kind=pyramid")
+        primitive_reject_param = not pcall(mesh.set, probe, "__primitive__?kind=box&w=0")
+        primitive_reject_shape = not pcall(mesh.set, probe, "__primitive__nope")
+        -- 3D 材质消费：程序化贴图当 base_color（哨兵键作材质），画到第 1 个 primitive 上。
+        local tex = texture.generate({ kind = "checker", size = 16, scale = 2, colors = { { 255, 90, 90 }, { 90, 90, 255 } } })
+        primitive_material_ok = mesh.set_material_texture(probe, tex) == true
+    end
+end
+
 local steps = {
     {
         id = "environment_ibl",
@@ -1114,6 +1179,50 @@ local steps = {
             t:near(grid_az2, 0.0, 1e-6, "sampling without a field returns zero")
         end,
     },
+    {
+        id = "procedural_primitives",
+        title = "Procedural primitives",
+        claim = "六种参数化几何哨兵（box/sphere/cylinder/cone/torus/plane）由 mesh.set 消费、mesh.get 逐字节读回；mesh.set_batch 复用同一条路径做实例化；非法 kind/越界参数/缺 ? 当场被拒",
+        api = { "mesh.set", "mesh.get", "mesh.set_batch", "mesh.batch_count", "mesh.set_material_texture", "texture.generate", "entity.spawn", "transform3d.attach" },
+        code = "mesh.set(e, '__primitive__?kind=sphere&r=0.6&seg=16'); mesh.get(e); mesh.set_batch(e, spec, instances)",
+        enter = function()
+            reset_world()
+            ensure_primitives()
+        end,
+        run = function()
+            lab.note(string.format(
+                "primitives: 6 kinds round-trip, batch=%d, reject kind/param/shape=%s/%s/%s",
+                primitive_batch_count,
+                tostring(primitive_reject_kind),
+                tostring(primitive_reject_param),
+                tostring(primitive_reject_shape)
+            ))
+        end,
+        read = function()
+            return {
+                { "kinds", #PRIMITIVE_KINDS },
+                { "batch", primitive_batch_count },
+                { "box", primitive_ids[1] and mesh.get(primitive_ids[1]) or "-" },
+                { "reject kind", tostring(primitive_reject_kind) },
+                { "reject param", tostring(primitive_reject_param) },
+                { "reject shape", tostring(primitive_reject_shape) },
+            }
+        end,
+        check = function(t)
+            for i, row in ipairs(PRIMITIVE_KINDS) do
+                local id = primitive_ids[i]
+                t:ok(id ~= nil and entity.is_alive(id), row.name .. " spawned")
+                if id and entity.is_alive(id) then
+                    t:eq(mesh.get(id), row.spec, row.name .. " mesh.get round-trips the sentinel")
+                end
+            end
+            t:eq(primitive_batch_count, 4, "primitive instancing stores four instances")
+            t:ok(primitive_reject_kind, "unknown kind is rejected at mesh.set")
+            t:ok(primitive_reject_param, "out-of-range size is rejected at mesh.set")
+            t:ok(primitive_reject_shape, "prefix without ? is rejected at mesh.set")
+            t:ok(primitive_material_ok, "mesh.set_material_texture binds a generated texture")
+        end,
+    },
 }
 
 -- 程序化地形/水面的采样面：与 `MeshRenderer.mesh` 用同一个 spec 串，保证
@@ -1257,6 +1366,16 @@ function M.on_destroy()
     if nav_runner and entity.is_alive(nav_runner) then
         entity.destroy(nav_runner)
         nav_runner = nil
+    end
+    for i, id in ipairs(primitive_ids) do
+        if id and entity.is_alive(id) then
+            entity.destroy(id)
+        end
+        primitive_ids[i] = nil
+    end
+    if primitive_batch_id and entity.is_alive(primitive_batch_id) then
+        entity.destroy(primitive_batch_id)
+        primitive_batch_id = nil
     end
     reset_world()
     lab.stop()

@@ -1008,6 +1008,7 @@ const MESH_RENDERER_FIELDS: &[FieldSchema] = &[
                 "__terrain__?",
                 "__water__?",
                 "__cells__?",
+                "__primitive__?",
             ],
         },
     ]),
@@ -2434,6 +2435,10 @@ mod tests {
             // 对同一份 `.scene` 给相反答案（`__cells__?…` 那条就是 R218 的同族形状）。
             ("__terrain__?size=240&res=96&amp=2.4&seed=7", true),
             ("__water__?size=10&res=8&y=0.06&amp=0.02&seed=3", true),
+            // M82-A：参数化基本体哨兵，schema 与引擎同样放行；前缀写错（无 `?`）落回扩展名判定被拒。
+            ("__primitive__?kind=box&w=1&h=1&d=1", true),
+            ("__primitive__?kind=sphere&r=0.5&seg=16", true),
+            ("__primitive__nope", false),
             // 反面对照①：前缀写错（没有 `?`）不能命中前缀档，必须落回扩展名判定被拒。
             ("__terrain__nope", false),
             // 反面对照②：只有 `__cells__` 这张哨兵来自真实编码器，抄进来的串改一个字节

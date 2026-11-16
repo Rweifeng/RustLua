@@ -457,6 +457,8 @@ struct EditorApp {
     bundles: crate::panels::bundles::BundlePanelState,
     /// 贴图预览窗（资源面板双击贴图）：全尺寸解码 + 逐像素开关，只读、不写盘。
     texture_preview: crate::panels::texture_preview::TexturePreviewState,
+    /// M82：程序化素材面板（贴图/文字/合成音效，参数可改、结果可预览）。
+    procedural: crate::panels::procedural::ProceduralState,
     /// 只读 Lua 源码查看器（控制台报错行 / 资源面板双击 `.lua`）：只显示与定位，不编辑。
     lua_source_view: crate::panels::lua_source_view::LuaSourceViewState,
     /// 模型预览（选中 `.glb`/`.gltf` 时属性面板里的旋转/缩放）：软光栅，只读、不写盘。
@@ -536,6 +538,8 @@ struct EditorApp {
     show_about: bool,
     /// 「项目设置」窗口缓冲与开关（内容在每次打开时从 project.toml 读取）。
     project_settings: crate::panels::project_settings::ProjectSettingsUi,
+    /// 「渲染设置」窗口缓冲与开关（`project.toml` 的 `[render]` 段）。
+    render_settings: crate::panels::render_settings::RenderSettingsUi,
     /// 窗口标题（含项目路径）缓存，避免每帧重复发送标题命令。
     last_window_title: Option<String>,
     /// 最近打开的项目路径列表（最新在前，最多 5 个）。
@@ -1241,6 +1245,7 @@ impl EditorApp {
             atlas: crate::panels::atlas::AtlasPanelState::new(),
             bundles: crate::panels::bundles::BundlePanelState::new(),
             texture_preview: crate::panels::texture_preview::TexturePreviewState::new(),
+            procedural: crate::panels::procedural::ProceduralState::default(),
             lua_source_view: crate::panels::lua_source_view::LuaSourceViewState::new(),
             model_preview: crate::panels::model_preview::ModelPreviewState::new(),
             import_settings: crate::panels::import_settings::ImportSettingsState::new(),
@@ -1281,6 +1286,7 @@ impl EditorApp {
             log_sink,
             show_about: false,
             project_settings: Default::default(),
+            render_settings: Default::default(),
             last_window_title: None,
             recent_projects: crate::util::load_recent_projects(),
             gpu,
@@ -3033,6 +3039,7 @@ impl EditorApp {
         self.draw_bundle_panel(context);
         // P1：贴图预览窗（资源面板双击贴图打开，独立窗口、只读）。
         self.draw_texture_preview(context);
+        self.draw_procedural_panel(context);
         // 只读 Lua 源码查看器（控制台报错行 / 资源面板双击 `.lua` 打开）。
         self.draw_lua_source_view(context);
         // P1：断链检查窗（资源 ▸ 断链检查…；扫描与改指都由 shell 执行）。
@@ -3042,6 +3049,7 @@ impl EditorApp {
         // ③：全工程搜索窗（编辑 ▸ 全工程搜索… / Ctrl+Shift+F；索引与定位都在 shell）。
         self.draw_project_search_panel(context);
         self.draw_project_settings_panel(context);
+        self.draw_render_settings_panel(context);
         // M19-03：领域数据面板（Lua 校验 / PersistId 注册表）与运行时调试面板
         // （只读探针）都是可开关的独立窗口。
         self.draw_domain_data_panel(context);

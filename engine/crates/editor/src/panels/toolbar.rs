@@ -351,6 +351,11 @@ impl EditorApp {
                             self.distribute_selected(false);
                             ui.close();
                         }
+                        ui.separator();
+                        if ui.button("程序化素材…").clicked() {
+                            self.procedural.show = true;
+                            ui.close();
+                        }
                     });
                     // Sprite 排序是 2D 精灵专属。
                     ui.menu_button("排序", |ui| {

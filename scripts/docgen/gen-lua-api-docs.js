@@ -315,6 +315,7 @@ const OWNING_BINDING_FILES = [
   'engine/crates/rustlua-physics/src/physics_lua.rs',
   'engine/crates/rustlua-physics/src/tilemap_lua.rs',
   'engine/crates/rustlua-render/src/renderable_lua.rs',
+  'engine/crates/rustlua-render/src/texture_lua.rs',
   'engine/crates/rustlua-render/src/visibility_lua.rs',
   'engine/crates/rustlua-ui/src/lua_advanced.rs',
   'engine/crates/rustlua-ui/src/lua_nav.rs',

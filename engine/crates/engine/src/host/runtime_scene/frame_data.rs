@@ -174,6 +174,25 @@ impl RuntimeScene {
                         }),
                         source: BoundsSource::Fallback,
                     }
+                } else if rustlua_render::primitives::PrimitiveSpec::is_primitive_path(
+                    &renderer.mesh,
+                ) {
+                    // M82-A：基本体按规格给包围盒（中心在原点），与 terrain/water/cells 同口径。
+                    let (min, max) =
+                        rustlua_render::primitives::PrimitiveSpec::parse(&renderer.mesh)
+                            .map(|spec| spec.bounds())
+                            .unwrap_or(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]));
+                    Scene3dBounds {
+                        local_aabb: rustlua_math::math3d::Aabb3::new(
+                            Vec3::new(min[0], min[1], min[2]),
+                            Vec3::new(max[0], max[1], max[2]),
+                        )
+                        .unwrap_or_else(|_| rustlua_math::math3d::Aabb3 {
+                            min: Vec3::new(-1.0, -1.0, -1.0),
+                            max: Vec3::new(1.0, 1.0, 1.0),
+                        }),
+                        source: BoundsSource::Fallback,
+                    }
                 } else {
                     Scene3dBounds {
                         local_aabb: rustlua_math::math3d::Aabb3 {
