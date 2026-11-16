@@ -179,9 +179,19 @@ fn run_stair(root: &Path, mesh_count: usize, cycles: usize, profile: bool) -> St
     .expect("offscreen fixture for wp0-3d-stress");
     let device = fixture.device();
     let queue = fixture.queue().clone();
-    let mut renderer =
-        Renderer::new_offscreen(device.clone(), queue, Some(root.to_path_buf()), true, true)
-            .expect("renderer");
+    // M83-07 诊断开关（默认行为不变）：把 cull / instancing 单独关掉，看"固定每帧分配"
+    // 是否随它们变化——总分配在 100/1000/10000 三档同样多出约 68 次/帧，先按子系统排除。
+    let env_on = |key: &str| std::env::var(key).map(|v| v != "0").unwrap_or(true);
+    let cull_enabled = env_on("WP0_CULL");
+    let instancing_enabled = env_on("WP0_INSTANCING");
+    let mut renderer = Renderer::new_offscreen(
+        device.clone(),
+        queue,
+        Some(root.to_path_buf()),
+        cull_enabled,
+        instancing_enabled,
+    )
+    .expect("renderer");
     let view = fixture.view();
     let mut samples = Vec::with_capacity(cycles);
     let mut gpu_samples = Vec::with_capacity(cycles);
@@ -234,14 +244,25 @@ fn run_stair(root: &Path, mesh_count: usize, cycles: usize, profile: bool) -> St
     };
     let profile_json = if profile {
         let n = cycles as u128;
+        let per = |value: u64| value as u128 / n;
         format!(
-            "{{\"vertices_us\":{},\"extract_us\":{},\"render_us\":{},\"render_share_pct\":{}}}",
+            "{{\"vertices_us\":{},\"extract_us\":{},\"render_us\":{},\"render_share_pct\":{},\
+             \"phase_allocs\":{{\
+             \"vertices\":{{\"count\":{},\"bytes\":{}}},\
+             \"extract\":{{\"count\":{},\"bytes\":{}}},\
+             \"render\":{{\"count\":{},\"bytes\":{}}}}}}}",
             phases.vertices_us / n,
             phases.extract_us / n,
             phases.render_us / n,
             // 渲染段占三段之和的百分比：决定"下一步该优化提取还是优化渲染"的那把尺子。
             (100 * phases.render_us
-                / (phases.vertices_us + phases.extract_us + phases.render_us).max(1))
+                / (phases.vertices_us + phases.extract_us + phases.render_us).max(1)),
+            per(phases.vertices_alloc_count),
+            per(phases.vertices_alloc_bytes),
+            per(phases.extract_alloc_count),
+            per(phases.extract_alloc_bytes),
+            per(phases.render_alloc_count),
+            per(phases.render_alloc_bytes)
         )
     } else {
         "null".to_owned()
@@ -272,14 +293,39 @@ struct DefaultMetrics {
     triangles: u64,
 }
 
-/// `--profile` 的分段累计（微秒）。三段的分界就是宿主每帧真正做的三件事：
+/// `--profile` 的分段累计（微秒 + 分配）。三段的分界就是宿主每帧真正做的三件事：
 /// 2D 顶点提取、3D 提取（`scene_3d` 把 ECS 摊平成 drawable）、以及一次 `render_into_texture`
 /// （剔除 + 合批 + 写实例缓冲 + 录制 + 提交）。
+///
+/// 分配也按同一三段累计（M83-07）：总分配数在三档 mesh 数上**同样多出约 68 次/帧**，
+/// 这只能是某段里的"固定每帧新建集合"，先按段切分才能把范围缩到函数级。
 #[derive(Default, Clone, Copy)]
 struct PhaseTotals {
     vertices_us: u128,
     extract_us: u128,
     render_us: u128,
+    vertices_alloc_count: u64,
+    vertices_alloc_bytes: u64,
+    extract_alloc_count: u64,
+    extract_alloc_bytes: u64,
+    render_alloc_count: u64,
+    render_alloc_bytes: u64,
+}
+
+/// 读一次全局分配计数（`(count, bytes)`）。
+fn alloc_snapshot() -> (u64, u64) {
+    (
+        ALLOC_COUNT.load(Ordering::Relaxed),
+        ALLOC_BYTES.load(Ordering::Relaxed),
+    )
+}
+
+/// 两快照之差。
+fn alloc_delta(before: (u64, u64), after: (u64, u64)) -> (u64, u64) {
+    (
+        after.0.saturating_sub(before.0),
+        after.1.saturating_sub(before.1),
+    )
 }
 
 fn render_once(
@@ -291,17 +337,26 @@ fn render_once(
     profile: bool,
 ) -> PhaseTotals {
     let started_vertices = profile.then(Instant::now);
+    let alloc_before_vertices = profile.then(alloc_snapshot);
     let mesh = runtime.vertices(640, 360).expect("2D extraction");
+    let alloc_vertices =
+        profile.then(|| alloc_delta(alloc_before_vertices.expect("snapshot"), alloc_snapshot()));
     let vertices_us = started_vertices.map_or(0, |t| t.elapsed().as_micros());
     let started_extract = profile.then(Instant::now);
+    let alloc_before_extract = profile.then(alloc_snapshot);
     let scene =
         runtime.scene_3d(rustlua_camera::camera::Viewport::new(640.0, 360.0).expect("viewport"));
+    let alloc_extract =
+        profile.then(|| alloc_delta(alloc_before_extract.expect("snapshot"), alloc_snapshot()));
     let extract_us = started_extract.map_or(0, |t| t.elapsed().as_micros());
     let started_render = profile.then(Instant::now);
+    let alloc_before_render = profile.then(alloc_snapshot);
     assert!(matches!(
         renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360, true),
         RenderOutcome::Presented
     ));
+    let alloc_render =
+        profile.then(|| alloc_delta(alloc_before_render.expect("snapshot"), alloc_snapshot()));
     let render_us = started_render.map_or(0, |t| t.elapsed().as_micros());
     let metrics = renderer.last_frame_metrics();
     last.cpu_frame_us = metrics.cpu_frame_us;
@@ -309,14 +364,29 @@ fn render_once(
     last.draw_calls = metrics.draw_calls;
     last.instances = metrics.instances;
     last.triangles = metrics.triangles;
+    let (vertices_alloc_count, vertices_alloc_bytes) = alloc_vertices.unwrap_or((0, 0));
+    let (extract_alloc_count, extract_alloc_bytes) = alloc_extract.unwrap_or((0, 0));
+    let (render_alloc_count, render_alloc_bytes) = alloc_render.unwrap_or((0, 0));
     let frame = PhaseTotals {
         vertices_us,
         extract_us,
         render_us,
+        vertices_alloc_count,
+        vertices_alloc_bytes,
+        extract_alloc_count,
+        extract_alloc_bytes,
+        render_alloc_count,
+        render_alloc_bytes,
     };
     phases.vertices_us += frame.vertices_us;
     phases.extract_us += frame.extract_us;
     phases.render_us += frame.render_us;
+    phases.vertices_alloc_count += frame.vertices_alloc_count;
+    phases.vertices_alloc_bytes += frame.vertices_alloc_bytes;
+    phases.extract_alloc_count += frame.extract_alloc_count;
+    phases.extract_alloc_bytes += frame.extract_alloc_bytes;
+    phases.render_alloc_count += frame.render_alloc_count;
+    phases.render_alloc_bytes += frame.render_alloc_bytes;
     frame
 }
 
