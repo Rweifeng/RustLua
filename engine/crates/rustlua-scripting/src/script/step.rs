@@ -8,6 +8,9 @@ use crate::script::LuaRuntime;
 use crate::script::crash;
 use crate::script::domain::ecs::transform::Transform;
 use crate::script::domain::ecs::transform::Transform3D;
+// `Handle` 也经门面取：`script/` 的生产代码不许直接出现 `rustlua_*` 引用
+// （`tests/domain_facade.rs` 的棘轮守着）。
+use crate::script::domain::lua_api;
 // WP11-USE:END
 
 impl LuaRuntime {
@@ -18,8 +21,7 @@ impl LuaRuntime {
     #[must_use]
     pub fn renderable_state(
         &self,
-    ) -> rustlua_lua_api::Handle<crate::script::domain::render::renderable_lua::RenderableState>
-    {
+    ) -> lua_api::Handle<crate::script::domain::render::renderable_lua::RenderableState> {
         self.state.borrow().renderable.clone()
     }
 

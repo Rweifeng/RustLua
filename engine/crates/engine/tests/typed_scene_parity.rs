@@ -110,9 +110,11 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                     // 必须回 payload 取真实 mesh 串，否则这条对拍会把 Ground 静默漏掉。
                     let mesh = match assets.first() {
                         Some((path, _)) => path.clone(),
-                        None => rustlua_render::mesh3d::MeshRenderer::from_component_str(payload)
-                            .ok()?
-                            .mesh,
+                        None => {
+                            rustlua_render::mesh3d::MeshRenderer::from_component_str(payload)
+                                .ok()?
+                                .mesh
+                        }
                     };
                     Some((entity.name.as_str(), (model, mesh)))
                 })
@@ -144,7 +146,8 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
                     matrices_match(*model, *typed_model),
                     "{label} {name} 模型矩阵不一致"
                 );
-                assert_eq!(*mesh, *typed_mesh, "{label} {name} mesh 路径不一致");            }
+                assert_eq!(*mesh, *typed_mesh, "{label} {name} mesh 路径不一致");
+            }
 
             // 相机与光源集合必须一致（旧路径按同一实体顺序收集）。
             let old_cameras: Vec<SceneEntityId> = serialized
