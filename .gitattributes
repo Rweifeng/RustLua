@@ -27,3 +27,16 @@ engine/crates/rustlua-gpu/shaders/*.wgsl text eol=lf
 examples/**/ui/*.ui.json text eol=lf
 examples/**/ui/hosts.json text eol=lf
 examples/**/artifacts/**/*.json text eol=lf
+
+# Rust 源码必须是 LF（M83-06）。这一类坑与上面三条同源，但面最大：`rustlua-gpu` 的
+# 渲染契约测试对 `include_str!("../construct.rs")` / `shaders/**` 做**多行** `contains("…\n…")`
+# 与按字节定位的形状断言，源码里 CRLF 时 `\n` 匹配不上 ⇒ core.autocrlf=true 的 Windows 克隆
+# 上有 6 条门假红（2026-11-16 实测：302 passed / 6 failed），CI 的 LF 检出却全绿。
+# 根治前工作区是"混合行尾"（492 个 CRLF / 454 个 LF），同一份源码在不同机器上字节不同，
+# 任何 `include_str!` 判据都不稳定。
+#
+# 不写 `* text=auto`：scripts/**/*.ps1 必须是 UTF-8 BOM + CRLF（PS 5.1 控制台口径），
+# 通配会把它们一次性改写。这里只钉 Rust 源码——它不参与需要 CRLF 的工具链。
+# 生效方式：新克隆天然是 LF；已有克隆在拉取本提交后对 *.rs 做一次重新检出（或
+# `git add --renormalize -- '*.rs'`，仓库 blob 本就是 LF，所以不产生内容 diff）。
+*.rs text eol=lf
