@@ -1139,9 +1139,11 @@ function sprite.set(id, component) end
 ---@return any
 function sprite.set_texture(id, tex_id) end
 
+--- 合成音效原语（M82 C 批）：按规格表在 CPU 侧合成 PCM 采样（振荡器 + 噪声 + ADSR 包络 + biquad 滤波），
 --- synth：运行期 API 面基线里的 1 个函数
 synth = {}
 
+--- 按规格表合成并播放一次性音效。桌面走音频设备（与 `audio.play` 同一条 Sink 通道）；规格非法 / 无设备 /
 ---@param spec table
 ---@return any
 function synth.play(spec) end
