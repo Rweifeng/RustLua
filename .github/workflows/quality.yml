@@ -377,7 +377,32 @@ jobs:
       # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要
       # 一份"跑过了但其实没测"的绿灯。
       - name: WP0 benchmarks and semantic goldens
-        run: pwsh -NoProfile -File scripts/verify/verify.ps1 -Benchmarks
+        shell: pwsh
+        run: |
+          $log = "${{ github.workspace }}\artifacts\logs\quality\benchmarks.log"
+          New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+          pwsh -NoProfile -File scripts/verify/verify.ps1 -Benchmarks 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # 与 web-evidence 步同一教训（docs/60 §10.7）：job 日志要认证才能读，artifact 要下载；
+            # `::error::` annotation 是**匿名也能读到**的位置。此前本步只留一个 exit code，
+            # 2026-11-16 排查 gates 红时完全不知道红在 compare-baseline 还是某个示例/ schema。
+            Write-Host "::group::benchmarks failure tail (last 40 lines of $log)"
+            Get-Content -LiteralPath $log -Tail 40 | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            $tail = @(Get-Content -LiteralPath $log -Tail 10)
+            $picked = @(Get-Content -LiteralPath $log -Tail 200 |
+                Where-Object { $_ -match 'REGRESSION|FAILED|failed|invalid|throw|missing|Exception|Error|error:' } |
+                Select-Object -Last 10)
+            $hints = @($picked + $tail | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Select-Object -Last 14)
+            foreach ($hint in $hints) {
+              $clean = ($hint -replace '[\r\n]+', ' ').Trim()
+              if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + '...' }
+              if ($clean) { Write-Host "::error::benchmarks: $clean" }
+            }
+            Write-Host "benchmarks failed (exit $code); full log: $log"
+            exit $code
+          }
 
   # Web/wasm 证据门。docs/60 §7.2：补装 zig 后 wasm Lua 门在 CI 上**真的执行**
   # （此前 GitHub runner 无 zig，常态以 3 显式跳过）。跳过绝不等于通过的哲学不变：
@@ -595,7 +620,24 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-coverage.ps1 -RequireTool 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           if ($code -eq 3) { Write-Host "coverage_blocked reason=no_baseline (baseline not committed yet; first run must be reviewed and --update locally)" }
-          if ($code -ne 0) { Write-Host "coverage gate failed (exit $code); full log: $log"; throw "coverage gate failed (exit $code)" }
+          if ($code -ne 0) {
+            # 同 benchmarks 步：把失败原因发成匿名可读的 annotation（job 日志要认证、artifact 要下载）。
+            Write-Host "::group::coverage failure tail (last 40 lines of $log)"
+            Get-Content -LiteralPath $log -Tail 40 | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            $tail = @(Get-Content -LiteralPath $log -Tail 10)
+            $picked = @(Get-Content -LiteralPath $log -Tail 200 |
+                Where-Object { $_ -match 'REGRESSION|coverage|drop|crate|failed|blocked|Exception|Error' } |
+                Select-Object -Last 10)
+            $hints = @($picked + $tail | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Select-Object -Last 14)
+            foreach ($hint in $hints) {
+              $clean = ($hint -replace '[\r\n]+', ' ').Trim()
+              if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + '...' }
+              if ($clean) { Write-Host "::error::coverage: $clean" }
+            }
+            Write-Host "coverage gate failed (exit $code); full log: $log"
+            exit $code
+          }
 
       - name: Upload coverage evidence
         uses: actions/upload-artifact@v4
