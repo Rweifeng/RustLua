@@ -386,7 +386,17 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
         throw "CDP wait script missing: $cdpScript"
     }
     $cdpPort = 9200 + (Get-Random -Maximum 700)
-    $profileDir = Join-Path $logRoot "cdp-profile-$stamp-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    $profileDir = Join-Path $logRoot "cdp-profile-$stamp-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    # 无 GPU 的 CI runner 上必须显式启用软件光栅，否则 WebGL2 上下文永远停在
+    # `gpu=initializing`、`boot=pending` 不落定——门每次 push 都判红（2026-11-16 实测：
+    # run 43821083086 的 `Web platform evidence` 红在 `boot=pending scene_verify=absent
+    # gpu=initializing`，与 gpu-web-probe.ps1 早已带上的两个开关同源）。
+    # 由 `RUSTLUA_SOFTWARE_GL=1` 开启（CI 的 web-evidence 步骤设置）：开发者本机保持真实
+    # GPU，不因为一条验收门被强制降级成软件渲染。
+    $softwareGlArgs = @()
+    if ($env:RUSTLUA_SOFTWARE_GL -eq "1") {
+        $softwareGlArgs = @("--enable-unsafe-swiftshader", "--use-angle=swiftshader")
+    }
     $waitMode = if ($ModeOverride) { $ModeOverride } elseif ($DriveJhyt) { "drive" } elseif (-not $NoSceneVerify) { "scene" } else { "boot" }
     # contract 模式写的是**对拍报告**而不是 DOM，所以输出目标可由调用方指定。
     $outTarget = if ([string]::IsNullOrWhiteSpace($OutFile)) { $domPath } else { $OutFile }
@@ -394,7 +404,8 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
         $HeadlessFlag,
         "--disable-gpu-sandbox",
         "--no-sandbox",
-        "--disable-extensions",
+        "--disable-extensions"
+    ) + $softwareGlArgs + @(
         # 转发 console.*（含 wasm panic hook 的 console.error）到 stderr（CONSOLE 前缀），
         # 排查 wasm trap（如场景切换 unreachable）时能从 bundle-dom-*.err 拿到 Rust panic 详情。
         "--enable-logging=stderr",

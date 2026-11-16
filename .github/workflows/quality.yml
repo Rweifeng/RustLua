@@ -420,6 +420,12 @@ jobs:
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
       - name: Web platform evidence
         shell: pwsh
+        # runner 上没有 GPU：显式让无头 Edge 走 SwiftShader（`--use-angle=swiftshader` +
+        # `--enable-unsafe-swiftshader`，见 verify-webgl-bundle.ps1 的 $softwareGlArgs）。
+        # 不设这个开关时 WebGL2 上下文停在 `gpu=initializing`、`boot=pending` 永不落定，
+        # 门每次 push 都判红而看不出是环境问题（2026-11-16 run 43821083086 实测）。
+        env:
+          RUSTLUA_SOFTWARE_GL: "1"
         run: |
           New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\artifacts\logs\quality" | Out-Null
           $log = "${{ github.workspace }}\artifacts\logs\quality\web-evidence.log"
