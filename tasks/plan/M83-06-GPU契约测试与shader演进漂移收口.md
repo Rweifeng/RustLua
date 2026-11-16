@@ -100,8 +100,10 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
 
 ## 待复核
 
-整跑 `cargo test -p rustlua-gpu --lib --all-features`（308 条、单线程约 47 分钟）确认 0 failed；
-该读数落盘后本任务可归档。
+整跑 `cargo test -p rustlua-gpu --lib --all-features`（单线程）：
+
+**308 passed / 0 failed / 0 ignored（2763.22 s）**，日志
+`artifacts/logs/quality/m83-06-rustlua-gpu-lib-full.log`。6 条全转绿且无其它红 ⇒ 本任务可归档。
 
 ## 未完成项 / 已知限制
 
