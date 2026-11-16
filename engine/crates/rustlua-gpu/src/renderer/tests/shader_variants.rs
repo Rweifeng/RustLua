@@ -18,6 +18,22 @@ use rustlua_render::render_settings::{
 
 const KNOWN_FEATURES: &[&str] = &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR", "STORAGE_INSTANCES"];
 
+/// 开 IBL 的 PBR 变体里，常数环境光只允许出现在 `mesh_cheap` 回退分支内（P3-R277）。
+///
+/// 判据不是"一次都不许出现"：廉价档本来就要退回与 IBL 关档同式的常数环境光。真正要拦的是
+/// **无条件**叠加——所以要求每一处 `AMBIENT_FACTOR * radiance` 都排在 `if (mesh_cheap) {` 之后；
+/// 变体里根本没有该子串时也算通过（镜面变体走的就是这条）。
+fn constant_ambient_is_cheap_fallback_only(source: &str) -> bool {
+    let mut occurrences = source.match_indices("AMBIENT_FACTOR * radiance").peekable();
+    if occurrences.peek().is_none() {
+        return true;
+    }
+    let Some(cheap) = source.find("if (mesh_cheap) {") else {
+        return false;
+    };
+    occurrences.all(|(at, _)| at > cheap)
+}
+
 fn expand_mode(
     shader: &ShaderSource,
     skin: SkinMode,
@@ -166,6 +182,12 @@ fn pbr_diffuse_ibl_replaces_constant_ambient() {
         "Off 变体不应带上 SH 求值代码"
     );
     assert!(off.source().contains("AMBIENT_FACTOR * radiance"));
+    // P3-R277：开了 IBL 的变体里，常数环境光只允许作 `mesh_cheap` 廉价档的回退
+    // （与 IBL 关档同式）；无条件叠在 IBL 路径上才是回归。
+    assert!(
+        constant_ambient_is_cheap_fallback_only(diffuse.source()),
+        "IBL 漫反射变体的常数环境光只能是 mesh_cheap 回退分支，不得无条件叠加"
+    );
     assert!(diffuse.source().contains("fn sh_irradiance"));
     assert!(diffuse.source().contains("environment.sh[8]"));
     for constant in ["0.282095", "0.488603", "1.092548", "0.315392", "0.546274"] {
@@ -182,10 +204,6 @@ fn pbr_diffuse_ibl_replaces_constant_ambient() {
     assert!(
         diffuse.source().contains("(1.0 - metallic)"),
         "金属不能拿 SH 漫反射"
-    );
-    assert!(
-        !diffuse.source().contains("AMBIENT_FACTOR * radiance"),
-        "IBL 变体不应再叠常数环境光"
     );
 }
 
@@ -209,9 +227,10 @@ fn pbr_specular_ibl_samples_prefiltered_cube() {
             "mip 选择必须读取 uniform 里的最大 LOD"
         );
         assert!(source.contains("reflect(-view, normal)"));
+        // 同 `pbr_diffuse_ibl_replaces_constant_ambient`：只允许 `mesh_cheap` 回退。
         assert!(
-            !source.contains("AMBIENT_FACTOR * radiance"),
-            "开启 IBL 的变体不应再叠常数环境光"
+            constant_ambient_is_cheap_fallback_only(source),
+            "开启 IBL 的变体不得无条件叠常数环境光（仅 mesh_cheap 回退档可以）"
         );
     }
     assert!(

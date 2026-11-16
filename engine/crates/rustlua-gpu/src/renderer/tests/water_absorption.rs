@@ -66,17 +66,19 @@ fn tonemap_only_absorbs_inside_the_water_mask() {
         "散射权重必须是 1 − T：浅滩几乎不受影响，深水收敛到水体色"
     );
     // 吸收段必须整段位于 `if surface.valid {` 里：找水掩码之后的第一个花括号块，
-    // 透射公式必须在它内部。
+    // 透射公式必须在它内部。P3-R208 之后 `transmittance` 在文件里出现两处——
+    // `underwater_radiance`（水下通道，掩码之前）与水面合成（掩码之内），所以按
+    // "掩码之后 + 逐像素光程 optical_depth" 定位水面那一处，而不是取全文第一次出现。
     let mask = source
         .find("        if surface.valid {")
         .expect("水合成分支必须以水掩码开头");
-    let absorb = source
-        .find("let transmittance = exp(-params.water_abs.rgb")
-        .expect("吸收公式");
     assert!(
-        absorb > mask,
-        "吸收公式在水掩码之外 ⇒ 天空/岸上像素也会被按远景深度压黑"
+        !source[..mask].contains("exp(-params.water_abs.rgb * optical_depth"),
+        "逐像素光程的透射只能出现在水掩码之内；掩码之前那处只允许水下通道的界面公式"
     );
+    source[mask..]
+        .find("let transmittance = exp(-params.water_abs.rgb * optical_depth")
+        .expect("水掩码块内必须按逐像素光程 optical_depth 计算吸收");
     assert!(
         source.contains("linear = mix(linear, refracted, 0.30) * transmittance + body"),
         "透射只能在合成后乘一次（`mix(linear, refracted * T, 0.3) * T` 会把同一段光程算两遍）"

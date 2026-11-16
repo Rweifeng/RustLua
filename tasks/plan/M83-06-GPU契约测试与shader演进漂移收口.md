@@ -1,7 +1,7 @@
 # 任务：GPU 契约测试与 shader 演进漂移收口
 
 - 任务 ID：M83-06
-- 状态：2 条已修（CRLF 假红）；4 条待修（真红）
+- 状态：6 条全部已修（2 条 CRLF 假红 + 4 条 shader 漂移真红），待整跑复核
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -83,6 +83,25 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
 
 期望：308 passed / 0 failed。随后 `verify.ps1` 的 `Workspace tests` 段应继续向后推进
 （release build、game/editor `--check`、性能基线、GUI smoke、MVP 等）。
+
+## 已修（4 条真红，2026-11-16 第二笔）
+
+均**保留原判据意图**、只修正取值锚点，未删除任何断言：
+
+| 用例 | 修法 |
+|---|---|
+| `shader_variants::pbr_diffuse_ibl_replaces_constant_ambient` | 新增辅助 `constant_ambient_is_cheap_fallback_only`：要求每处 `AMBIENT_FACTOR * radiance` 都排在 `if (mesh_cheap) {` 之后；无条件叠加仍判红，变体内无该子串也算通过（镜面变体走这条）。同时删掉同文件末尾那条已过时的重复断言（保留一条更严的）。 |
+| `shader_variants::pbr_specular_ibl_samples_prefiltered_cube` | 同上辅助函数替换 `!contains` 断言。 |
+| `water_absorption::tonemap_only_absorbs_inside_the_water_mask` | 改为「掩码之后 + `* optical_depth`」定位水面吸收式，并**反向**断言掩码之前不得出现该逐像素光程式（掩码前那处只允许 P3-R208 水下通道的界面公式）。比原来"全文第一次出现"更严。 |
+| `hdr::tonemap_shader_adds_screen_space_water_reflection` | 把 P3-R207 时代的调用字面量更新为 P3-R241 的四参形状 `water_refraction(uv, params.camera_position.w, optical_depth, grazing)`，钉住完整调用（参数重排/丢项都会红）。 |
+
+验证：`shader_variants::` 23 passed；`water_absorption::tonemap_only_absorbs_inside_the_water_mask` 1 passed；
+`hdr::tonemap_shader_adds_screen_space_water_reflection` 1 passed；`cargo fmt --all -- --check` exit 0。
+
+## 待复核
+
+整跑 `cargo test -p rustlua-gpu --lib --all-features`（308 条、单线程约 47 分钟）确认 0 failed；
+该读数落盘后本任务可归档。
 
 ## 未完成项 / 已知限制
 

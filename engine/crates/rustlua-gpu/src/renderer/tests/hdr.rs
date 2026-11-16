@@ -488,7 +488,11 @@ fn tonemap_shader_adds_screen_space_water_reflection() {
     assert!(source.contains("for (var step: i32 = 0; step < 18; step = step + 1)"));
     assert!(source.contains("distorted + texel * vec2<f32>(2.0, 0.0)"));
     assert!(source.contains("fn water_refraction"));
-    assert!(source.contains("let refracted = water_refraction(uv, params.camera_position.w)"));
+    // P3-R241：折射调用带上了逐像素光程与掠射角（水面折射步进的水下路径用它们做视差）。
+    // 这里钉住完整调用形状：参数被重排或丢掉一项都会红。
+    assert!(source.contains(
+        "let refracted = water_refraction(uv, params.camera_position.w, optical_depth, grazing);"
+    ));
     assert!(source.contains("offset * 1.08"));
     assert!(source.contains("offset * 0.92"));
     assert!(source.contains("linear = mix(linear, refracted, 0.30)"));
