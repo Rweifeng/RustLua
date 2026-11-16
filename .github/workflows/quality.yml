@@ -130,6 +130,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify/check-silent-traces.ps1
 
+      # M83-04 §三-1：Web 浏览器运行时证据的受限登记必须带到期日。无 GPU runner 上
+      # `-Web` 以 exit 3 BLOCKED 结束（不判红、也不冒充通过），但"永远受限"不能被允许：
+      # 本门读 metrics/web-evidence.json，blocked 且过了 review_by 就判 2。零依赖、秒级。
+      - name: Web evidence blocked-policy
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/verify/check-web-evidence-policy.mjs --check
+          node scripts/verify/check-web-evidence-policy.mjs --self-test
+
   # 供应链安全门（P2-01）：工具版本固定，缺工具/网络失败必须判红或显式 blocked。
   # 与 release.yml 的 security 步骤共用同一入口 check-security.ps1，避免"本地一套、CI 一套"。
   # 依赖先 cargo check：fork-sync 报告要读 registry/src 里的上游源码，只 fetch 不够。

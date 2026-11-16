@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "comment": "Web 浏览器运行时证据的受限登记（M83-04 §三-1）。status=blocked 表示当前环境给不出渲染器所需的 WebGL2 能力，门以 exit 3 BLOCKED 结束而不是红；本登记让 BLOCKED 有到期日：check-web-evidence-policy.mjs -Check 在 review_by 过期后判 2，不允许静默永久受限。解锁后把 status 改回 ok 并删掉 blocked 段，同时把 review_by 置空。",
+  "updated": "2026-11-16",
+  "owner": "M83-04",
+  "status": "blocked",
+  "blocked": {
+    "reason": "CI runner 无可用硬件 WebGL2：无头 Edge 只报 gpu=initializing；强制 SwiftShader 后产物层可过但 render-probe 在 glTexStorage3D 处被拒（wgpu 缺所需能力）",
+    "since": "2026-11-16",
+    "review_by": "2026-12-31",
+    "evidence": [
+      "artifacts/logs/quality/web-evidence.status（verify.ps1 -Web 落盘：exit=3 + reason）",
+      "docs/changelog/最新条目.md 的「Web 证据链：无 GPU 环境显式 BLOCKED」条目",
+      "tasks/plan/M83-04-跨平台与浏览器运行时验证升级.md §三-A"
+    ],
+    "unblock_conditions": [
+      "CI 换到有可用 GPU（或硬件 WebGL2）的 runner；或",
+      "SwiftShader/软件光栅能在能力预检里通过 render-probe（wgpu 所需特性齐备）；或",
+      "渲染器降到软件 WebGL2 可承载（含 3D 贴图替代路径）——这条要走渲染设计评审"
+    ]
+  }
+}

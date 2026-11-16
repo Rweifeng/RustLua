@@ -608,8 +608,13 @@ try {
         #      拦三种静默失效：新加 skip 不登记、登记的读者/发放点被删、skip 代码只跳名字不打。
         Write-Step "Flaky CI skip-ledger (static parity)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-flaky-skips.mjs"))
+        #   ⑦ Web 浏览器运行时证据的受限登记（M83-04 §三-1）：无可用 WebGL2 的环境里
+        #      `-Web` 以 exit 3 BLOCKED 结束，这解决了"环境缺口冒充回归"，但 BLOCKED 可以
+        #      永远绿下去。登记文件 `metrics/web-evidence.json` 给它到期日：过期仍 blocked ⇒ 判 2。
+        Write-Step "Web evidence blocked-policy (expiry)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-web-evidence-policy.mjs"), "--check")
     } else {
-        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门、输入键表门与 flaky skip 账本门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门、输入键表门、flaky skip 账本门与 Web 证据受限登记门未运行（不是通过）" -ForegroundColor Yellow
     }
 
     # ---------- 发布闭包（容器内容）：此前没有任何自动化入口 ----------
