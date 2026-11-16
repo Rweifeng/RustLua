@@ -428,6 +428,7 @@ jobs:
       # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
       - name: Web platform evidence
+        id: web_platform_evidence
         shell: pwsh
         # runner 上没有 GPU：显式让无头 Edge 走 SwiftShader（`--use-angle=swiftshader` +
         # `--enable-unsafe-swiftshader`，见 verify-webgl-bundle.ps1 的 $softwareGlArgs）。
@@ -446,6 +447,9 @@ jobs:
           if ($code -eq 3) {
             Write-Host "::warning::web_evidence_blocked reason=environment_limited:webgl2_render_capability"
             Write-Host "web_evidence_blocked reason=environment_limited（浏览器运行时证据本轮未取得；状态见 artifacts/logs/quality/web-evidence.status）"
+            # 下游依赖"已发布 webgl 产物"的步骤（new-EH 跨浏览器编译）必须跟着跳过：
+            # BLOCKED 路径在发布之前就结束了，产物根本不存在。
+            "blocked=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
           # 判红之前先把"为什么红"摊在 job 日志里：这份日志此前只落工作区（失败时虽作为
@@ -513,7 +517,11 @@ jobs:
       # 18.4；低于门槛连编译都过不去）。只编译不跑游戏，与启动层正交。**直接**调 runner；退出码
       # 0=已发现浏览器全 PASS / 1=有 FAIL / 3=环境受限（无浏览器或无已发布 webgl 产物）跳过。
       # Safari 无法在 Windows 自动化，runner 会打印 Mac 上的手动验证流程。跳过绝不等于通过。
+      # 上一步 Web 平台证据 BLOCKED 时直接跳过本步：它验的是"已发布产物的 wasm 能否在各浏览器
+      # 编译"，而 BLOCKED 路径在发布之前就结束，产物不存在（2026-11-16 run 43840458423 实测：
+      # 上一步已正确 BLOCKED，本步却因拿不到产物以 exit 1 判红，把环境缺口又变回一个红点）。
       - name: webgl new-EH cross-browser evidence
+        if: steps.web_platform_evidence.outputs.blocked != 'true'
         shell: pwsh
         run: |
           $status = "artifacts/logs/webgl/ci-eh.status"
