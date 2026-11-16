@@ -587,8 +587,14 @@ mod tests {
     /// 每臂固定步数取平均，并把**开/关扩散**分成两臂——扩散那两臂会多一次整场拷贝，
     /// 这是步进里最贵的部分，也是"要不要开扩散"这个开关的价钱。
     ///
-    /// 上限断言放宽到 5 ms/步：它不是性能门（机器差异大），只是"哪天步进写成 O(n²) 就红"
-    /// 的兜底。
+    /// **判据不看绝对墙钟**（2026-11-16 修正）：原来断言"每步 < 5000 us"的本意是
+    /// "哪天步进写成 O(n²) 就红"的兜底，但绝对上限对机器与插桩都敏感——coverage 门用
+    /// `cargo llvm-cov` 采集时同一段代码慢 5–8 倍（实测 tall 档 6631.8 us/步），断言必红，
+    /// 单元测试二进制以 101 退出后**整个 crate 的覆盖率 profile 被丢弃**，coverage 门因此
+    /// 对 rustlua-ecs 报 −51.7pp。现在改判两件与插桩无关的相对量：
+    ///   ① 六种形状的**每格成本**保持同一量级（O(n²) 回归会让大网格每格成本随边数增长）；
+    ///   ② 每档"开扩散 / 关扩散"的比值有界（扩散若退化成整场多次遍历，比值会爆）。
+    /// 绝对读数照旧打印，作为"定分辨率"的证据，只是不再进断言。
     #[test]
     fn wind_grid_step_cost_curve() {
         const STEPS: usize = 60;
@@ -601,7 +607,9 @@ mod tests {
             ("near_32x16x32_cell2", [32, 16, 32], 2.0),
             ("tall_32x24x32_cell2", [32, 24, 32], 2.0),
         ];
-        println!("-- wind grid step cost (us/step) --");
+        println!("-- wind grid step cost (us/step; 绝对量仅供参考，判据看比值) --");
+        let mut per_cell = Vec::with_capacity(SHAPES.len());
+        let mut diffusion_ratios = Vec::with_capacity(SHAPES.len());
         for (name, dims, cell) in SHAPES {
             let cells = dims[0] * dims[1] * dims[2];
             let mut grid = WindGrid::new(dims, Vec3::ZERO, cell).unwrap();
@@ -634,8 +642,36 @@ mod tests {
                 "{name}\tcells={cells}\tdiffuse={with_diffusion:.1}\tplain={without_diffusion:.1}"
             );
             assert!(
-                with_diffusion < 5000.0,
-                "{name}: 步进 {with_diffusion:.1} us/步 超上限，网格实现疑似退化"
+                without_diffusion > 0.0,
+                "{name}: 关扩散臂测出 0 us/步，计时或步进是死的"
+            );
+            per_cell.push((name, cells, with_diffusion / cells as f64));
+            diffusion_ratios.push((name, with_diffusion / without_diffusion));
+        }
+
+        // ① 每格成本跨形状同量级：O(n²) 回归会让 cells 最大的那档每格成本成倍上涨。
+        let min_per_cell = per_cell
+            .iter()
+            .map(|(_, _, v)| *v)
+            .fold(f64::INFINITY, f64::min);
+        let max_per_cell = per_cell
+            .iter()
+            .map(|(_, _, v)| *v)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_per_cell / min_per_cell <= 2.0,
+            "每格步进成本跨形状不同量级（{:.3}..{:.3} us/cell，比值 {:.2} > 2）：\
+             疑似步进退化成超线性；逐档读数见上",
+            min_per_cell,
+            max_per_cell,
+            max_per_cell / min_per_cell
+        );
+
+        // ② 扩散/纯步进比值有界：扩散只该多一遍整场遍历，不可能高出两个数量级。
+        for (name, ratio) in diffusion_ratios {
+            assert!(
+                (1.0..=12.0).contains(&ratio),
+                "{name}: 开/关扩散耗时比值 {ratio:.2} 出界（应在 1..=12），扩散实现疑似退化"
             );
         }
     }
