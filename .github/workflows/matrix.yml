@@ -175,6 +175,15 @@ jobs:
             $results[$r.id] = $r.status
           }
           if ($results.Count -eq 0) { throw "matrix results empty (no cell artifact)" }
+          # 逐 cell 结果必须**匿名可见**：artifact 要认证才能下载，而"升档评审"（M83-04）恰恰
+          # 需要每个 advisory cell（尤其 linux-native）连续绿的历史。之前只有整 job 的
+          # success/failure 与"到期未升档"的红，没有单 cell 读数 —— 凭 workflow 绿灯升档等于
+          # 凭感觉。这里把每个 cell 的结论发成 `::notice::` annotation（匿名可读、可检索）。
+          foreach ($id in ($results.Keys | Sort-Object)) {
+            $status = $results[$id]
+            Write-Host ("matrix_cell id={0} status={1}" -f $id, $status)
+            Write-Host ("::notice title=matrix cell::matrix_cell id={0} status={1}" -f $id, $status)
+          }
           $json = $results | ConvertTo-Json -Compress
           $jsonPath = "artifacts/matrix-results.json"
           Set-Content -LiteralPath $jsonPath -Value $json -Encoding utf8
