@@ -1157,7 +1157,38 @@ try {
         }
         Push-Location $projectRoot
         try {
-            $webScript = Join-Path $projectRoot "scripts/verify/verify-webgl.ps1"
+            # ⓪ 能力预检（2026-11-16）：先问"这套无头浏览器能不能真的承载我们的渲染器"。
+        # 给不出可用 WebGL2（含软件光栅缺 3D 贴图这类能力缺口）时，下游四步（契约/产物/
+        # 渲染器/新 EH）会各自红一次，把**一个环境缺口**显示成**四个代码回归**——2026-11-16
+        # 的 CI 实测正是这样（`run 43821083086` 的 web-evidence 红在 gpu=initializing）。
+        # 判定语义：
+        #   exit 0 → 继续跑完整证据链；
+        #   exit 3 → 整条 Web 证据链 **BLOCKED(3)**：落状态文件、打印原因后结束
+        #            （既不是通过、也不是红；与 `-Security` 的 exit 3 同一语义）；
+        #   exit 1 → 真回归，照旧判红。
+        # 代价：渲染器探针会跑两次（能力预检一次 + 后面的正式门一次）。probe 的 wasm 构建在
+        # 第二次复用缓存，换来的是"红/绿/受限"三者不再互相冒充。
+        $capabilityScript = Join-Path $projectRoot "scripts/verify/gpu-web-probe.ps1"
+        $capabilityRun = & $runWebEvidence $capabilityScript "web-capability" -ExtraArgs @("-Stage", "render")
+        $capabilityExit = $capabilityRun.ExitCode
+        if ($capabilityExit -eq 1) {
+            throw "web renderer capability probe FAILED (gpu-web-probe.ps1 -Stage render exit 1; 见 gate-web-capability-*.log)"
+        }
+        if ($capabilityExit -eq 3) {
+            $capabilityStatus = Join-Path $projectRoot "artifacts/logs/quality/web-evidence.status"
+            New-Item -ItemType Directory -Force -Path (Split-Path $capabilityStatus) | Out-Null
+            [System.IO.File]::WriteAllText(
+                $capabilityStatus,
+                "exit=3`nreason=environment_limited:webgl2_render_capability",
+                (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "web_evidence_blocked reason=environment_limited:webgl2_render_capability" -ForegroundColor Yellow
+            Write-Host "  这套无头浏览器给不出渲染器所需的 WebGL2 能力（详见 gate-web-capability-*.log）；" -ForegroundColor Yellow
+            Write-Host "  浏览器运行时证据本轮**未取得**，按 BLOCKED(3) 结束，不冒充通过。" -ForegroundColor Yellow
+            exit 3
+        }
+        Write-Host "web_capability_ok (无头浏览器可承载渲染器，继续跑完整 Web 证据链)" -ForegroundColor Green
+
+        $webScript = Join-Path $projectRoot "scripts/verify/verify-webgl.ps1"
             $webRun = & $runWebEvidence $webScript "browser"
             $webExit = $webRun.ExitCode
             if ($webExit -eq 1) {

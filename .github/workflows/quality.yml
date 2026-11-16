@@ -431,6 +431,14 @@ jobs:
           $log = "${{ github.workspace }}\artifacts\logs\quality\web-evidence.log"
           pwsh -NoProfile -File scripts/verify/verify.ps1 -Web 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
+          # exit 3 = 环境受限（这套无头浏览器给不出渲染器所需 WebGL2 能力）：显式 BLOCKED，
+          # 既不是通过也不是红。步骤不判红（与 wasm-lua 步对 exit 3 的既有处理一致），但状态
+          # 文件由 verify.ps1 落盘，原因同时进 job 日志与 annotation，保证"没有证据"可查。
+          if ($code -eq 3) {
+            Write-Host "::warning::web_evidence_blocked reason=environment_limited:webgl2_render_capability"
+            Write-Host "web_evidence_blocked reason=environment_limited（浏览器运行时证据本轮未取得；状态见 artifacts/logs/quality/web-evidence.status）"
+            exit 0
+          }
           # 判红之前先把"为什么红"摊在 job 日志里：这份日志此前只落工作区（失败时虽作为
           # artifact 上传，但要下载才看得到），job 日志里只留一个退出码——2026-11-02 排查
           # CI 时踩到，三次红都无从判断是哪一层。

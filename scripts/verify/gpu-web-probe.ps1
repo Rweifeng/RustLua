@@ -235,6 +235,16 @@ try { $probe = $json | ConvertFrom-Json } catch { }
 # 必须判红——那正是本片要抓的东西，把它归成"环境受限"等于把发现丢掉。
 if ($Stage -eq "render") {
     $renderFailures = @()
+    # 能力预检（2026-11-16）：软件光栅（ANGLE/SwiftShader）的 WebGL2 会报出可用上限却
+    # 在真正建纹理时抛 `GL_INVALID_ENUM`（如 `glTexStorage3D` target 不支持）。探针现在不再
+    # abort，而是把这归因成 `capability_blocked`。**这是环境缺口（BLOCKED=3），不是渲染器回归**：
+    # 真实硬件 WebGL2 上同样的代码路径必须走到"像素对拍"那一步才允许判红。
+    if ($probe -and $probe.capability_blocked) {
+        Write-Log "render_probe_blocked reason=capability error=$($probe.capability_reason)" Yellow
+        Write-Log "  ⇒ 这套 WebGL2 缺少渲染器所需能力（通常是软件光栅）；按 BLOCKED(3) 处理，不冒充通过也不判回归" Yellow
+        Set-Status 3
+        Exit-With 3
+    }
     $fatal = if ($probe) { $probe.fatal } else { $null }
     if ($fatal) {
         if ($fatal -match 'create_surface|request_adapter|no window|no document') {

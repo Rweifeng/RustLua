@@ -36,6 +36,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
 /// 探针用 canvas / 离屏贴图的边长：64×64 是 WebGL2 上最小且能满足 copy 行对齐（256 字节）的方便尺寸。
@@ -648,6 +649,40 @@ async fn run_render_probe() -> Result<Value, String> {
         .map_err(|error| format!("request_device: {error}"))?;
     set_stage("device_ok");
 
+    // 软件光栅（ANGLE/SwiftShader）的 WebGL2 是**不完全的**：它可能报出可用的资源上限，
+    // 却在真正建纹理/管线时抛 `GL_INVALID_ENUM`（实测 SwiftShader：`glTexStorage3D` 的
+    // target 直接不支持）。wgpu 对**未被 error scope 捕获**的校验错误走默认 handler →
+    // panic；本 crate 是 `panic=abort`，于是探针死成 `state=constructing`，PS 侧只能看到
+    // "exit 1"，把环境能力缺口误判成渲染器回归（2026-11-16 实测）。
+    //
+    // 这里装一个**全局**捕获器兜住漏网错误：不再 abort，而是把原话带回 JSON，供 PS 侧按
+    // `capability_blocked` 判 BLOCKED(3) 而不是 RED(1)。
+    let device_errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let sink = Arc::clone(&device_errors);
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            if let Ok(mut errors) = sink.lock() {
+                errors.push(error.to_string());
+            }
+        }));
+    }
+
+    // 能力预检之一：3D 贴图。渲染器的贴图路径（阴影分级/体积云等）会用到
+    // `TextureDimension::D3`；软件光栅的 WebGL2 若报 `max_texture_dimension_3d = 0`，
+    // 就**没有**继续渲染的意义——这是环境能力缺口，不是渲染器代码回归。
+    let device_3d_limit = device.limits().max_texture_dimension_3d;
+    if device_3d_limit == 0 {
+        set_stage("capability_blocked");
+        return Ok(json!({
+            "backend": format!("{:?}", info.backend),
+            "device_type": format!("{:?}", info.device_type),
+            "adapter_name": info.name,
+            "capability_blocked": true,
+            "capability_reason": "device 报 max_texture_dimension_3d = 0：这套 WebGL2（通常是软件光栅）不支持 3D 贴图，渲染器无意义继续",
+            "limits": { "device_3d": device_3d_limit },
+        }));
+    }
+
     // 真渲染器。走**异步**入口：wasm 上没有阻塞能力，`new_offscreen` 内部的
     // `pollster::block_on` 在 `thread::park_timeout` 未实现的平台上不该被使用。
     // `project_root = None` + 网格只引用内建白贴图 ⇒ 整条构造与渲染路径不碰文件系统。
@@ -669,9 +704,38 @@ async fn run_render_probe() -> Result<Value, String> {
     )
     .await;
     let construction_error = device.pop_error_scope().await;
+    // 把全局捕获器收到的错误一并纳入判断：有些 GL 层错误不走 error scope（走默认 handler），
+    // 那正是软件光栅上会 abort 的来源。这里统一按"能力缺口"归因，除非文本明显是渲染器自身问题。
+    let escaped_errors: Vec<String> = device_errors
+        .lock()
+        .map(|errors| errors.clone())
+        .unwrap_or_default();
+    let capability_signature = |text: &str| {
+        let lowered = text.to_ascii_lowercase();
+        lowered.contains("not supported")
+            || lowered.contains("gl_invalid")
+            || lowered.contains("texstorage3d")
+            || lowered.contains("3d texture")
+            || lowered.contains("target is not supported")
+    };
     let mut renderer = match created {
         Ok(renderer) => renderer,
-        Err(error) => return Err(format!("Renderer::new_offscreen_async: {error:#}")),
+        Err(error) => {
+            let text = format!("Renderer::new_offscreen_async: {error:#}");
+            if capability_signature(&text) || escaped_errors.iter().any(|e| capability_signature(e))
+            {
+                return Ok(json!({
+                    "backend": format!("{:?}", info.backend),
+                    "device_type": format!("{:?}", info.device_type),
+                    "adapter_name": info.name,
+                    "renderer_created": false,
+                    "capability_blocked": true,
+                    "capability_reason": text,
+                    "device_errors": escaped_errors,
+                }));
+            }
+            return Err(text);
+        }
     };
     set_stage(if construction_error.is_some() {
         "constructed_with_error"
@@ -681,6 +745,19 @@ async fn run_render_probe() -> Result<Value, String> {
     // 捕获到构造期校验错误时就**到此为止**：设备已经被拒过一次，继续渲染只会再抛一串错，
     // 而"哪一条管线被拒 + 原话"才是这一片要的结论。
     if let Some(error) = construction_error {
+        let text = error.to_string();
+        // 能力类错误 ⇒ 环境缺口（BLOCKED），交给 PS 侧判 3；其余仍按渲染器未完成态判红。
+        if capability_signature(&text) {
+            return Ok(json!({
+                "backend": format!("{:?}", info.backend),
+                "device_type": format!("{:?}", info.device_type),
+                "adapter_name": info.name,
+                "renderer_created": true,
+                "capability_blocked": true,
+                "capability_reason": text,
+                "device_errors": escaped_errors,
+            }));
+        }
         return Ok(json!({
             "backend": format!("{:?}", info.backend),
             "device_type": format!("{:?}", info.device_type),
@@ -692,8 +769,24 @@ async fn run_render_probe() -> Result<Value, String> {
                 "device_storage_buffers": device.limits().max_storage_buffers_per_shader_stage,
             },
             "renderer_created": true,
-            "construction_validation_error": error.to_string(),
+            "construction_validation_error": text,
+            "device_errors": escaped_errors,
             "blocker": "渲染器构造期被 WebGL2 拒绝：存储缓冲在 WebGL2 上不可用（max_storage_buffers_per_shader_stage=0）",
+        }));
+    }
+    // 构造期没报、但全局捕获器已经收到能力类错误：同样是环境缺口，不再往下渲染。
+    if escaped_errors
+        .iter()
+        .any(|error| capability_signature(error))
+    {
+        return Ok(json!({
+            "backend": format!("{:?}", info.backend),
+            "device_type": format!("{:?}", info.device_type),
+            "adapter_name": info.name,
+            "renderer_created": true,
+            "capability_blocked": true,
+            "capability_reason": escaped_errors.join(" | "),
+            "device_errors": escaped_errors,
         }));
     }
 
