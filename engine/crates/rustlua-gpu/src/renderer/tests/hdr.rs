@@ -286,7 +286,9 @@ fn ssr_misses_fall_back_to_the_procedural_sky() {
         "云要回射自己的受光色（P3-R179）：只做透射衰减会让深云区变成比周围更蓝的洞；\
          回射权重 0.14 必须小于遮挡的 0.85，净能量才会随云量下降"
     );
-    let construct = include_str!("../construct.rs");
+    // `construct.rs` 在 Windows 的 autocrlf 检出里是 CRLF，多行 `contains` 只写 `\n` 会在本机假红
+    // （CI 的 checkout 是 LF）。归一化换行，让本地与 CI 判据一致。
+    let construct = include_str!("../construct.rs").replace("\r\n", "\n");
     assert!(
         construct.contains("min_binding_size: wgpu::BufferSize::new(176),")
             && construct.contains("label: Some(\"rustlua-ssr-params\"),\n            size: 176,"),

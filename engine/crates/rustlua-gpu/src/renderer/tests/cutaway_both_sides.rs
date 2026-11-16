@@ -255,7 +255,9 @@ fn the_dial_forces_the_color_pass_and_leaves_shadows_alone() {
         color.contains("draw.material.double_sided || cutaway_both_sides"),
         "主网格通道的双面轴必须或上本帧的裁剪面守卫，否则这条档换了管线也没人画背面"
     );
-    let construct = include_str!("../construct.rs");
+    // `construct.rs` 在 Windows 的 autocrlf 检出里是 CRLF，多行 `contains` 只写 `\n` 会在本机假红
+    // （CI 的 checkout 是 LF）。归一化换行，让本地与 CI 判据一致。
+    let construct = include_str!("../construct.rs").replace("\r\n", "\n");
     assert!(
         construct.contains("let double_sided = draw.material.double_sided || cutaway_both_sides;"),
         "构造期的预热选键必须和主通道同式，否则运行期撞上「变体未在构造期预编译」的 panic"
