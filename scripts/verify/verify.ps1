@@ -1990,12 +1990,20 @@ if ($Benchmarks) {
     }
     foreach ($stair in $sceneFrameReport.hierarchy_stairs) {
         $share = [double]$stair.spatial_share_pct
+        # 静态档（整棵层级不动）的**正确**读数就是"全跳过"：propagate_us=0、share=0、
+        # recomputed_p50=0，跳过生效的证据是 skips_p50>0（docs/54 §11.1 的主张）。
+        # 2026-11-16 的 gates 红就是这个：判据原先要求静态 propagate_us>0/share>0，而 11-06
+        # 把层级脏标记做到"真跳过"之后，静态档必然为 0 ⇒ 这条门恒假（本地可复现：
+        # propagate_us=0 skips=3 share=0）。改成判"跳过真的发生 + 一个都没重算 + 没有传播耗时"，
+        # 比原来的 >0 更严；"测量活着"由后面的 moving 相位负责（仍要求 >0 且严格大于静态档）。
         if ([int]$stair.entities -le 0 -or [int]$stair.chains -le 0 -or
-            [int]$stair.chain_depth -le 0 -or [int]$stair.spatial_propagate_us -le 0 -or
-            [int]$stair.spatial_skips_p50 -le 0 -or $share -le 0 -or $share -gt 100) {
-            throw ("hierarchy stair metrics invalid for entities={0}: propagate_us={1} skips={2} share={3}" -f `
+            [int]$stair.chain_depth -le 0 -or [int]$stair.spatial_skips_p50 -le 0 -or
+            [int]$stair.spatial_recomputed_p50 -ne 0 -or
+            [int]$stair.spatial_propagate_us -ne 0 -or [Math]::Abs($share) -gt 0.001) {
+            throw ("hierarchy static stair must skip everything but recompute nothing " +
+                "for entities={0}: propagate_us={1} skips={2} recomputed={3} share={4}" -f `
                 $stair.entities, $stair.spatial_propagate_us, $stair.spatial_skips_p50, `
-                $stair.spatial_share_pct)
+                $stair.spatial_recomputed_p50, $stair.spatial_share_pct)
         }
         foreach ($phase in @('moving_one', 'moving')) {
             $moving = $stair.$phase
@@ -2003,9 +2011,11 @@ if ($Benchmarks) {
                 throw ("hierarchy stair missing {0} phase for entities={1}" -f $phase, $stair.entities)
             }
             $movingShare = [double]$moving.spatial_share_pct
-            if ([int]$moving.spatial_propagate_us -le 0 -or $movingShare -le 0 -or $movingShare -gt 100) {
-                throw ("hierarchy {0} phase metrics invalid for entities={1}: propagate_us={2} share={3}" -f `
-                    $phase, $stair.entities, $moving.spatial_propagate_us, $moving.spatial_share_pct)
+            if ([int]$moving.spatial_propagate_us -le 0 -or [int]$moving.spatial_recomputed_p50 -le 0 -or
+                $movingShare -le 0 -or $movingShare -gt 100) {
+                throw ("hierarchy {0} phase metrics invalid for entities={1}: propagate_us={2} recomputed={3} share={4}" -f `
+                    $phase, $stair.entities, $moving.spatial_propagate_us, `
+                    $moving.spatial_recomputed_p50, $moving.spatial_share_pct)
             }
             if ([int]$moving.spatial_propagate_us -le [int]$stair.spatial_propagate_us) {
                 throw ("hierarchy {0} phase does not cost more than the skipped static phase for entities={1}: " +
