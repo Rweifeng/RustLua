@@ -2,7 +2,7 @@
 //!
 //! 只做**合成原语**（振荡器 + 噪声 + ADSR 包络 + biquad 滤波），不含"调得像枪声/引擎"的预设——
 //! 那部分是人耳定标，不进机器门（计划 §范围）。本模块**平台无关**（不碰 rodio/设备）：
-//! 桌面设备把 [`render_samples`] 的采样包成 rodio `SamplesBuffer` 挂上 Sink；平台出口（web/微信）
+//! 桌面设备把 [`crate::synth::render_samples`] 的采样包成 rodio `SamplesBuffer` 挂上 Sink；平台出口（web/微信）
 //! 的合成另走各自的音频 buffer（本批不宣称真机绿）。
 //!
 //! 确定性：同 spec + 同采样率 → 同采样（噪声用整数 LCG，正弦用 `sin`——音频门只断言 RMS/峰值，
