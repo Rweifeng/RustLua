@@ -840,6 +840,19 @@ mod imp {
             Ok(())
         }
 
+        /// 合成音效（M82 C 批）：本目标没有合成出口。正常路径在 `AudioSystem::synth` 的
+        /// 平台出口 / `is_open` 分叉就返回了；真走到这里说明宿主没装出口，按"不支持"失败，
+        /// 不假装发出过声音。
+        pub(crate) fn play_samples(
+            &mut self,
+            _samples: Vec<f32>,
+            _volume: f32,
+        ) -> Result<(), AudioError> {
+            Err(AudioError::Device(
+                "本目标没有合成音频出口（wasm/微信由宿主装 AudioSinkProvider）".to_owned(),
+            ))
+        }
+
         pub(crate) fn play_spatial(
             &mut self,
             _bytes: Vec<u8>,
