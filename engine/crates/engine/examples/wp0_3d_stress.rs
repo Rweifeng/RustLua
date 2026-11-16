@@ -427,7 +427,13 @@ fn build_scene(mesh_count: usize) -> Scene {
                 "direction=0.4,-0.8,0.5;color=1,1,1;intensity=1".into(),
             );
     }
-    for index in 0..mesh_count {
+    // M83-07 诊断开关（默认不变）：`WP0_NO_MESHES=1` 生成"只有相机/灯光、零网格"的场景，
+    // 用来把渲染段的分配拆成"每帧脚手架"与"逐 drawable 收集"两部分。
+    let no_meshes = std::env::var("WP0_NO_MESHES")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let mesh_total = if no_meshes { 0 } else { mesh_count };
+    for index in 0..mesh_total {
         let id = SceneEntityId(index as u64 + 3);
         scene.add_entity(id, format!("Mesh{index}"), None).unwrap();
         let (x, z) = instance_position(index, mesh_count);
