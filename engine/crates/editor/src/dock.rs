@@ -984,6 +984,72 @@ mod tests {
         );
     }
 
+    /// 打开再关掉图面板，Scene 的宽度必须**原样回来**。
+    ///
+    /// 按需进入的图类面板（`.vgraph` 的 Graph、特效的 ShaderGraph）走 `add_tab` 的
+    /// `Split::Right(0.34)`——打开时把 Scene 让出三分之一是合理的（用户主动要看图）。
+    /// 但"关掉之后呢"此前没人钉：
+    ///
+    /// - `remove_tab` 在叶子空了时会 `remove_leaf`，理论上空间会归还；
+    /// - 可一旦哪天有人为了"记住落点"把空叶子留着，Scene 就会**永久窄掉**，
+    ///   而没有任何用例会发现——它不报错，只是编辑器看起来一直挤。
+    ///
+    /// 这条用例走真实帧：开 → 关 → 再画一帧，比较两次 Scene 宽度。
+    #[test]
+    fn closing_a_side_panel_gives_the_scene_its_width_back() {
+        let mut app = sample_app();
+
+        let frame = |app: &mut EditorApp| {
+            let context = egui::Context::default();
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(NOMINAL_WIDTH, NOMINAL_HEIGHT),
+                )),
+                ..Default::default()
+            };
+            let _ = context.run(raw, |context| show_workspace(context, app));
+            let state = app.dock_state.take().expect("帧末必须放回 dock 树");
+            let width = rect_of(&state, DockTab::Scene).width();
+            app.dock_state = Some(state);
+            width
+        };
+
+        let baseline = frame(&mut app);
+        assert!(baseline > 0.0, "基线帧的 Scene 宽度应大于 0");
+
+        // 打开：空间让出三分之一。
+        //
+        // 不经 `open_graph_resource`（样板工程里没有 `.vgraph`，打开失败就不会显示面板），
+        // 直接拨开关 + `sync_visibility`——这正是双击资源之后走的那同一条补入路径。
+        app.show_graph_panel = true;
+        {
+            let mut state = app.dock_state.take().expect("dock 树应在 app 里");
+            sync_visibility(&mut state, &app);
+            app.dock_state = Some(state);
+        }
+        let opened = frame(&mut app);
+        assert!(
+            opened < baseline,
+            "打开图面板后 Scene 应让出宽度：{baseline:.1} → {opened:.1}"
+        );
+
+        // 关掉：必须原样回来。
+        app.show_graph_panel = false;
+        {
+            let mut state = app.dock_state.take().expect("dock 树应在 app 里");
+            sync_visibility(&mut state, &app);
+            app.dock_state = Some(state);
+        }
+        let closed = frame(&mut app);
+        assert!(
+            (closed - baseline).abs() < 2.0,
+            "关掉图面板后 Scene 宽度应恢复：基线 {baseline:.1}，关闭后 {closed:.1}。\
+             差值 {:.1} 说明空叶子没被回收，Scene 会永久窄掉",
+            (closed - baseline).abs()
+        );
+    }
+
     /// **阶段 1 的核心验收**：默认树画出来的几何就是迁移前那套固定面板布局
     /// （左列 200+240、中央 Scene/Game、右侧属性 360、底部控制台 150）。
     ///
