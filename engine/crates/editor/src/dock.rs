@@ -48,6 +48,9 @@ pub(crate) enum DockTab {
     /// P3-E03-2 可视化脚本画布：默认不在树里，双击 `.vgraph` 资源时由 `sync_visibility` 补入。
     Graph,
     /// M83 面向非 shader 开发者的可视化特效节点面板。
+    ///
+    /// **默认在树里**（`show_shader_graph: true`），但落点是"Scene 标签组的第二个标签"，
+    /// 不是右侧新分裂——见 `insert_shader_graph_beside_scene` 里的历史说明。
     ShaderGraph,
     /// M76-04 UI Studio：默认不在树里，View 菜单打开时补入中央标签组。
     UiStudio,
@@ -172,7 +175,31 @@ pub(crate) fn default_dock_state() -> DockState<DockTab> {
     );
     // E01-3：时间线与控制台同叶，控制台仍是活动标签——升级首帧的观感保持不变。
     insert_timeline_beside_console(tree);
+    // M83：特效节点面板默认可见（`show_shader_graph: true`），但它**不该切掉 Scene 的宽度**。
+    //
+    // 历史：它原本不在默认树里，靠首帧 `sync_visibility` → `add_tab` 补入，而 `add_tab`
+    // 走的是 `Split::Right(0.34)`——于是首帧 Scene 只剩约 2/3 宽（1280 下 513 → 338），
+    // 与"默认布局沿用迁移前面板"的承诺矛盾。这里改成与助手/时间线同一套做法：
+    // 插成中央标签组的第二个标签，Scene 保持活动、几何一字不变。
+    insert_shader_graph_beside_scene(tree);
     state
+}
+
+/// 把特效节点面板插进 Scene 所在叶子的第二个位置，然后把活动标签还原成 Scene。
+///
+/// 与 [`insert_assistant_beside_inspector`] / [`insert_timeline_beside_console`] 同一套：
+/// 默认树里的"新增面板"一律是**同叶的第二标签**，不改变任何已有面板的几何。
+fn insert_shader_graph_beside_scene(tree: &mut Tree<DockTab>) {
+    let Some((node, index)) = tree.find_tab_from(|candidate| *candidate == DockTab::Scene) else {
+        tree.push_to_first_leaf(DockTab::ShaderGraph);
+        return;
+    };
+    let Node::Leaf(leaf) = &mut tree[node] else {
+        tree.push_to_first_leaf(DockTab::ShaderGraph);
+        return;
+    };
+    leaf.insert_tab(index.0 + 1, DockTab::ShaderGraph);
+    leaf.set_active_tab(index);
 }
 
 /// 把时间线插进控制台所在叶子的第二个位置，然后把活动标签还原成控制台。
@@ -802,6 +829,13 @@ mod tests {
     use crate::EditorApp;
     use rustlua_infra::logging::LogSink;
 
+    /// 默认树里常驻标签的数量。
+    ///
+    /// 计数断言一律以它为基准，而不是写死数字：新增常驻面板时只改这一处，
+    /// 其余用例自动跟上。历史上 M83 的 `ShaderGraph` 进树时，6 处写死的 `8` 同时变红，
+    /// 而这 6 条用例本身都没有错——它们只是把"常量"抄了 6 遍。
+    const RESIDENT_TAB_COUNT: usize = 9;
+
     fn sample_app() -> EditorApp {
         let root =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
@@ -882,7 +916,7 @@ mod tests {
         }
     }
 
-    /// 默认树必须覆盖迁移前的六个面板区，外加 M75-03 的助手与 P3-E01-3 的时间线标签。
+    /// 默认树必须覆盖迁移前的六个面板区，外加助手、时间线与特效节点三张常驻标签。
     #[test]
     fn default_tree_has_every_previous_panel_region() {
         let mut tabs = tabs_of(&default_dock_state());
@@ -898,7 +932,41 @@ mod tests {
                 DockTab::Assistant,
                 DockTab::Console,
                 DockTab::Timeline,
+                DockTab::ShaderGraph,
             ]
+        );
+    }
+
+    /// 特效节点面板**不许**改变已有面板的几何。
+    ///
+    /// 它曾经靠在首帧 `sync_visibility` → `add_tab` 里补入，而那条路走 `Split::Right(0.34)`，
+    /// 于是首帧 Scene 从 513 宽掉到 338。这条用例把"新增面板一律同叶第二标签"钉住：
+    /// 只要有人再把它改成右侧分裂，这里立刻红。
+    #[test]
+    fn shader_graph_shares_the_scene_leaf_and_keeps_scene_active() {
+        let state = default_dock_state();
+        let tree = state.main_surface();
+        let scene = tree.find_tab_from(|tab| *tab == DockTab::Scene);
+        let shader = tree.find_tab_from(|tab| *tab == DockTab::ShaderGraph);
+        assert_eq!(
+            scene.map(|(node, _)| node),
+            shader.map(|(node, _)| node),
+            "ShaderGraph 必须与 Scene 同叶（同叶 = 不占额外宽度）"
+        );
+        let scene_index = scene.expect("Scene 必须在默认树里").1;
+        let shader_index = shader.expect("ShaderGraph 必须在默认树里").1;
+        assert_eq!(
+            shader_index.0,
+            scene_index.0 + 1,
+            "ShaderGraph 应紧跟 Scene"
+        );
+        let Node::Leaf(leaf) = &tree[scene.expect("Scene").0] else {
+            panic!("Scene 所在节点应为叶子");
+        };
+        assert_eq!(
+            leaf.tabs().get(leaf.active.0),
+            Some(&DockTab::Scene),
+            "Scene 必须保持活动标签，否则首帧看到的就不是场景了"
         );
     }
 
@@ -1028,14 +1096,14 @@ mod tests {
         assert!(!hidden.contains(&DockTab::Resource), "资源面板应被移除");
         assert!(!hidden.contains(&DockTab::Console), "控制台应被移除");
         assert!(!hidden.contains(&DockTab::Timeline), "时间线应被移除");
-        assert_eq!(hidden.len(), 5, "其余标签不受影响");
+        assert_eq!(hidden.len(), RESIDENT_TAB_COUNT - 3, "其余标签不受影响");
 
         editor.show_resources_panel = true;
         editor.show_lua_console = true;
         editor.show_timeline_panel = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 8, "重新显示后标签数复原");
+        assert_eq!(shown.len(), RESIDENT_TAB_COUNT, "重新显示后标签数复原");
         assert!(shown.contains(&DockTab::Resource));
         assert!(shown.contains(&DockTab::Console));
         assert!(shown.contains(&DockTab::Timeline));
@@ -1055,14 +1123,22 @@ mod tests {
         for tab in [DockTab::Hierarchy, DockTab::Inspector, DockTab::Scene] {
             assert!(!hidden.contains(&tab), "{tab:?} 应被移除");
         }
-        assert_eq!(hidden.len(), 5, "其余标签不受影响：{hidden:?}");
+        assert_eq!(
+            hidden.len(),
+            RESIDENT_TAB_COUNT - 3,
+            "其余标签不受影响：{hidden:?}"
+        );
 
         editor.show_hierarchy_panel = true;
         editor.show_inspector_panel = true;
         editor.show_scene_view = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 8, "重新显示后标签数复原：{shown:?}");
+        assert_eq!(
+            shown.len(),
+            RESIDENT_TAB_COUNT,
+            "重新显示后标签数复原：{shown:?}"
+        );
         let node_of = |state: &mut DockState<DockTab>, tab: DockTab| {
             state
                 .main_surface_mut()
@@ -1198,7 +1274,11 @@ mod tests {
             let _ = context.run(raw, |context| show_workspace(context, &mut app));
         }
         let state = app.dock_state.take().expect("帧末必须放回 dock 树");
-        assert_eq!(tabs_of(&state).len(), 8, "小窗口不得丢标签");
+        assert_eq!(
+            tabs_of(&state).len(),
+            RESIDENT_TAB_COUNT,
+            "小窗口不得丢标签"
+        );
     }
 
     /// 结构可读转写（与 [`signature`] 同一趟遍历）：指纹撞车时用它打印出到底哪不同。
@@ -1483,8 +1563,15 @@ mod tests {
             tabs.sort_by_key(|tab| *tab as u8);
             let count = tabs.len();
             tabs.dedup();
-            assert_eq!(count, 8, "step {step}（{note}）标签总数变成 {count}");
-            assert_eq!(tabs.len(), 8, "step {step}（{note}）出现重复标签");
+            assert_eq!(
+                count, RESIDENT_TAB_COUNT,
+                "step {step}（{note}）标签总数变成 {count}"
+            );
+            assert_eq!(
+                tabs.len(),
+                RESIDENT_TAB_COUNT,
+                "step {step}（{note}）出现重复标签"
+            );
             assert!(
                 serialize(&state).is_some(),
                 "step {step}（{note}）重排后的树写不进 layout.json"

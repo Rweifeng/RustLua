@@ -272,7 +272,17 @@ fn the_three_layout_startup_states_all_land_on_a_usable_default_tree() {
     // ① 全新项目：没有文件 → 默认树，而且**不许报警**（首启就弹"布局损坏"是错的）。
     let (fresh, tree, tabs) = boot(None);
     assert_eq!(tree, default_tree, "全新项目必须是默认面板树");
-    assert_eq!(tabs.len(), 8, "默认树要八个常驻视图都在：{tabs:?}");
+    // 常驻视图的数量以默认树为准（`crate::dock::default_dock_state()`），不在这里抄一份数字：
+    // 新增常驻面板时这条会自动跟上，而不是变成一条"看起来在守、其实只是记了旧数量"的门。
+    let expected_tabs = {
+        let state = crate::dock::default_dock_state();
+        state.iter_all_tabs().count()
+    };
+    assert_eq!(
+        tabs.len(),
+        expected_tabs,
+        "默认树的常驻视图必须全部在树里：{tabs:?}"
+    );
     assert!(
         fresh.console_notices.is_empty(),
         "全新项目不该有布局提示：{:?}",
@@ -284,7 +294,11 @@ fn the_three_layout_startup_states_all_land_on_a_usable_default_tree() {
     let truncated = "{\"version\": 2, \"dock_tree\": {";
     let (broken, tree, tabs) = boot(Some(truncated));
     assert_eq!(tree, default_tree, "损坏必须整棵回落默认，不能留半棵树");
-    assert_eq!(tabs.len(), 8, "损坏回落后八个常驻视图都在：{tabs:?}");
+    assert_eq!(
+        tabs.len(),
+        expected_tabs,
+        "损坏回落后全部常驻视图都在：{tabs:?}"
+    );
     assert!(
         broken.status.contains("损坏"),
         "状态栏要说明为什么用默认布局：{}",
@@ -301,7 +315,11 @@ fn the_three_layout_startup_states_all_land_on_a_usable_default_tree() {
     let bogus_tree = "{\"version\": 2, \"dock_tree\": {\"nodes\": [[\"NoSuchPanel\"]]}}";
     let (mismatched, tree, tabs) = boot(Some(bogus_tree));
     assert_eq!(tree, default_tree, "认不出的树必须整棵回落默认：{tree}");
-    assert_eq!(tabs.len(), 8, "回落后八个常驻视图都在：{tabs:?}");
+    assert_eq!(
+        tabs.len(),
+        expected_tabs,
+        "回落后全部常驻视图都在：{tabs:?}"
+    );
     assert!(
         mismatched.layout.dock_tree.is_some(),
         "回落后仍要留着文件里那棵坏树，它是用户的原始数据"
