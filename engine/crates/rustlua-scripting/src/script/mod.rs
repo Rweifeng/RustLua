@@ -1,7 +1,7 @@
 use mlua::{Lua, Result as LuaResult, Value};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -64,8 +64,6 @@ use domain::math::math3d::Vec3;
 use domain::scene::scene::SceneEntityId;
 use error::ScriptFingerprint;
 use values::{format_lua_value, lua_value_to_json};
-// `ui` 的运行期元素类型跟着状态单元搬去了 UI 域（P1 ⑤-12），路径保持不变以便宿主继续用。
-pub use domain::{UiBar, UiDrag, UiText};
 // WP11-USE:END
 
 /// 运行期 API 面的**事实源探针**：遍历 `_G`，剔除 Lua 标准库，导出「模块表 → 函数名（排序）」。
@@ -116,50 +114,57 @@ use crate::script::domain::ecs::tilemap::Tilemap;
 #[cfg(test)]
 use crate::script::domain::ecs::transform::Transform;
 
-/// 运行期 spawn 的 UI 预设布局节点表 + **修订号**。
-///
-/// 宿主每帧都要先回答"这张表变没变"，才能决定要不要把节点并进自己的场景表。原来的做法是
-/// **整表 clone 出来再 `==`**（`docs/60` §10.3 第 2 条）：表没变时白白复制一份，而表一旦非空
-/// ——UI 预设化之后 `prefab.spawn` 会往里塞每个面板的布局节点——这份拷贝就**每帧都付**，
-/// 而且比较本身也是 O(n)。把修订号与表放进**同一个类型**、改动只能经下面这几个方法，
-/// **修订号不可能忘记自增**（与 `EntityNames` 的反查缓存同一个理由：靠人记必然漂移）。
-///
-/// 修订号单调递增，**不做"内容没变就不加"的优化**：多一次同步只是多付一次合并，漏一次同步
-/// 却会让画面与命中框停在旧版上——两者代价不对称，所以宁多勿漏。
-#[derive(Debug, Default)]
-struct PrefabUiNodes {
-    nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
-    revision: u64,
-}
+/// 组合根注入的 `prefab.set_text` 写入端口（Debug 包装，见 [`ScriptState::prefab_text_writer`]）。
+pub(crate) struct PrefabTextPort(
+    Box<dyn Fn(&Handle<crate::script::domain::ecs::world::World>, EntityId, &str) -> bool>,
+);
 
-impl PrefabUiNodes {
-    fn clear(&mut self) {
-        self.nodes.clear();
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    fn remove(&mut self, key: &u64) {
-        self.nodes.remove(key);
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    fn extend(
-        &mut self,
-        nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
-    ) {
-        self.nodes.extend(nodes);
-        self.revision = self.revision.wrapping_add(1);
-    }
-
-    fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    /// 给宿主的整表快照（宿主只在修订号变了之后才来取，所以这里 clone 一次是应该付的）。
-    fn snapshot(&self) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
-        self.nodes.clone()
+impl std::fmt::Debug for PrefabTextPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrefabTextPort")
     }
 }
+
+/// 组合根注入的 `prefab.set_rect` 写入端口（Debug 包装，见 [`ScriptState::prefab_rect_writer`]）。
+pub(crate) struct PrefabRectPort(
+    Box<
+        dyn Fn(
+            &Handle<crate::script::domain::ecs::world::World>,
+            EntityId,
+            &str,
+            [f32; 4],
+        ) -> Option<String>,
+    >,
+);
+
+impl std::fmt::Debug for PrefabRectPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrefabRectPort")
+    }
+}
+
+/// 运行期 prefab 实例重建布局节点所需的最小中立视图（宿主解算场景 UI 矩形用）。
+///
+/// 布局节点表（`UiSceneNode`）的计算已外移到宿主（UI 域类型不入本层）：本层只维护
+/// **事实源**（实例登记表 + 组件串 + 隐藏子树根）与**修订号**，宿主看到修订号变了就
+/// 拉这份视图重建整张节点表。
+#[derive(Clone, Debug)]
+pub struct PrefabLayoutInstance {
+    /// 本实例每个节点的作者数据（槽位号 → 父槽位 + 组件串的当前值）。
+    pub sources: Vec<PrefabLayoutSource>,
+    /// 被隐藏的子树根（槽位号）：隐藏性沿父链向下继承，由宿主在重建时展开。
+    pub hidden: BTreeSet<u64>,
+}
+
+/// [`PrefabLayoutInstance::sources`] 的单项：类型全是基础数据，宿主拿去拼 UI 域的节点源。
+#[derive(Clone, Debug)]
+pub struct PrefabLayoutSource {
+    pub key: u64,
+    pub parent: Option<u64>,
+    pub components: BTreeMap<String, String>,
+}
+
+/// 一帧里最多排多少条待派发的 GPU burst（P3-R07-2）。
 
 /// 一帧里最多排多少条待派发的 GPU burst（P3-R07-2）。
 ///
@@ -328,14 +333,18 @@ pub(crate) struct ScriptState {
     /// `scene_spawn::PrefabSpawn` 头注释）。
     prefab_spawns: HashMap<i64, scene_spawn::PrefabSpawn>,
     next_prefab_handle: i64,
-    /// 运行期 spawn 出去的 UI 预设实体的**布局节点**（键 = 活实体槽位号）。
-    /// 宿主每帧解算场景 UI 矩形时把这张表并进自己的快照，于是"画得出"与"点得中"
-    /// 对 spawn 的实体同样成立；场景加载那一份走同一个 builder（见
-    /// `rustlua_ui::ui_scene_layout::build_ui_scene_nodes`）。
-    ///
-    /// 表与**修订号**封在一个类型里（[`PrefabUiNodes`]）：宿主先比修订号，没变就**一次 clone 都不做**
-    /// ——原来的写法是每帧整表 clone 再 `==`，UI 预设化之后那张表是非空的，代价每帧都付。
-    prefab_ui_nodes: PrefabUiNodes,
+    /// 运行期 spawn 的 UI 预设实体的**布局修订号**：spawn / despawn / set_rect /
+    /// set_visible / 切图清场都会自增。宿主每帧先比修订号，变了才拉
+    /// [`LuaRuntime::prefab_ui_layout_sources`] 重建整张节点表（节点计算已外移宿主，
+    /// UI 域类型不入本层）。宁多勿漏：多付一次重建，漏一次会让画面与命中框停在旧版上。
+    prefab_ui_revision: u64,
+    /// `prefab.set_text` 的世界写入端口（组合根注入，UI 域类型不入本层）：
+    /// 按 id 改场景 `Text` 组件的文字，不动字体/字号/颜色。返回 `false` = 该节点没有 Text 组件。
+    /// 包装只是为了让 [`ScriptState`] 的 `derive(Debug)` 能容纳函数端口。
+    prefab_text_writer: Option<PrefabTextPort>,
+    /// `prefab.set_rect` 的世界写入端口（组合根注入）：按 authored 的 `UiLayout` 串改四边
+    /// 并写回世界。返回 `None` = 串无效；返回新串供登记表事实源更新。
+    prefab_rect_writer: Option<PrefabRectPort>,
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
     /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
     scene_parent_issues: Vec<String>,
@@ -632,27 +641,65 @@ impl LuaRuntime {
         self.installers.set_root(Some(root));
     }
 
-    /// 运行期 spawn 的 UI 预设实体的布局节点（键 = 活实体槽位号）。宿主每帧解算场景
-    /// UI 矩形前把它并进自己的快照，spawn 出来的 UI 才既画得出也点得中。
-    ///
-    /// 返回**克隆**而不是引用：`RefCell<ScriptState>` 借用期间脚本不能再借用，而宿主
-    /// 解算布局时还要 `with_world`（同一个 state 的另一个字段）。
-    ///
-    /// **调用方应当先看 [`Self::prefab_ui_nodes_revision`]**：修订号没变就跳过这一次克隆。
-    /// （原来这里写着"空表 = 不付额外拷贝成本"——**那句话是错的**：宿主是**先**调本方法拿到克隆、
-    /// **再**比较是否为空，所以空表也要先复制一次；宿主侧已改成先比修订号。）
+    /// 运行期 spawn 的 UI 预设布局的**修订号**：spawn / despawn / set_rect / set_visible /
+    /// 切图清场都会自增。宿主每帧先比这个数，未变即跳过整表重建（见 `docs/60` §10.3 第 2 条）。
     #[must_use]
-    pub fn prefab_ui_nodes(
-        &self,
-    ) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
-        self.state.borrow().prefab_ui_nodes.snapshot()
+    pub fn prefab_ui_layout_revision(&self) -> u64 {
+        self.state.borrow().prefab_ui_revision
     }
 
-    /// [`Self::prefab_ui_nodes`] 的修订号：**只在表真的被动过之后才变**。
-    /// 宿主每帧先比这个数，未变即跳过整表克隆与 `==` 比较（见 `docs/60` §10.3 第 2 条）。
+    /// 运行期 spawn 的全部实例的中立布局视图（键 = 活实体槽位号）。布局节点的计算
+    /// 已外移宿主（`UiSceneNode` 是 UI 域类型，不入本层）：宿主在修订号变了之后拉这份
+    /// 视图，用 UI 域的 builder 重建整张节点表。
+    ///
+    /// 返回**克隆**而不是引用：`RefCell<ScriptState>` 借用期间脚本不能再借用，而宿主
+    /// 重建时还要 `with_world`（同一个 state 的另一个字段）。
+    ///
+    /// **调用方应当先看 [`Self::prefab_ui_layout_revision`]**：修订号没变就跳过这一次克隆。
     #[must_use]
-    pub fn prefab_ui_nodes_revision(&self) -> u64 {
-        self.state.borrow().prefab_ui_nodes.revision()
+    pub fn prefab_ui_layout_sources(&self) -> Vec<PrefabLayoutInstance> {
+        let state = self.state.borrow();
+        state
+            .prefab_spawns
+            .values()
+            .map(|spawn| PrefabLayoutInstance {
+                sources: spawn
+                    .sources
+                    .values()
+                    .map(|source| PrefabLayoutSource {
+                        key: source.key,
+                        parent: source.parent,
+                        components: source.components.clone(),
+                    })
+                    .collect(),
+                hidden: spawn.hidden.clone(),
+            })
+            .collect()
+    }
+
+    /// `prefab.set_text` / `prefab.set_rect` 的世界写入端口（组合根注入）。
+    ///
+    /// `Text` / `UiLayout` 组件的类型住在 UI 域，本层不能出现它们；两个写入闭包由
+    /// 组合根用 `rustlua_ui` 的类型实现后注入（见 `engine::host::script_packs`）。
+    pub fn set_prefab_ui_helpers(
+        &mut self,
+        text_writer: impl Fn(
+            &Handle<crate::script::domain::ecs::world::World>,
+            EntityId,
+            &str,
+        ) -> bool
+        + 'static,
+        rect_writer: impl Fn(
+            &Handle<crate::script::domain::ecs::world::World>,
+            EntityId,
+            &str,
+            [f32; 4],
+        ) -> Option<String>
+        + 'static,
+    ) {
+        let mut state = self.state.borrow_mut();
+        state.prefab_text_writer = Some(PrefabTextPort(Box::new(text_writer)));
+        state.prefab_rect_writer = Some(PrefabRectPort(Box::new(rect_writer)));
     }
 
     /// 运行期 spawn 实例的「活实体槽位号 → 实体名」，键空间与 [`Self::prefab_ui_nodes`] 一致。

@@ -337,6 +337,33 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
             Ok(())
         }))        .expect("interact.prompt 安装失败：表由 ECS 域建好，取不到说明装配顺序变了");
 
+    // ── ⑫ `prefab.set_text` / `prefab.set_rect` 的世界写入端口 ────────────
+    // `Text` / `UiLayout` 组件的类型住在 UI 域，脚本层不能出现它们；这两个端口由组合根
+    // 用 `rustlua_ui` 的类型实现后注入。重入借不到世界时按"写不进"处理（与原实现一致）。
+    script.set_prefab_ui_helpers(
+        |world, id, text| {
+            let Ok(mut world) = world.borrow_mut() else {
+                return false;
+            };
+            world
+                .get_mut::<rustlua_ui::ui::UiText>(id)
+                .ok()
+                .flatten()
+                .map(|component| component.text = text.to_owned())
+                .is_some()
+        },
+        |world, id, raw, edges| {
+            let Ok(mut world) = world.borrow_mut() else {
+                return None;
+            };
+            let mut layout = rustlua_ui::ui_layout::UiRectLayout::from_component_str(raw).ok()?;
+            layout.offsets = edges;
+            let updated = layout.to_component_str();
+            world.insert(id, layout).ok()?;
+            Some(updated)
+        },
+    );
+
     // 切场景：UI 动态层与导航栈的实体 id 随世界作废（viewport/reference 保留）。
     let ui_transition = ui.clone();
     let nav_transition = nav.clone();

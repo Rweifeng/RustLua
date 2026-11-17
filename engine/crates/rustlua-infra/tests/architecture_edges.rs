@@ -162,8 +162,12 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 改成 `scene.step_physics(..)`；`tilemap` 安装要实体账本，复用 `entity_state_handle()`
     // （ecs 能力单元，不开新方向）。
     //
-    // 剩余 8 条领域依赖 + `lua-api` 契约层里，gameplay/ui 的绑定仍是
+    // 剩余 7 条领域依赖 + `lua-api` 契约层里，gameplay 的绑定仍是
     // "借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
+    // `ui` 已于 P1 阶段 4d（2026-11-17）从这张表里删掉：七处 Lua 绑定、
+    // 15 类组件装配、宿主访问器、prefab 布局节点计算全部归组合根
+    // （`engine::host::script_packs` / `runtime_scene::ui_driver` / `mesh_ui`），
+    // 它退成 dev-dependencies（只为测试装表与断言语义）。
     // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
     // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
     (
@@ -176,7 +180,6 @@ const BUDGET: &[(&str, &[&str])] = &[
             "math",
             "render",
             "scene",
-            "ui",
             "visual-script",
         ],
     ),

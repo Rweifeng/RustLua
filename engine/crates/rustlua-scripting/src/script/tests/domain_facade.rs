@@ -25,9 +25,9 @@ const PINNED_ALIASES: &[(&str, &str)] = &[
     ("math", "rustlua_math"),
     ("render", "rustlua_render"),
     ("scene", "rustlua_scene"),
-    ("ui", "rustlua_ui"),
     ("visual_script", "rustlua_visual_script"),
 ];
+// ui 域已从脚本层的生产依赖里移除（docs/62 P1 阶段 4d），不再是门面登记项。
 
 fn script_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/script")

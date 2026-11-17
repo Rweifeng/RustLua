@@ -22,7 +22,6 @@ rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-render = { path = "../rustlua-render" }
-rustlua-ui = { path = "../rustlua-ui" }
 # 时钟：wasm32-unknown-unknown 上 `std::time::Instant::now()` 是 panic 路径（与 ecs/infra、gamepad
 # 同一颗雷）；`web-time` 在原生上就是它的再导出，零行为变化。
 # 用途：`ui.measure_text` 首次调用要读 + 解析工程字体，那一段耗时必须能量出来。
@@ -45,6 +44,11 @@ rustlua-camera = { path = "../rustlua-camera" }
 rustlua-animation = { path = "../rustlua-animation" }
 # 物理组件类型与碰撞形状同样是测试要造/要断言的领域知识（绑定、装配与驱动已归组合根）。
 rustlua-physics = { path = "../rustlua-physics" }
+# UI 绑定、15 类场景组件装配、宿主访问器与 prefab 布局节点计算已由组合根接管
+# （`engine::host::script_packs` / `runtime_scene::ui_driver` / `mesh_ui`）：库本身对 UI 域
+# 零引用（`docs/62` P1 阶段 4d）。测试仍要造 UI 组件与 UiState 句柄、断言脚本写入的
+# 文本/条，所以它留在这里——dev 依赖不参与产物的依赖图（`architecture_edges` 只扫库依赖）。
+rustlua-ui = { path = "../rustlua-ui" }
 # input 绑定下沉后库里不再依赖它（docs/62 P1 阶段 3）；测试仍要造快照。
 rustlua-input = { path = "../rustlua-input" }
 # 测试要真落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。

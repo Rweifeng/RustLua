@@ -3,24 +3,107 @@ use super::*;
 /// `docs/60` §10.3 第 2 条：宿主每帧要判断"spawn 出来的 UI 布局节点变没变"。原实现是**整表 clone
 /// 再 `==`**——克隆发生在比较**之前**，而这张表在 UI 预设化之后是非空的（每个面板的布局节点都在里头），
 /// 于是那份拷贝每帧都付。改成比修订号之后，唯一的风险换成**修订号漏增**：漏一次，画面与命中框就停在
-/// 旧版上。这条用例钉两件相反的事：三个改动入口**各加一次**，而**只读快照不加**。
+/// 旧版上。
+///
+/// 阶段 4d 之后节点表的计算搬去了宿主（`UiSceneNode` 是 UI 域类型），脚本层只剩事实源与修订号，
+/// 这条用例因此钉在新契约上：**只读快照不改修订号**，而每个改动入口（bump）各加一次。
 #[test]
-fn prefab_ui_nodes_revision_bumps_on_every_mutation_and_only_then() {
-    let mut nodes = PrefabUiNodes::default();
-    let start = nodes.revision();
+fn prefab_ui_layout_revision_bumps_on_every_mutation_and_only_then() {
+    let runtime = runtime_with_ui();
+    let start = runtime.prefab_ui_layout_revision();
 
-    // 只读不许改修订号——否则宿主每帧都误判"变了"、白克隆一次，正好退回被修掉的那条。
-    let snapshot = nodes.snapshot();
-    assert!(snapshot.is_empty());
-    assert_eq!(nodes.revision(), start, "只读快照不许改修订号");
+    // 只读不许改修订号——否则宿主每帧都误判"变了"、白重建一次，正好退回被修掉的那条。
+    let sources = runtime.prefab_ui_layout_sources();
+    assert!(sources.is_empty(), "没有实例时视图应为空");
+    assert_eq!(
+        runtime.prefab_ui_layout_revision(),
+        start,
+        "只读快照不许改修订号"
+    );
+}
 
-    // 三个改动入口各加一次。删一个不存在的键也算"动过"：宁多一次同步，不漏一次。
-    nodes.remove(&7);
-    assert_eq!(nodes.revision(), start + 1, "remove 必须自增");
-    nodes.extend(BTreeMap::new());
-    assert_eq!(nodes.revision(), start + 2, "extend 必须自增");
-    nodes.clear();
-    assert_eq!(nodes.revision(), start + 3, "clear 必须自增");
+/// 三条改动路径（spawn / set_rect / set_visible）与 despawn、切图清场都会推进修订号；
+/// 宁多勿漏：多一次重建只是白算一帧，漏一次会让画面与命中框停在旧版上。
+#[test]
+fn prefab_ui_layout_revision_advances_with_instance_lifecycle() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-prefab-revision-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("hud.prefab"),
+        // `.prefab` 是 tab 分隔的行式记录（与 `.scene` 同一口径）：根实体 3 段、子实体 4 段，
+        // 组件单独成行。手写这份数据是为了让"修订号随实例生命周期推进"这条用例自足。
+        format!(
+            "prefab_version=1\nasset_id=00000000-0000-0000-0000-000000000001\nname=hud\nroot=1\n\
+             entity\t1\tRoot\n\
+             entity\t2\tLabel\t1\n\
+             component\t2\tText\ttext=HP;font_size=18;color=1,1,1\n\
+             component\t2\tUiLayout\tanchors=0,0,0,0;offsets=0,0,100,20\n"
+        ),
+    )
+    .unwrap();
+
+    let mut runtime = runtime_with_ui();
+    runtime.set_project_root(root.clone());
+    let start = runtime.prefab_ui_layout_revision();
+
+    let handle = runtime
+        .lua
+        .load("return prefab.spawn('hud.prefab')")
+        .eval::<i64>()
+        .expect("prefab.spawn");
+    let after_spawn = runtime.prefab_ui_layout_revision();
+    assert!(
+        after_spawn > start,
+        "spawn 必须推进修订号（{start} → {after_spawn}）"
+    );
+    assert_eq!(
+        runtime.prefab_ui_layout_sources().len(),
+        1,
+        "视图里应有一个实例"
+    );
+
+    runtime
+        .lua
+        .load(format!("prefab.set_visible({handle}, 'Label', false)"))
+        .exec()
+        .expect("prefab.set_visible");
+    let after_visible = runtime.prefab_ui_layout_revision();
+    assert!(
+        after_visible > after_spawn,
+        "set_visible 必须推进修订号"
+    );
+
+    runtime
+        .lua
+        .load(format!("prefab.set_rect({handle}, 'Label', 4, 4, 90, 16)"))
+        .exec()
+        .expect("prefab.set_rect");
+    let after_rect = runtime.prefab_ui_layout_revision();
+    assert!(after_rect > after_visible, "set_rect 必须推进修订号");
+
+    runtime
+        .lua
+        .load(format!("prefab.despawn({handle})"))
+        .exec()
+        .expect("prefab.despawn");
+    let after_despawn = runtime.prefab_ui_layout_revision();
+    assert!(
+        after_despawn > after_rect,
+        "despawn 必须推进修订号"
+    );
+    assert!(
+        runtime.prefab_ui_layout_sources().is_empty(),
+        "despawn 之后视图应为空"
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

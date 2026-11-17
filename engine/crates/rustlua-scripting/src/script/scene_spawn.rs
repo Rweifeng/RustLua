@@ -21,7 +21,6 @@ use crate::script::domain::render::sprite::SpriteAsset;
 use crate::script::domain::render::sprite::SpriteComponent;
 use crate::script::domain::scene::scene::Scene;
 use crate::script::domain::lua_api::ui_events::{UiClickTarget, UiEventType};
-use crate::script::domain::ui::ui_layout::UiRectLayout;
 use crate::script::error::LuaBridgeError;
 use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
 use mlua::Value;
@@ -626,30 +625,13 @@ pub struct PrefabSpawn {
 }
 
 /// 一个实例节点重建布局时需要的最小信息。见 [`PrefabSpawn::sources`]。
+///
+/// 字段对同 crate 的组合根（`prefab_ui_layout_sources` 的视图组装）可见。
 #[derive(Clone, Debug)]
 pub(crate) struct PrefabNodeSource {
-    key: u64,
-    parent: Option<u64>,
-    components: BTreeMap<String, String>,
-}
-
-impl PrefabSpawn {
-    /// 本节点自己或任一祖先被隐藏了吗。
-    fn hidden_by_ancestor(&self, key: u64) -> bool {
-        let mut current = Some(key);
-        // 深度上限只是防御性兜底：`.prefab` 的 parent 边在 `from_text` 末尾已 validate 成树，
-        // 真出现自环时这里返回"没被藏"，而不是转无穷次。
-        for _ in 0..=self.sources.len() {
-            let Some(node) = current else {
-                return false;
-            };
-            if self.hidden.contains(&node) {
-                return true;
-            }
-            current = self.sources.get(&node).and_then(|source| source.parent);
-        }
-        false
-    }
+    pub(crate) key: u64,
+    pub(crate) parent: Option<u64>,
+    pub(crate) components: BTreeMap<String, String>,
 }
 
 impl LuaRuntime {
@@ -727,75 +709,17 @@ impl LuaRuntime {
             sources,
             hidden: BTreeSet::new(),
         };
-        // 布局节点登记：宿主画场景 UI 要先按"活实体槽位 → `UiSceneNode`"解析矩形，而这张表
-        // 原本**只在场景加载时**从场景文档建一次。运行期 spawn 的实体不在里头，表现就是
-        // "spawn 返回了句柄、实体真的活着、屏上一个像素都没多"。
-        Self::register_prefab_instance_nodes(state, &spawn);
+        // 布局事实源登记：宿主画场景 UI 要按"活实体槽位 → 布局节点"解析矩形，而那张表
+        // 由宿主从本登记表重建（修订号驱动）；运行期 spawn 的实体因此在重建之列。
+        Self::bump_prefab_ui_revision(state);
         Ok(spawn)
     }
 
-    /// 把一个实例的布局节点并进 `state.prefab_ui_nodes`（先摘掉它原有的那些，再按
-    /// `sources` + `hidden` 重建）。spawn、`prefab.set_rect`、`prefab.set_visible` 三条路
-    /// 都走这里，因此"改了数据但画面没跟着改"只需要修一处。
+    /// 布局事实源变了：修订号自增，宿主下次拉 [`Self::prefab_ui_layout_sources`] 重建。
     ///
-    /// 只动**本实例**的键：那张表是所有实例的并集，而 spawn 那一刻实例还没进
-    /// `prefab_spawns`（句柄由 API 层随后分配），全量重建会把刚 spawn 的这份抹掉。
-    ///
-    /// 被隐藏的整棵子树**一个节点都不建**：宿主拿不到矩形就既不画也不产点击目标
-    /// （`push_scene_ui` 与 `compute_click_targets` 读的是同一张 `ui_layout_rects`），
-    /// 所以"看不见但仍能点中"在这条路上不成立。这也是不选 `Visibility` 组件的原因——
-    /// 那条链只管绘制，命中不看它。
-    fn register_prefab_instance_nodes(state: &mut ScriptState, spawn: &PrefabSpawn) {
-        let keys = spawn.sources.keys().copied().collect::<Vec<_>>();
-        let nodes = Self::prefab_instance_nodes(spawn);
-        Self::apply_prefab_instance_nodes(state, &keys, nodes);
-    }
-
-    /// 一个实例当前应有的布局节点（纯函数）。建节点的规则与场景加载那份同源（同一个
-    /// `build_ui_scene_nodes`），只有 key 的来源不同：这里用落进世界的槽位号，因此父链
-    /// 与宿主的按槽位查找对得上。
-    fn prefab_instance_nodes(
-        spawn: &PrefabSpawn,
-    ) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
-        crate::script::domain::ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
-            spawn
-                .sources
-                .values()
-                .filter(|source| !spawn.hidden_by_ancestor(source.key))
-                .map(
-                    |source| crate::script::domain::ui::ui_scene_layout::UiSceneNodeSource {
-                        key: source.key,
-                        parent: source.parent,
-                        components: &source.components,
-                    },
-                ),
-            &mut |text, scale| {
-                crate::script::domain::render::text::measure_builtin_text(text, scale)
-                    .map(|(size, _)| size)
-            },
-        )
-    }
-
-    fn apply_prefab_instance_nodes(
-        state: &mut ScriptState,
-        keys: &[u64],
-        nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
-    ) {
-        for key in keys {
-            state.prefab_ui_nodes.remove(key);
-        }
-        state.prefab_ui_nodes.extend(nodes);
-    }
-
-    /// 数据改完之后重并本实例的节点。先在本实例的数据上算好节点（那是 `prefab_spawns` 的
-    /// 不可变借用），再动 `prefab_ui_nodes`——同一 state 的两个字段，可变借用不能重叠。
-    fn refresh_prefab_instance(state: &mut ScriptState, handle: i64) {
-        let Some(spawn) = state.prefab_spawns.get(&handle) else {
-            return;
-        };
-        let keys = spawn.sources.keys().copied().collect::<Vec<_>>();
-        let nodes = Self::prefab_instance_nodes(spawn);
-        Self::apply_prefab_instance_nodes(state, &keys, nodes);
+    /// 布局节点的计算已外移宿主（`UiSceneNode` 是 UI 域类型），本层不再持有节点表。
+    fn bump_prefab_ui_revision(state: &mut ScriptState) {
+        state.prefab_ui_revision = state.prefab_ui_revision.wrapping_add(1);
     }
 
     /// `prefab.set_rect` 的落点：写一个实例节点的 `UiLayout` 四边，然后重建本实例的布局节点。
@@ -830,12 +754,24 @@ impl LuaRuntime {
                 "prefab.set_rect: 节点 {name:?} 没有 UiLayout 组件（预设里它不会被画，也没有矩形可写）"
             )));
         };
-        let mut layout = UiRectLayout::from_component_str(&raw).map_err(|error| {
+        let Some(id) = id else {
+            // 没有活实体可写（实践不可达：键与名字同源）：只失效布局缓存。
+            Self::bump_prefab_ui_revision(state);
+            return Ok(());
+        };
+        // `UiLayout` 串的解析/改写/落世界由组合根注入的端口完成（UI 域类型不入本层）；
+        // 返回的新串写进 `sources`——那是宿主重建布局节点的事实源，与世界不一致就会
+        // "画面按 A 摆、脚本查到 B"。
+        let writer = state.prefab_rect_writer.as_ref().ok_or_else(|| {
+            LuaBridgeError::Api(
+                "prefab.set_rect: 组合根未注入 UiLayout 写入端口".to_owned(),
+            )
+        })?;
+        let updated = (writer.0)(&state.world, id, &raw, edges).ok_or_else(|| {
             LuaBridgeError::Api(format!(
-                "prefab.set_rect: 节点 {name:?} 的 UiLayout 无效: {error}"
+                "prefab.set_rect: 节点 {name:?} 的 UiLayout 无效"
             ))
         })?;
-        layout.offsets = edges;
         {
             let Some(spawn) = state.prefab_spawns.get_mut(&handle) else {
                 return Err(LuaBridgeError::Api(format!(
@@ -843,19 +779,10 @@ impl LuaRuntime {
                 )));
             };
             if let Some(source) = spawn.sources.get_mut(&key) {
-                source
-                    .components
-                    .insert("UiLayout".to_owned(), layout.to_component_str());
+                source.components.insert("UiLayout".to_owned(), updated);
             }
         }
-        if let Some(id) = id {
-            state
-                .world_mut()
-                .map_err(world_borrow)?
-                .insert(id, layout)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        Self::refresh_prefab_instance(state, handle);
+        Self::bump_prefab_ui_revision(state);
         Ok(())
     }
 
@@ -883,7 +810,7 @@ impl LuaRuntime {
                 spawn.hidden.insert(key);
             }
         }
-        Self::refresh_prefab_instance(state, handle);
+        Self::bump_prefab_ui_revision(state);
         Ok(())
     }
 
@@ -906,7 +833,7 @@ impl LuaRuntime {
         Ok(id.index() as u64)
     }
 
-    /// 拆除一次 prefab 实例：名字按句柄精确摘除，布局节点按槽位摘除，实体逐个 despawn。
+    /// 拆除一次 prefab 实例：名字按句柄精确摘除，实体逐个 despawn，布局修订号自增。
     pub(crate) fn despawn_prefab_state(
         state: &mut ScriptState,
         spawn: &PrefabSpawn,
@@ -920,13 +847,13 @@ impl LuaRuntime {
                 .remove_name_if(name, *handle);
         }
         for handle in &spawn.handles {
-            state.prefab_ui_nodes.remove(&(handle.index() as u64));
             state
                 .world_mut()
                 .map_err(world_borrow)?
                 .despawn(*handle)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
+        Self::bump_prefab_ui_revision(state);
         Ok(())
     }
 }

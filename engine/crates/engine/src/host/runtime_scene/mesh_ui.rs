@@ -4,6 +4,8 @@
 //! `compute_click_targets` 与 `text_hit_rect` 跟着进来：点击矩形与绘制矩形必须同源，
 //! 分开两个模块就成了"同一事实两处算"（计划 §2.2 的那类病）。
 
+use std::collections::BTreeMap;
+
 use rustlua_camera::camera::{OrthoTerms, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::transform::Transform;
@@ -388,20 +390,55 @@ impl RuntimeScene {
     /// 并表发生在**解算之前**：矩形、文本 pivot、点击命中框三条读路径都查这张表，
     /// 分两处维护就等于"画的位置和点中的位置可以不一样"。
     ///
-    /// **先比修订号，再取表**：原写法是每帧先 `let spawned = self.script.prefab_ui_nodes();`
-    /// 再 `if spawned == self.applied_prefab_ui_nodes`——克隆发生在比较**之前**，于是
-    /// "没变就早退"只在分配已经付过之后才成立；UI 预设化之后这张表是非空的（每个面板的布局节点
-    /// 都在里头），那份拷贝每帧都付（`docs/60` §10.3 第 2 条）。现在未变时**一次 clone 都不做**。
+    /// 节点计算住在宿主（`UiSceneNode` 是 UI 域类型，脚本层已对 UI 域零引用）：脚本层只
+    /// 维护事实源（实例登记表 + 组件串 + 隐藏子树根）与修订号，**修订号变了**才拉一次
+    /// 中立视图用 UI 域的 builder 重建整张表——未变时**一次 clone 都不做**（原写法是每帧
+    /// 整表 clone 再 `==`，那份拷贝每帧都付，`docs/60` §10.3 第 2 条）。
     ///
     /// 槽位被复用（场景 UI 实体先被 `entity.destroy`、随后 spawn 落进同一个槽）时 spawn 的节点
-    /// 覆盖旧的：**旧节点本来就是死实体的**，despawn 时按登记过的键移除，该槽此后没有活实体，
-    /// 移除不会带走仍在世的东西。
+    /// 覆盖旧的：**旧节点本来就是死实体的**，despawn 后该槽此后没有活实体，移除不会带走仍在世的东西。
     pub(super) fn sync_prefab_ui_nodes(&mut self) {
-        let revision = self.script.prefab_ui_nodes_revision();
+        let revision = self.script.prefab_ui_layout_revision();
         if revision == self.applied_prefab_ui_revision {
             return;
         }
-        let spawned = self.script.prefab_ui_nodes();
+        let instances = self.script.prefab_ui_layout_sources();
+        let mut spawned: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> =
+            BTreeMap::new();
+        for instance in &instances {
+            // 隐藏是**子树**语义：根记进 `hidden` 的整棵子树一个节点都不建（宿主拿不到
+            // 矩形就既不画也不产点击目标），沿父链展开与"先藏父再显子"的顺序无关。
+            let parents: BTreeMap<u64, Option<u64>> = instance
+                .sources
+                .iter()
+                .map(|source| (source.key, source.parent))
+                .collect();
+            let visible = instance.sources.iter().filter(|source| {
+                let mut current = Some(source.key);
+                // 深度上限是防御性兜底：parent 边在 `.prefab` 校验时已成树。
+                for _ in 0..=instance.sources.len() {
+                    let Some(node) = current else {
+                        return true;
+                    };
+                    if instance.hidden.contains(&node) {
+                        return false;
+                    }
+                    current = parents.get(&node).copied().flatten();
+                }
+                true
+            });
+            let nodes = rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
+                visible.map(|source| rustlua_ui::ui_scene_layout::UiSceneNodeSource {
+                    key: source.key,
+                    parent: source.parent,
+                    components: &source.components,
+                }),
+                &mut |text, scale| {
+                    rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
+                },
+            );
+            spawned.extend(nodes);
+        }
         for key in self.applied_prefab_ui_nodes.keys() {
             // M76-07：行实体与预设 spawn 共用世界槽位空间。预设实体销毁后、槽位被虚拟行
             // 复用时，旧预设键对应的正是**活着的行实体**——摘键会误删行节点。行槽位有专属

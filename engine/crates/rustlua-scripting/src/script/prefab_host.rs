@@ -113,18 +113,12 @@ impl PrefabHost for PrefabOps {
                 .ok_or_else(|| format!("prefab.set_text: 实例 {handle} 里没有节点 {name:?}"))?
         };
         // 写不进世界（重入借不到）与"节点没有 Text 组件"在这里合并成同一句报错：
-        // 对脚本来说两者的可行动信息相同——这个节点此刻改不了文字。
-        let written = state
-            .world_mut()
-            .map(|mut world| {
-                world
-                    .get_mut::<crate::script::domain::ui::ui::UiText>(id)
-                    .ok()
-                    .flatten()
-                    .map(|component| component.text = text.to_owned())
-                    .is_some()
-            })
-            .unwrap_or_default();
+        // 对脚本来说两者的可行动信息相同——这个节点此刻改不了文字。写入由组合根注入的
+        // 端口完成（`Text` 组件的类型住在 UI 域，本层不能出现它）。
+        let writer = state.prefab_text_writer.as_ref();
+        let written = writer
+            .map(|writer| (writer.0)(&state.world, id, text))
+            .unwrap_or(false);
         if !written {
             return Err(format!(
                 "prefab.set_text: 节点 {name:?} 没有 Text 组件（预设里它是图片/面板/容器）"

@@ -42,7 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_save_path(save_path.clone());
-    runtime.set_ui_viewport(1280, 720);
+    // UI 视口已不归脚本层持有（docs/62 P1 阶段 4d）：本 example 只用裸 `LuaRuntime`，
+    // 所以自己建一份 `UiState` 能力单元并把视口登记进去，语义与原来一致。
+    let ui = rustlua_ui::ui_state::UiState::handle();
+    ui.with_mut(|ui| ui.set_viewport(1280, 720));
     runtime.set_delta(1.0 / 60.0);
 
     // on_create(): spawns the player, defines items, creates the inventory.
@@ -268,7 +271,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut second = LuaRuntime::new()?;
     second.set_project_root(project.clone());
     second.set_save_path(save_path.clone());
-    second.set_ui_viewport(1280, 720);
+    let second_ui = rustlua_ui::ui_state::UiState::handle();
+    second_ui.with_mut(|ui| ui.set_viewport(1280, 720));
     second.set_delta(1.0 / 60.0);
     second.execute_project_script(&main_script)?;
     press(&mut second, &host, KeyCode::F2)?; // F2 load

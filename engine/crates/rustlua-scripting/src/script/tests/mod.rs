@@ -216,6 +216,30 @@ fn install_ui_bindings(
     nav: &rustlua_lua_api::Handle<rustlua_ui::lua_nav::NavState>,
 ) {
     ui.with_mut(|state| state.set_reference(rustlua_ui::ui::UI_REFERENCE_SIZE));
+    // `prefab.set_text` / `prefab.set_rect` 的世界写入端口（镜像生产组合根的同一对闭包）。
+    runtime.set_prefab_ui_helpers(
+        |world, id, text| {
+            let Ok(mut world) = world.borrow_mut() else {
+                return false;
+            };
+            world
+                .get_mut::<rustlua_ui::ui::UiText>(id)
+                .ok()
+                .flatten()
+                .map(|component| component.text = text.to_owned())
+                .is_some()
+        },
+        |world, id, raw, edges| {
+            let Ok(mut world) = world.borrow_mut() else {
+                return None;
+            };
+            let mut layout = rustlua_ui::ui_layout::UiRectLayout::from_component_str(raw).ok()?;
+            layout.offsets = edges;
+            let updated = layout.to_component_str();
+            world.insert(id, layout).ok()?;
+            Some(updated)
+        },
+    );
     let prefab_host = runtime.prefab_host();
     let entities_source = runtime.entity_state_handle();
     let ui_installer = ui.clone();
