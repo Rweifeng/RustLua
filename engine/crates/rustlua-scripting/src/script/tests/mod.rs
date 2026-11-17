@@ -213,8 +213,40 @@ pub(crate) fn runtime_with_domains() -> (
     let nav = rustlua_ui::lua_nav::NavState::handle();
     // UI 域的七处 Lua 绑定（ui.* / prefab / world_text）：同样镜像生产组合根。
     install_ui_bindings(&mut runtime, &ui, &nav);
+    // gameplay 域的四处表（clock/calendar/day、item/inv/container/shop、save、grid）：
+    // 生产侧由 `engine::host::script_packs` 装，本 crate 的测试不能反向依赖 engine，
+    // 所以在这里镜像同一份接线（`docs/62` P1 阶段 4e）。
+    install_gameplay_bindings(&mut runtime);
 
     (runtime, camera, animation, physics, ui)
+}
+
+/// gameplay 域的四处 Lua 表（测试版，镜像 `engine::host::script_packs::install` 的 ⑪ 段）。
+fn install_gameplay_bindings(runtime: &mut LuaRuntime) {
+    let handles = runtime.gameplay_handles();
+    let clock = handles.clock.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::clock_lua::install(lua, &clock)
+        }))
+        .expect("clock 安装失败");
+    let inventory = handles.inventory.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::inventory_lua::install(lua, &inventory)
+        }))
+        .expect("inventory 安装失败");
+    let save = handles.save.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::save_lua::install(lua, &save)
+        }))
+        .expect("save 安装失败");
+    runtime
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::grid_lua::install(lua)
+        }))
+        .expect("grid 安装失败");
 }
 
 /// UI 域的七处 Lua 绑定（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。

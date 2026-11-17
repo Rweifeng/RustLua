@@ -11,6 +11,19 @@ use mlua::{Lua, Result as LuaResult, Value};
 
 use crate::script::ScriptState;
 
+/// 往 `RenderOverrides` 能力单元里写一个参数（P1 阶段 4e）。
+///
+/// 这 18 个 setter 的形态完全一致——"借 VM 状态 → 借渲染参数槽 → 写一个字段"。
+/// 收成一个自由函数之后，每个闭包只剩一行语义，也避免 `Rc<RefCell<>>` 的双层借用
+/// 在每处各抄一遍（抄错一次就是运行期 panic）。
+fn overrides_mut(
+    state: &std::rc::Rc<std::cell::RefCell<ScriptState>>,
+    write: impl FnOnce(&mut crate::script::domain::render::render_overrides::RenderOverrides),
+) {
+    let overrides = state.borrow().render_overrides.clone();
+    overrides.with_mut(write);
+}
+
 pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let table = lua.create_table()?;
     #[cfg(feature = "3d")]
@@ -22,7 +35,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !density.is_finite() || !(0.0..=0.05).contains(&density) {
                     return Ok((false, "fog density must be finite and 0..=0.05".to_owned()));
                 }
-                fog_state.borrow_mut().render_fog = Some(density);
+                overrides_mut(&fog_state, |o| o.fog_density = Some(density));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -40,7 +53,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 {
                     return Ok((false, "fog color must be finite and 0..=1".to_owned()));
                 }
-                color_state.borrow_mut().render_fog_color = Some(color);
+                overrides_mut(&color_state, |o| o.fog_color = Some(color));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -54,7 +67,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !coverage.is_finite() || !(0.0..=1.0).contains(&coverage) {
                     return Ok((false, "cloud coverage must be finite and 0..=1".to_owned()));
                 }
-                coverage_state.borrow_mut().render_cloud_coverage = Some(coverage);
+                overrides_mut(&coverage_state, |o| o.cloud_coverage = Some(coverage));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -68,7 +81,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !speed.is_finite() || !(0.0..=4.0).contains(&speed) {
                     return Ok((false, "cloud speed must be finite and 0..=4".to_owned()));
                 }
-                speed_state.borrow_mut().render_cloud_speed = Some(speed);
+                overrides_mut(&speed_state, |o| o.cloud_speed = Some(speed));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -82,7 +95,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !base.is_finite() || !(40.0..=200.0).contains(&base) {
                     return Ok((false, "cloud base must be finite and 40..=200".to_owned()));
                 }
-                base_state.borrow_mut().render_cloud_base = Some(base);
+                overrides_mut(&base_state, |o| o.cloud_base = Some(base));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -99,7 +112,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                         "cloud shadow strength must be finite and 0..=0.6".to_owned(),
                     ));
                 }
-                shadow_state.borrow_mut().render_cloud_shadow_strength = Some(strength);
+                overrides_mut(&shadow_state, |o| o.cloud_shadow_strength = Some(strength));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -113,7 +126,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !intensity.is_finite() || !(0.0..=1.0).contains(&intensity) {
                     return Ok((false, "flash intensity must be finite and 0..=1".to_owned()));
                 }
-                flash_state.borrow_mut().render_flash = Some(intensity);
+                overrides_mut(&flash_state, |o| o.flash = Some(intensity));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -131,7 +144,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 {
                     return Ok((false, "water tint must be finite and 0..=1".to_owned()));
                 }
-                water_state.borrow_mut().render_water_tint = Some(tint);
+                overrides_mut(&water_state, |o| o.water_tint = Some(tint));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -143,7 +156,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if !(1..=3).contains(&level) {
                 return Ok((false, "quality must be 1..=3".to_owned()));
             }
-            quality_state.borrow_mut().render_quality = Some(level as u8);
+            overrides_mut(&quality_state, |o| o.quality = Some(level as u8));
             Ok((true, String::new()))
         })?,
     )?;
@@ -160,7 +173,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 {
                     return Ok((false, "surface cover must be finite and 0..=1".to_owned()));
                 }
-                cover_state.borrow_mut().render_surface_cover = Some(cover);
+                overrides_mut(&cover_state, |o| o.surface_cover = Some(cover));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -174,7 +187,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !ev.is_finite() || !(-4.0..=4.0).contains(&ev) {
                     return Ok((false, "exposure must be finite and -4..=4".to_owned()));
                 }
-                exposure_state.borrow_mut().render_exposure = Some(ev);
+                overrides_mut(&exposure_state, |o| o.exposure = Some(ev));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -188,7 +201,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !x.is_finite() || !z.is_finite() {
                     return Ok((false, "ripple position must be finite".to_owned()));
                 }
-                ripple_state.borrow_mut().render_ripple = Some([x, z]);
+                overrides_mut(&ripple_state, |o| o.ripple = Some([x, z]));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -206,7 +219,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 {
                     return Ok((false, "post fx must be finite and 0..=1".to_owned()));
                 }
-                post_state.borrow_mut().render_post_fx = Some([vignette, grain]);
+                overrides_mut(&post_state, |o| o.post_fx = Some([vignette, grain]));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -221,7 +234,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !depth.is_finite() || !(0.0..=128.0).contains(&depth) {
                     return Ok((false, "clip cap must be finite and 0..=128".to_owned()));
                 }
-                cap_state.borrow_mut().render_clip_cap = Some(depth);
+                overrides_mut(&cap_state, |o| o.clip_cap = Some(depth));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -237,7 +250,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 let Value::Boolean(enabled) = on else {
                     return Ok((false, "clip cap both sides must be a boolean".to_owned()));
                 };
-                both_sides_state.borrow_mut().render_clip_cap_both_sides = Some(enabled);
+                overrides_mut(&both_sides_state, |o| o.clip_cap_both_sides = Some(enabled));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -263,7 +276,9 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                         "water refract steps must be an integer in 0..=32".to_owned(),
                     ));
                 }
-                refract_state.borrow_mut().render_water_refract_steps = Some(value as u32);
+                overrides_mut(&refract_state, |o| {
+                    o.water_refract_steps = Some(value as u32)
+                });
                 Ok((true, String::new()))
             })?,
         )?;
@@ -291,9 +306,9 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                         "shadow caster distance must be an integer in 0..=1000".to_owned(),
                     ));
                 }
-                caster_distance_state
-                    .borrow_mut()
-                    .render_shadow_caster_distance = Some(value as u32);
+                overrides_mut(&caster_distance_state, |o| {
+                    o.shadow_caster_distance = Some(value as u32)
+                });
                 Ok((true, String::new()))
             })?,
         )?;
@@ -307,8 +322,12 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !value.is_finite() {
                     return Ok((false, "effect param value must be finite".to_owned()));
                 }
-                let mut state = named_state.borrow_mut();
-                let Some(names) = state.render_effect_param_names.clone() else {
+                let overrides = named_state.borrow().render_overrides.clone();
+                let mut guard = match overrides.borrow_mut() {
+                    Ok(guard) => guard,
+                    Err(error) => return Err(mlua::Error::runtime(error.to_string())),
+                };
+                let Some(names) = guard.effect_param_names.clone() else {
                     return Ok((
                         false,
                         "宿主还没有加载特效参数表（先给项目配置 effect_overlay）".to_owned(),
@@ -323,8 +342,8 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                         format!("没有名为 {name} 的特效参数；可用参数：{}", known.join(", ")),
                     ));
                 };
-                let slots = state
-                    .render_effect_params
+                let slots = guard
+                    .effect_params
                     .get_or_insert_with(|| vec![[0.0; 4]; 16]);
                 slots[*slot][*component] = value;
                 Ok((true, String::new()))
@@ -344,11 +363,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if ![x, y, z, w].iter().all(|value| value.is_finite()) {
                     return Ok((false, "effect params must be finite".to_owned()));
                 }
-                let mut state = params_state.borrow_mut();
-                let slots = state
-                    .render_effect_params
-                    .get_or_insert_with(|| vec![[0.0; 4]; 16]);
-                slots[slot as usize] = [x, y, z, w];
+                overrides_mut(&params_state, |o| {
+                    let slots = o.effect_params.get_or_insert_with(|| vec![[0.0; 4]; 16]);
+                    slots[slot as usize] = [x, y, z, w];
+                });
                 Ok((true, String::new()))
             })?,
         )?;
@@ -361,7 +379,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 if !seconds.is_finite() || seconds < 0.0 {
                     return Ok((false, "effect time must be finite and >= 0".to_owned()));
                 }
-                time_state.borrow_mut().render_effect_time = Some(seconds);
+                overrides_mut(&time_state, |o| o.effect_time = Some(seconds));
                 Ok((true, String::new()))
             })?,
         )?;
@@ -370,7 +388,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     table.set(
         "stats",
         lua.create_function(move |lua, ()| {
-            let stats = stats_state.borrow().render_stats.unwrap_or([0; 4]);
+            let stats = stats_state
+                .borrow()
+                .render_overrides
+                .with(|o| o.stats)
+                .unwrap_or([0; 4]);
             let table = lua.create_table()?;
             table.set("draw_calls", stats[0] as f64)?;
             table.set("vertices", stats[1] as f64)?;

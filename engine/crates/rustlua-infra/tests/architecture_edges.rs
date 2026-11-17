@@ -162,12 +162,20 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 改成 `scene.step_physics(..)`；`tilemap` 安装要实体账本，复用 `entity_state_handle()`
     // （ecs 能力单元，不开新方向）。
     //
-    // 剩余 7 条领域依赖 + `lua-api` 契约层里，gameplay 的绑定仍是
-    // "借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
+    // 剩余 7 条领域依赖 + `lua-api` 契约层里，`gameplay` 是唯一还活着的"绑定+状态"混合边。
     // `ui` 已于 P1 阶段 4d（2026-11-17）从这张表里删掉：七处 Lua 绑定、
     // 15 类组件装配、宿主访问器、prefab 布局节点计算全部归组合根
     // （`engine::host::script_packs` / `runtime_scene::ui_driver` / `mesh_ui`），
     // 它退成 dev-dependencies（只为测试装表与断言语义）。
+    //
+    // `gameplay`（2026-11-17，阶段 4e）只完成了**一半**，如实记在这里：
+    // - 已做：四处 Lua 表（clock/calendar/day、item/inv/container/shop、save、grid）
+    //   的**安装职责**移交给组合根，脚本层不再认识这四个 `install` 函数；
+    // - 未做：四个能力单元（`GameClock`/`SaveStore`/`InventoryState`/`WorldDataState`）
+    //   的类型与构造仍在 `ScriptState` 上。要拆这条边得把这四个类型下沉到 `lua-api`，
+    //   而它们带着格子/商店目录/存档格式等**领域模型**——那会污染契约层，方向是反的。
+    //   所以这条边按"接受现状"记，不是"待办"。
+    //
     // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
     // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
     (

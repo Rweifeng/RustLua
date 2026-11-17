@@ -147,6 +147,18 @@ impl std::fmt::Debug for PrefabRectPort {
     }
 }
 
+/// gameplay 域的四个能力单元句柄（见 [`LuaRuntime::gameplay_handles`]）。
+///
+/// 组合根拿它在装配期把"同一份状态"交给宿主与 Lua 绑定；两边各造一份就会出现
+/// "脚本扣了钱、存档面板没变"这类同源分裂。
+#[derive(Clone, Debug)]
+pub struct GameplayHandles {
+    pub clock: Handle<crate::script::domain::gameplay::gameplay::GameClock>,
+    pub save: Handle<crate::script::domain::gameplay::save_store::SaveStore>,
+    pub inventory: Handle<crate::script::domain::gameplay::inventory_state::InventoryState>,
+    pub world_data: Handle<crate::script::domain::gameplay::world_data_state::WorldDataState>,
+}
+
 /// 运行期 prefab 实例重建布局节点所需的最小中立视图（宿主解算场景 UI 矩形用）。
 ///
 /// 布局节点表（`UiSceneNode`）的计算已外移到宿主（UI 域类型不入本层）：本层只维护
@@ -286,48 +298,12 @@ pub(crate) struct ScriptState {
     /// M82-B2：程序化贴图注册表（`texture.generate/free` 写、宿主每帧取走上传）。
     /// 维度无关基底，与 `renderable` 同属渲染域能力单元。
     texture_gen: Handle<crate::script::domain::render::texture_lua::TextureGenState>,
-    /// P3-R76：脚本覆盖的雾密度（`render.set_fog`）；宿主每帧读一次应用到渲染器。
-    render_fog: Option<f32>,
-    /// P3-R77：脚本覆盖的雾颜色（线性 RGB）。
-    render_fog_color: Option<[f32; 3]>,
-    /// P3-R80：脚本覆盖的云量（0..1）。
-    render_cloud_coverage: Option<f32>,
-    /// P3-R82：脚本覆盖的云层速度倍率（0..4）。
-    render_cloud_speed: Option<f32>,
-    /// P3-R83：脚本覆盖的云底高度（世界 y，40..200）。
-    render_cloud_base: Option<f32>,
-    /// P3-R84：脚本覆盖的云影强度（0..0.6）。
-    render_cloud_shadow_strength: Option<f32>,
-    /// P3-R86：脚本设置的闪电闪光（0..1）。
-    render_flash: Option<f32>,
-    /// P3-R89：脚本设置的水体染色 rgb + 浑浊度 w。
-    render_water_tint: Option<[f32; 4]>,
-    /// P3-R92：脚本画质档（1=低，2=中，3=高）。
-    render_quality: Option<u8>,
-    /// P3-R93：脚本地面覆盖 [积雪, 湿润]。
-    render_surface_cover: Option<[f32; 2]>,
-    /// P3-R105：脚本曝光偏移（EV）。
-    render_exposure: Option<f32>,
-    /// P3-R135：脚本触发的水面涟漪点（消费一次）。
-    render_ripple: Option<[f32; 2]>,
-    /// P3-R140：暗角/颗粒（0..1）。
-    render_post_fx: Option<[f32; 2]>,
-    /// M94：脚本逐帧调的特效叠加层参数槽（16 个 vec4）。`None` = 脚本没碰过。
-    render_effect_params: Option<Vec<[f32; 4]>>,
-    /// M94：脚本指定的特效叠加层时间（秒）。`None` = 宿主按自己的时钟推进。
-    render_effect_time: Option<f32>,
-    /// M95：宿主推来的命名参数表（名字 → 槽号 + 分量）；`None` = 宿主还没加载 .sgraph。
-    render_effect_param_names: Option<Vec<(String, usize, usize)>>,
-    /// P3-R210：剖切口的实体封口深度（米，0 = 关）。
-    render_clip_cap: Option<f32>,
-    /// P3-R211：封口是否也吃到单面网格；`None` = 脚本没碰过，渲染器保持宿主启动档。
-    render_clip_cap_both_sides: Option<bool>,
-    /// P3-R242：水面折射的 Snell 屏幕空间步进数（0 = 关 = R207 的偏移近似）。
-    render_water_refract_steps: Option<u32>,
-    /// P3-R283：阴影投射者的距离预算（米，0 = 关）；`None` = 脚本没碰过，保持宿主启动档。
-    render_shadow_caster_distance: Option<u32>,
-    /// P3-R151：上一帧渲染统计（draws/vertices/triangles/set-passes）。
-    render_stats: Option<[u64; 4]>,
+    /// 脚本覆盖的渲染参数（fog/cloud/water/exposure/post-fx/clip/stats…）。
+    ///
+    /// 原本是 21 个散落的 `render_*: Option<..>` 字段，2026-11-17 收成渲染域的能力单元
+    /// （`docs/62` P1 阶段 4e）：写入方 `api::render_tuning` 与宿主的渲染接线拿同一个句柄。
+    /// `None` = 脚本没碰过，宿主按场景/渲染器默认值走（见 `RenderOverrides` 文档）。
+    render_overrides: Handle<crate::script::domain::render::render_overrides::RenderOverrides>,
     /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
     /// 绑定见 `rustlua_gameplay::clock_lua`，宿主推进见 [`LuaRuntime::step_clock`]）。
     game_clock: Handle<GameClock>,
@@ -849,7 +825,7 @@ impl LuaRuntime {
     }
     /// 脚本覆盖的雾密度；`None` = 用场景/渲染器默认值。
     pub fn render_fog_density(&self) -> Option<f32> {
-        self.state.borrow().render_fog
+        self.state.borrow().render_overrides.with(|o| o.fog_density)
     }
     /// M82-B2：取走本帧待上传的程序化贴图 `(键, 贴图)`。宿主上传到渲染器后即清空，
     /// 队列长度恒 ≤ 一帧的生成量（与 `gpu_bursts` 同一"宿主每帧接走"纪律）。
@@ -863,59 +839,74 @@ impl LuaRuntime {
     }
     /// 脚本覆盖的雾颜色（线性 RGB）；`None` = 用渲染器默认。
     pub fn render_fog_color(&self) -> Option<[f32; 3]> {
-        self.state.borrow().render_fog_color
+        self.state.borrow().render_overrides.with(|o| o.fog_color)
     }
     /// 脚本覆盖的云量（0..1）；`None` = 渲染器默认。
     pub fn render_cloud_coverage(&self) -> Option<f32> {
-        self.state.borrow().render_cloud_coverage
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.cloud_coverage)
     }
     /// 脚本覆盖的云层速度倍率（0..4）；`None` = 渲染器默认。
     pub fn render_cloud_speed(&self) -> Option<f32> {
-        self.state.borrow().render_cloud_speed
+        self.state.borrow().render_overrides.with(|o| o.cloud_speed)
     }
     /// 脚本覆盖的云底高度（世界 y）；`None` = 渲染器默认。
     pub fn render_cloud_base(&self) -> Option<f32> {
-        self.state.borrow().render_cloud_base
+        self.state.borrow().render_overrides.with(|o| o.cloud_base)
     }
     /// 脚本覆盖的云影强度（0..0.6）；`None` = 渲染器默认。
     pub fn render_cloud_shadow_strength(&self) -> Option<f32> {
-        self.state.borrow().render_cloud_shadow_strength
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.cloud_shadow_strength)
     }
     /// 脚本设置的闪电闪光（0..1）。
     pub fn render_flash(&self) -> Option<f32> {
-        self.state.borrow().render_flash
+        self.state.borrow().render_overrides.with(|o| o.flash)
     }
     /// 脚本设置的水体染色 rgb + 浑浊度 w。
     pub fn render_water_tint(&self) -> Option<[f32; 4]> {
-        self.state.borrow().render_water_tint
+        self.state.borrow().render_overrides.with(|o| o.water_tint)
     }
     /// 脚本画质档（1=低，2=中，3=高）。
     pub fn render_quality(&self) -> Option<u8> {
-        self.state.borrow().render_quality
+        self.state.borrow().render_overrides.with(|o| o.quality)
     }
     /// 脚本地面覆盖 [积雪, 湿润]。
     pub fn render_surface_cover(&self) -> Option<[f32; 2]> {
-        self.state.borrow().render_surface_cover
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.surface_cover)
     }
     /// 脚本曝光偏移（EV）。
     pub fn render_exposure(&self) -> Option<f32> {
-        self.state.borrow().render_exposure
+        self.state.borrow().render_overrides.with(|o| o.exposure)
     }
     /// 取走脚本 `render.set_ripple` 的涟漪点（消费一次）。
     pub fn take_render_ripple(&self) -> Option<[f32; 2]> {
-        self.state.borrow_mut().render_ripple.take()
+        self.state
+            .borrow()
+            .render_overrides
+            .with_mut(|o| o.ripple.take())
     }
     /// 脚本设置的暗角/颗粒（0..1）。
     pub fn render_post_fx(&self) -> Option<[f32; 2]> {
-        self.state.borrow().render_post_fx
+        self.state.borrow().render_overrides.with(|o| o.post_fx)
     }
     /// M94：脚本逐帧写的特效叠加层参数槽（16 个 vec4）。
     pub fn render_effect_params(&self) -> Option<Vec<[f32; 4]>> {
-        self.state.borrow().render_effect_params.clone()
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.effect_params.clone())
     }
     /// M94：脚本指定的叠加层时间（秒）；`None` = 宿主时钟。
     pub fn render_effect_time(&self) -> Option<f32> {
-        self.state.borrow().render_effect_time
+        self.state.borrow().render_overrides.with(|o| o.effect_time)
     }
 
     /// M95：宿主推送"名字 → 参数槽"映射与默认值（来自 `.sgraph` 的命名参数表）。
@@ -926,34 +917,46 @@ impl LuaRuntime {
         names: Vec<(String, usize, usize)>,
         defaults: Vec<[f32; 4]>,
     ) {
-        let mut state = self.state.borrow_mut();
-        state.render_effect_param_names = Some(names);
-        state.render_effect_params = Some(defaults);
+        let overrides = self.state.borrow().render_overrides.clone();
+        overrides.with_mut(|overrides| {
+            overrides.effect_param_names = Some(names);
+            overrides.effect_params = Some(defaults);
+        });
     }
 
     /// 脚本设置的剖面封口深度（米，0 = 关）；`None` = 渲染器默认。
     pub fn render_clip_cap(&self) -> Option<f32> {
-        self.state.borrow().render_clip_cap
+        self.state.borrow().render_overrides.with(|o| o.clip_cap)
     }
     /// 脚本设置的「封口吃到单面网格」档；`None` = 渲染器保持宿主启动值（`--clip-cap-both-sides`）。
     pub fn render_clip_cap_both_sides(&self) -> Option<bool> {
-        self.state.borrow().render_clip_cap_both_sides
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.clip_cap_both_sides)
     }
     /// 脚本设置的水面折射步进数；`None` = 渲染器保持宿主启动值（`--water-refract-steps`）。
     pub fn render_water_refract_steps(&self) -> Option<u32> {
-        self.state.borrow().render_water_refract_steps
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.water_refract_steps)
     }
     /// 脚本设置的阴影投射距离预算（米，0 = 关）；`None` = 保持宿主启动值（`--shadow-caster-distance`）。
     pub fn render_shadow_caster_distance(&self) -> Option<u32> {
-        self.state.borrow().render_shadow_caster_distance
+        self.state
+            .borrow()
+            .render_overrides
+            .with(|o| o.shadow_caster_distance)
     }
     /// 写入上一帧渲染统计。
     pub fn set_render_stats(&self, stats: [u64; 4]) {
-        self.state.borrow_mut().render_stats = Some(stats);
+        let overrides = self.state.borrow().render_overrides.clone();
+        overrides.with_mut(|overrides| overrides.stats = Some(stats));
     }
     /// 上一帧渲染统计（draws/vertices/triangles/set-passes）。
     pub fn render_stats(&self) -> Option<[u64; 4]> {
-        self.state.borrow().render_stats
+        self.state.borrow().render_overrides.with(|o| o.stats)
     }
     /// 局部风源 `[[x, y(height), z, radius, radial, lift, swirl]; 4]`（宿主同步给 GPU）。
     pub fn particle_wind_sources(&self) -> [[f32; 7]; 4] {
@@ -1075,6 +1078,32 @@ impl LuaRuntime {
         &self,
     ) -> Handle<crate::script::domain::ecs::entity_state::EntityState> {
         self.state.borrow().entity_state.clone()
+    }
+
+    /// 脚本覆盖的渲染参数（P1 阶段 4e）：宿主每帧读一次应用到渲染器。
+    ///
+    /// 交出去的是**同一份**能力单元——`render.*` 绑定写的与宿主读的必须是同一个槽，
+    /// 否则出现"脚本设了雾、画面没雾"。18 个 `render_xxx()` 转发访问器因此收敛成一个句柄。
+    pub fn render_overrides_handle(
+        &self,
+    ) -> Handle<crate::script::domain::render::render_overrides::RenderOverrides> {
+        self.state.borrow().render_overrides.clone()
+    }
+
+    /// gameplay 域的四个能力单元（时钟 / 存档 / 背包 / 世界数据），组合根接线用。
+    ///
+    /// 与 ui/camera/physics 同一套模式：句柄仍是脚本层构造的（`ScriptState::default`
+    /// 就要能独立成立，子运行时也建得出），但**组合根负责把它们交给宿主与绑定**，
+    /// 于是"谁拥有这份状态"只有一处可读。
+    #[must_use]
+    pub fn gameplay_handles(&self) -> GameplayHandles {
+        let state = self.state.borrow();
+        GameplayHandles {
+            clock: state.game_clock.clone(),
+            save: state.save.clone(),
+            inventory: state.inventory.clone(),
+            world_data: state.world_data.clone(),
+        }
     }
 
     /// `prefab` 表的中立宿主端口（组合根接线用）。

@@ -124,6 +124,9 @@ impl LuaRuntime {
             renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
             // M82-B2：程序化贴图注册表（维度无关基底）。
             texture_gen: crate::script::domain::render::texture_lua::TextureGenState::handle(),
+            // P1 阶段 4e：脚本覆盖的渲染参数（21 个字段收成一个能力单元）。
+            render_overrides:
+                crate::script::domain::render::render_overrides::RenderOverrides::handle(),
             // 实体账本能力单元（P1 ⑤-13）：名字/持久 id/血量/标签/场景声明表。
             entity_state: crate::script::domain::ecs::entity_state::EntityState::handle(),
             // 工程根同样是能力单元：`data.*` 绑定读它，`set_project_root` 换工程时

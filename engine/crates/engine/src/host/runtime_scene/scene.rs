@@ -712,6 +712,8 @@ impl RuntimeScene {
         let animation_state = handles.animation;
         let physics_state = handles.physics;
         let ui_state = handles.ui;
+        // 渲染覆盖参数与 `render.*` 绑定同一份（脚本层持有的句柄）。
+        let render_overrides = script.render_overrides_handle();
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
@@ -806,6 +808,7 @@ impl RuntimeScene {
             animation_state,
             physics_state,
             ui_state,
+            render_overrides,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),

@@ -46,6 +46,12 @@ pub struct ScriptDomainHandles {
     pub ui: Handle<rustlua_ui::ui_state::UiState>,
     /// UI 导航栈（焦点环/滚动位置）。
     pub nav: Handle<rustlua_ui::lua_nav::NavState>,
+    /// gameplay 域的四个能力单元（时钟 / 存档 / 背包 / 世界数据）。
+    ///
+    /// 与相机/动画/物理同一个形状：组合根拿它们装绑定（`clock`/`item`/`save`…），
+    /// 宿主侧读存档面板、推时钟也读同一份——两边各造一份就会出现"脚本扣了钱、
+    /// 面板没变"这类同源分裂（`docs/62` P1 阶段 4e）。
+    pub gameplay: rustlua_scripting::script::GameplayHandles,
 }
 
 /// 建一个**带全部领域绑定**的运行时：`LuaRuntime::with_installers(..)` + [`install`]。
@@ -298,7 +304,42 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         }))
         .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
 
-    // ── ⑪ interact.prompt / clear_prompt / get_prompt ─────────────────────
+    // ── ⑪ gameplay 域的四处 Lua 表 ────────────────────────────────────────
+    // 时钟 / 背包 / 存档 / 网格换算。句柄由脚本层构造（`ScriptState::default` 要能独立
+    // 成立），但**装表这件事在这里**：与 camera/animation/physics 同一条路线，
+    // `rustlua-scripting` 因此不再需要知道这些表的安装函数。
+    let gameplay = script.gameplay_handles();
+    {
+        let clock = gameplay.clock.clone();
+        script
+            .add_deferred_installer(Box::new(move |lua, _, _| {
+                rustlua_gameplay::clock_lua::install(lua, &clock)
+            }))
+            .expect("clock / calendar / day 安装失败");
+    }
+    {
+        let inventory = gameplay.inventory.clone();
+        script
+            .add_deferred_installer(Box::new(move |lua, _, _| {
+                rustlua_gameplay::inventory_lua::install(lua, &inventory)
+            }))
+            .expect("item / inv / container / shop 安装失败");
+    }
+    {
+        let save = gameplay.save.clone();
+        script
+            .add_deferred_installer(Box::new(move |lua, _, _| {
+                rustlua_gameplay::save_lua::install(lua, &save)
+            }))
+            .expect("save 安装失败");
+    }
+    script
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::grid_lua::install(lua)
+        }))
+        .expect("grid 安装失败");
+
+    // ── ⑫ interact.prompt / clear_prompt / get_prompt ─────────────────────
     // 这三支要同时写 ECS 账本的文案与 UI 覆盖层文本（`__interact_prompt`），是跨域操作，
     // 所以归组合根；`interact` 表本身由 ECS 域建好，这里现场取表补最后三个键。
     // 回调可能被多次重放（热重载重建 VM），内层闭包捕获的 handle 必须每次 clone 局部副本。
@@ -429,5 +470,6 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         physics,
         ui,
         nav,
+        gameplay,
     }
 }

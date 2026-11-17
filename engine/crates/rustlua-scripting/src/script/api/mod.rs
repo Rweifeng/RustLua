@@ -29,11 +29,9 @@ pub(super) fn register_all(
     installers: &crate::script::domain::lua_api::Registry,
 ) -> LuaResult<()> {
     globals::register(lua, Rc::clone(&state))?;
-    // 游戏时钟绑定已下沉到时钟域（P1 ⑤-5）：`clock` / `calendar` / `day` 三张表。
-    {
-        let clock = state.borrow().game_clock.clone();
-        crate::script::domain::gameplay::clock_lua::install(lua, &clock)?;
-    }
+    // 游戏时钟（`clock` / `calendar` / `day`）与背包、存档一样，**由组合根装**
+    // （`docs/62` P1 阶段 4e）：句柄经 [`LuaRuntime::gameplay_handles`] 交出去，
+    // 本层只保留"什么时候可以装"的时机（VM 与内建模块就位之后）。
     // 实体账本与 entity / health / tag / interact.query 已下沉到 ECS 域（P1 ⑤-13）。
     {
         let world = state.borrow().world.clone();
@@ -87,8 +85,7 @@ pub(super) fn register_all(
     // `rustlua-camera`，由组合根经 [`LuaRuntime::add_deferred_installer`] 登记（见 `engine`
     // 的 `host::script_packs`）。本 crate 因此不再 `use rustlua_camera`——它只提供"什么时候
     // 可以装"（VM 与内建模块就位之后）和"世界在哪"（安装器的第一个参数）。
-    // grid 是纯网格换算（无状态），跟着网格数学留在 gameplay。
-    crate::script::domain::gameplay::grid_lua::install(lua)?;
+    // grid 是纯网格换算（无状态）——同样由组合根装，见 `engine::host::script_packs`。
     // `particles` 留在脚本层：粒子是 `rustlua-ecs` 的发射器实例列表，没有领域规则要搬。
     particles::register(lua, Rc::clone(&state))?;
     render_tuning::register(lua, Rc::clone(&state))?;
@@ -100,17 +97,6 @@ pub(super) fn register_all(
     let ui = lua.create_table()?;
     ui_measure::register(lua, ui.clone(), Rc::clone(&state))?;
     lua.globals().set("ui", ui)?;
-    // 背包绑定已下沉到物品域（P1 ⑤-6）：`item` / `inv` / `container` / `shop` 四张表。
-    {
-        let inventory = state.borrow().inventory.clone();
-        crate::script::domain::gameplay::inventory_lua::install(lua, &inventory)?;
-    }
-    // 存档绑定已下沉到存档域（P1 ⑤-2）
-    // `rustlua-gameplay` 提供安装器，本 crate 只把能力单元交出去。
-    {
-        let store = state.borrow().save.clone();
-        crate::script::domain::gameplay::save_lua::install(lua, &store)?;
-    }
     installers.install(lua)?;
     Ok(())
 }

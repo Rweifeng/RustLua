@@ -141,6 +141,12 @@ pub struct RuntimeScene {
     /// UI 域的能力单元：动态文本/条/面板/图/网格/视口与隐藏集。宿主侧的读写视图在
     /// [`super::ui_driver`]；脚本层对 UI 域零引用（组合根装绑定与装配器）。
     pub(crate) ui_state: rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
+    /// 脚本覆盖的渲染参数（P1 阶段 4e）：雾/云/水/曝光/后处理/剖切/统计。
+    ///
+    /// 原本是 `ScriptState` 上 21 个散落的 `Option` 字段，现在是渲染域的能力单元；
+    /// `render.*` 绑定写的与宿主渲染接线读的是**同一份**（`Handle` 直连，不再经脚本层转发）。
+    pub(crate) render_overrides:
+        rustlua_lua_api::Handle<rustlua_render::render_overrides::RenderOverrides>,
     /// 自上次 `take_script_micros` 以来 Lua 回调的累计耗时（微秒）：所有固定步里的
     /// `update()` + 每个渲染帧一次的 `on_frame()`。宿主把它送进
     /// `PerformanceStats::lua_ms`，性能面板因此显示的是"Lua 花了多少"而不是恒为 0
@@ -663,7 +669,7 @@ impl RuntimeScene {
     #[must_use]
     /// P3-R76：脚本 `render.set_fog` 的当前值；`None` = 用场景/渲染器默认雾。
     pub fn render_fog_density(&self) -> Option<f32> {
-        self.script.render_fog_density()
+        self.render_overrides.with(|o| o.fog_density)
     }
 
     /// M82-B2：取走本帧待上传的程序化贴图 `(键, 贴图)`，宿主上传到渲染器。
@@ -673,74 +679,74 @@ impl RuntimeScene {
 
     /// 脚本 `render.set_fog_color` 的当前值（线性 RGB）。
     pub fn render_fog_color(&self) -> Option<[f32; 3]> {
-        self.script.render_fog_color()
+        self.render_overrides.with(|o| o.fog_color)
     }
 
     /// 脚本 `render.set_cloud_coverage` 的当前值（0..1）。
     pub fn render_cloud_coverage(&self) -> Option<f32> {
-        self.script.render_cloud_coverage()
+        self.render_overrides.with(|o| o.cloud_coverage)
     }
 
     /// 脚本 `render.set_cloud_speed` 的当前值（0..4）。
     pub fn render_cloud_speed(&self) -> Option<f32> {
-        self.script.render_cloud_speed()
+        self.render_overrides.with(|o| o.cloud_speed)
     }
 
     /// 脚本 `render.set_cloud_base` 的当前值（世界 y，40..200）。
     pub fn render_cloud_base(&self) -> Option<f32> {
-        self.script.render_cloud_base()
+        self.render_overrides.with(|o| o.cloud_base)
     }
 
     /// 脚本 `render.set_cloud_shadow_strength` 的当前值（0..0.6）。
     pub fn render_cloud_shadow_strength(&self) -> Option<f32> {
-        self.script.render_cloud_shadow_strength()
+        self.render_overrides.with(|o| o.cloud_shadow_strength)
     }
 
     /// 脚本 `render.set_flash` 的当前值（0..1）。
     pub fn render_flash(&self) -> Option<f32> {
-        self.script.render_flash()
+        self.render_overrides.with(|o| o.flash)
     }
 
     /// 脚本 `render.set_water_tint` 的当前值 rgb + 浑浊度。
     pub fn render_water_tint(&self) -> Option<[f32; 4]> {
-        self.script.render_water_tint()
+        self.render_overrides.with(|o| o.water_tint)
     }
 
     /// 脚本画质档（1=低，2=中，3=高）。
     pub fn render_quality(&self) -> Option<u8> {
-        self.script.render_quality()
+        self.render_overrides.with(|o| o.quality)
     }
 
     /// 脚本 `render.set_surface_cover` 的当前值 [积雪, 湿润]。
     pub fn render_surface_cover(&self) -> Option<[f32; 2]> {
-        self.script.render_surface_cover()
+        self.render_overrides.with(|o| o.surface_cover)
     }
 
     /// 脚本 `render.set_exposure` 的当前曝光偏移（EV）。
     pub fn render_exposure(&self) -> Option<f32> {
-        self.script.render_exposure()
+        self.render_overrides.with(|o| o.exposure)
     }
 
     /// P3-R135：取走脚本触发的水面涟漪点。
     pub fn take_render_ripple(&mut self) -> Option<[f32; 2]> {
-        self.script.take_render_ripple()
+        self.render_overrides.with_mut(|o| o.ripple.take())
     }
 
     /// P3-R140：脚本设置的暗角/颗粒。
     pub fn render_post_fx(&self) -> Option<[f32; 2]> {
-        self.script.render_post_fx()
+        self.render_overrides.with(|o| o.post_fx)
     }
 
     /// M94：脚本逐帧写的特效叠加层参数槽（16 个 vec4）。
     #[must_use]
     pub fn render_effect_params(&self) -> Option<Vec<[f32; 4]>> {
-        self.script.render_effect_params()
+        self.render_overrides.with(|o| o.effect_params.clone())
     }
 
     /// M94：脚本指定的叠加层时间（秒）；`None` = 宿主时钟。
     #[must_use]
     pub fn render_effect_time(&self) -> Option<f32> {
-        self.script.render_effect_time()
+        self.render_overrides.with(|o| o.effect_time)
     }
 
     /// M95：宿主推送 `.sgraph` 的命名参数表与默认值，供 Lua `render.set_effect_param` 解析。
@@ -749,32 +755,35 @@ impl RuntimeScene {
         names: Vec<(String, usize, usize)>,
         defaults: Vec<[f32; 4]>,
     ) {
-        self.script.set_effect_param_names(names, defaults);
+        self.render_overrides.with_mut(|o| {
+            o.effect_param_names = Some(names);
+            o.effect_params = Some(defaults);
+        });
     }
 
     /// P3-R210：脚本设置的剖面封口深度（米，0 = 关）。
     pub fn render_clip_cap(&self) -> Option<f32> {
-        self.script.render_clip_cap()
+        self.render_overrides.with(|o| o.clip_cap)
     }
 
     /// P3-R211：脚本设置的「封口吃到单面网格」档（`None` = 保持宿主启动档）。
     pub fn render_clip_cap_both_sides(&self) -> Option<bool> {
-        self.script.render_clip_cap_both_sides()
+        self.render_overrides.with(|o| o.clip_cap_both_sides)
     }
 
     /// P3-R242：脚本设置的水面折射步进数（`None` = 保持宿主启动档）。
     pub fn render_water_refract_steps(&self) -> Option<u32> {
-        self.script.render_water_refract_steps()
+        self.render_overrides.with(|o| o.water_refract_steps)
     }
 
     /// P3-R283：脚本设置的阴影投射距离预算（米，0 = 关；`None` = 保持宿主启动档）。
     pub fn render_shadow_caster_distance(&self) -> Option<u32> {
-        self.script.render_shadow_caster_distance()
+        self.render_overrides.with(|o| o.shadow_caster_distance)
     }
 
     /// P3-R151：写入上一帧渲染统计，供 `render.stats()` 读取。
     pub fn set_render_stats(&self, stats: [u64; 4]) {
-        self.script.set_render_stats(stats);
+        self.render_overrides.with_mut(|o| o.stats = Some(stats));
     }
 
     pub fn text_capture_requested(&self) -> bool {

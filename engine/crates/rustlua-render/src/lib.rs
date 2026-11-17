@@ -18,6 +18,7 @@ pub mod primitives;
 pub mod quad;
 pub mod render_config;
 pub mod render_mode;
+pub mod render_overrides;
 pub mod render_plan;
 pub mod render_settings;
 pub mod renderable;
