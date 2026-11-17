@@ -144,6 +144,7 @@ mod projection;
 mod render;
 mod renderer_failure;
 mod sample_project;
+mod save_roundtrip;
 mod tilemap;
 mod ui_source_layout;
 mod view_3d;
