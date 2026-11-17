@@ -253,6 +253,47 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         transition.with_mut(|state| state.clear_for_scene_transition());
     });
 
+    // ── UI 域的 15 类场景组件 ──────────────────────────────────────────────
+    // 这些原来是 `scene_spawn::spawn_entity_components` 里写死的 if 链，每支直接构造一个
+    // `rustlua_ui` 组件。组件类型住在 UI 域，装配知识因此归组合根；脚本层只认组件名。
+    // 解析口径与编辑器导出保持一致（`from_component_str`），错误文案由外层 applier 循环
+    // 统一加 `entity {name} has an invalid {component}` 前缀。
+    macro_rules! ui_applier {
+        ($component:literal, $type:path) => {
+            script.add_component_applier($component, |world, id, value, _| {
+                let component = <$type>::from_component_str(value)
+                    .map_err(|error| error.to_string())?;
+                world
+                    .insert(id, component)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            });
+        };
+    }
+    ui_applier!("Text", rustlua_ui::ui::UiText);
+    ui_applier!("Image", rustlua_ui::ui::UiImage);
+    ui_applier!("WorldText", rustlua_ui::world_text::WorldText);
+    ui_applier!("UiBindings", rustlua_ui::ui_binding::UiBindings);
+    ui_applier!("ScrollView", rustlua_ui::ui_scroll_view::ScrollView);
+    ui_applier!("ButtonStates", rustlua_ui::ui_states::ButtonStateSet);
+    ui_applier!("Mask", rustlua_ui::ui_mask::Mask);
+    ui_applier!("CanvasGroup", rustlua_ui::ui_canvas_group::CanvasGroup);
+    ui_applier!("Toggle", rustlua_ui::ui_toggle::Toggle);
+    ui_applier!("Slider", rustlua_ui::ui_slider::Slider);
+    ui_applier!("Progress", rustlua_ui::ui_progress::Progress);
+    ui_applier!("Scrollbar", rustlua_ui::ui_scrollbar::ScrollBar);
+    ui_applier!("UiVirtualList", rustlua_ui::ui_virtual_list::UiVirtualList);
+    ui_applier!("UiLayout", rustlua_ui::ui_layout::UiRectLayout);
+    // `UiEvents` 的解析入口叫 `parse`（不是 `from_component_str`），单列一支。
+    script.add_component_applier("UiEvents", |world, id, value, _| {
+        let events = rustlua_ui::ui_events::UiEvents::parse(value)
+            .map_err(|error| error.to_string())?;
+        world
+            .insert(id, events)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+
     ScriptDomainHandles {
         camera,
         animation,

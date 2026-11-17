@@ -190,7 +190,50 @@ pub(crate) fn runtime_with_domains() -> (
                 .map_err(|error| error.to_string())
         })
     });
+
+    // UI 域的 15 类场景组件：与生产组合根 `engine::host::script_packs` 同一套装配，
+    // 测试不能反向依赖 engine，所以在这里手写一遍。
+    install_ui_appliers(&mut runtime);
+
     (runtime, camera, animation, physics)
+}
+
+/// 15 类 UI 组件装配器（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。
+fn install_ui_appliers(runtime: &mut LuaRuntime) {
+    macro_rules! ui_applier {
+        ($component:literal, $type:path) => {
+            runtime.add_component_applier($component, |world, id, value, _| {
+                let component = <$type>::from_component_str(value)
+                    .map_err(|error| error.to_string())?;
+                world
+                    .insert(id, component)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            });
+        };
+    }
+    ui_applier!("Text", rustlua_ui::ui::UiText);
+    ui_applier!("Image", rustlua_ui::ui::UiImage);
+    ui_applier!("WorldText", rustlua_ui::world_text::WorldText);
+    ui_applier!("UiBindings", rustlua_ui::ui_binding::UiBindings);
+    ui_applier!("ScrollView", rustlua_ui::ui_scroll_view::ScrollView);
+    ui_applier!("ButtonStates", rustlua_ui::ui_states::ButtonStateSet);
+    ui_applier!("Mask", rustlua_ui::ui_mask::Mask);
+    ui_applier!("CanvasGroup", rustlua_ui::ui_canvas_group::CanvasGroup);
+    ui_applier!("Toggle", rustlua_ui::ui_toggle::Toggle);
+    ui_applier!("Slider", rustlua_ui::ui_slider::Slider);
+    ui_applier!("Progress", rustlua_ui::ui_progress::Progress);
+    ui_applier!("Scrollbar", rustlua_ui::ui_scrollbar::ScrollBar);
+    ui_applier!("UiVirtualList", rustlua_ui::ui_virtual_list::UiVirtualList);
+    ui_applier!("UiLayout", rustlua_ui::ui_layout::UiRectLayout);
+    runtime.add_component_applier("UiEvents", |world, id, value, _| {
+        let events =
+            rustlua_ui::ui_events::UiEvents::parse(value).map_err(|error| error.to_string())?;
+        world
+            .insert(id, events)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
 }
 
 /// 只需要相机接线时的简写（相机测试与 API 面快照用它）。
