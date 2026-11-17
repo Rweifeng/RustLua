@@ -2,7 +2,6 @@
 
 Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编辑器、一个资源打包器（assetc）、
 一个 Windows 桌面 / Android 游戏运行器，以及引擎 API 活文档（`examples/game_api`）。
-《江湖有田》完整玩法工程已整体迁出仓库，现在位于 `E:\Qoder\game_jhyt`。
 
 - **引擎**：Rust 负责渲染（wgpu）、ECS、物理（rapier）、输入、音频、字体与资源；玩法规则全部用 Lua。
 - **编辑**：`editor` 提供场景/层级/Inspector、Tilemap 与 2D Animation 编辑、Play 预览、资源面板与发布；
