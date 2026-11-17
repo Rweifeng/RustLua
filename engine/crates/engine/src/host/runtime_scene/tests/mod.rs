@@ -98,6 +98,7 @@ mod particle_streams;
 mod render_channels;
 mod runtime_snapshot;
 mod scene_instantiation;
+mod scene_time_parity;
 mod scenes_and_clicks;
 mod schedule;
 mod script_policy;
