@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 /// 门面必须登记的"别名 ⇄ 领域 crate"表。新增领域 crate 时**两处一起改**：
 /// 这张表 + `script/domain.rs`。
 const PINNED_ALIASES: &[(&str, &str)] = &[
-    ("animation", "rustlua_animation"),
     ("ecs", "rustlua_ecs"),
     ("gameplay", "rustlua_gameplay"),
     ("infra", "rustlua_infra"),

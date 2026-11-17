@@ -704,10 +704,12 @@ impl RuntimeScene {
         let audio = handles.audio;
         let input = handles.input;
         let mut script = LuaRuntime::with_installers(installers)?;
-        // 领域绑定/组件/切场景清理的组合根（`docs/62` P1）：相机那三张表与 `Camera` 组件
-        // 现在只在这里接线，`rustlua-scripting` 对相机域零引用。必须**早于**下面的
-        // `instantiate_scene`：场景里的 `Camera` 组件靠这里登记的装配器落进世界。
-        let camera_state = crate::host::script_packs::install(&mut script).camera;
+        // 领域绑定/组件/切场景清理的组合根（`docs/62` P1）：相机与动画的表、组件装配器、
+        // 清理钩子都只在这里接线，`rustlua-scripting` 对这两个域零引用。必须**早于**下面的
+        // `instantiate_scene`：场景里的 `Camera` / `Animation*` 组件靠这里登记的装配器落进世界。
+        let handles = crate::host::script_packs::install(&mut script);
+        let camera_state = handles.camera;
+        let animation_state = handles.animation;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
@@ -799,6 +801,7 @@ impl RuntimeScene {
             audio,
             input,
             camera_state,
+            animation_state,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),

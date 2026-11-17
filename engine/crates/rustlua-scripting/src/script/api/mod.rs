@@ -103,15 +103,6 @@ pub(super) fn register_all(
     }
     // grid 是纯网格换算（无状态），跟着网格数学留在 gameplay。
     crate::script::domain::gameplay::grid_lua::install(lua)?;
-    // 动画绑定已下沉到动画域（P1 ⑤-10）：animation 基底表。
-    {
-        let animation = state.borrow().animation.clone();
-        let world = state.borrow().world.clone();
-        crate::script::domain::animation::animation_lua::install(lua, &animation, &world)?;
-        // M81：animation3d 属 3D 包，2D 构建不登记。
-        #[cfg(feature = "3d")]
-        crate::script::domain::animation::animation_lua::install_3d(lua, &animation, &world)?;
-    }
     // 物理绑定已下沉到物理域（P1 ⑤-9）：`physics` 基底表。
     {
         let physics = state.borrow().physics.clone();

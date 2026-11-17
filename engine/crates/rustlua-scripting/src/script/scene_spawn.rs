@@ -7,11 +7,6 @@
 use crate::script::LuaRuntime;
 use crate::script::ScriptState;
 use crate::script::crash;
-use crate::script::domain::animation::anim_asset::AnimClip;
-use crate::script::domain::animation::animation::AnimationStateMachine;
-use crate::script::domain::animation::animation_player::AnimationPlayer;
-use crate::script::domain::animation::animation3d::Animation3D;
-use crate::script::domain::animation::animation3d::Animation3dDescriptor;
 use crate::script::domain::ecs::entity::EntityId;
 use crate::script::domain::ecs::entity_state::PersistedEntity;
 use crate::script::domain::ecs::particle::ParticleEmitter;
@@ -496,6 +491,10 @@ impl LuaRuntime {
         //
         // 位置固定在 `Transform` 之后：装配器可能要按实体的空间形态（2D/3D）决定怎么落脚。
         // 遍历顺序是 `components()` 的键序（`BTreeMap`），同一组件名只会命中一次。
+        // 工程根只借一次：装配器可能要按它解析组件里的资源相对路径（`.anim` 片段、glTF）。
+        // `root_guard` 活到循环之后，递出去的 `&Path` 在整个装配期都有效。
+        let root_guard = state.project_root.borrow().ok();
+        let project_root = root_guard.as_deref().and_then(|project| project.path());
         for (component, raw) in components {
             if state.component_appliers.get(component).is_none() {
                 continue;
@@ -505,7 +504,7 @@ impl LuaRuntime {
                 .component_appliers
                 .get(component)
                 .expect("上面刚判过 Some");
-            applier(&mut world, id, raw).map_err(|reason| {
+            applier(&mut world, id, raw, project_root).map_err(|reason| {
                 LuaBridgeError::Api(format!(
                     "entity {name:?} has an invalid {component}: {reason}"
                 ))
@@ -523,94 +522,6 @@ impl LuaRuntime {
                 .world_mut()
                 .map_err(world_borrow)?
                 .insert(id, SceneParticleEmitter::new(emitter))
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        if let Some(value) = components.get("Animation") {
-            let animation = AnimationStateMachine::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Animation: {error}"))
-            })?;
-            state
-                .world_mut()
-                .map_err(world_borrow)?
-                .insert(id, animation)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        // P3-E01-2：`.anim` 时间线播放器。片段在装配时读入并校验（坏 clip 当场点名，不拖到
-        // 第一帧才静默不动），与 `Animation3D` 从 glTF 装载同一条纪律。
-        if let Some(value) = components.get("AnimationPlayer") {
-            let mut player = AnimationPlayer::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} has an invalid AnimationPlayer: {error}"
-                ))
-            })?;
-            let root = state
-                .project_root
-                .borrow()
-                .ok()
-                .and_then(|root| root.path().map(PathBuf::from))
-                .ok_or_else(|| {
-                    LuaBridgeError::Api(format!(
-                        "entity {name:?} needs a project root to load its AnimationPlayer clip"
-                    ))
-                })?;
-            let clip_path = root.join(player.clip_path());
-            let text = crate::script::domain::infra::vfs::read_resource(&clip_path)
-                .and_then(|bytes| {
-                    String::from_utf8(bytes).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-                    })
-                })
-                .map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {name:?} AnimationPlayer failed to read {}: {error}",
-                        player.clip_path()
-                    ))
-                })?;
-            let clip = AnimClip::from_text(player.clip_path(), &text).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} has an invalid clip {}: {error}",
-                    player.clip_path()
-                ))
-            })?;
-            player.attach_clip(clip).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} AnimationPlayer cannot use {}: {error}",
-                    player.clip_path()
-                ))
-            })?;
-            // M76-02：`UiAnimation.*` 轨道不写 ECS 组件，由宿主每帧采样后发布到
-            // 视图模型 `anim.<实体名>.<属性>`（`publish_ui_animation_samples`）。
-            state
-                .world_mut()
-                .map_err(world_borrow)?
-                .insert(id, player)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        if let Some(value) = components.get("Animation3D") {
-            let descriptor = Animation3dDescriptor::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} has an invalid Animation3D: {error}"
-                ))
-            })?;
-            let root = state
-                .project_root
-                .borrow()
-                .ok()
-                .and_then(|root| root.path().map(PathBuf::from))
-                .ok_or_else(|| {
-                    LuaBridgeError::Api(format!(
-                        "entity {name:?} needs a project root to load its Animation3D mesh"
-                    ))
-                })?;
-            let animation = Animation3D::from_gltf_path(&root, &descriptor).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} Animation3D failed to load: {error}"
-                ))
-            })?;
-            state
-                .world_mut()
-                .map_err(world_borrow)?
-                .insert(id, animation)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("MeshRenderer") {

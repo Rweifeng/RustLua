@@ -13,7 +13,6 @@
 //! 注意：这是**逻辑收敛**，不是依赖图合并。真正减少编译边要等绑定继续下沉到归属 crate
 //! （`docs/62` P1 的方向）；在那之前，门面保证"谁依赖了哪些领域"只有一处可读。
 
-pub(crate) use rustlua_animation as animation;
 pub(crate) use rustlua_ecs as ecs;
 pub(crate) use rustlua_gameplay as gameplay;
 pub(crate) use rustlua_infra as infra;

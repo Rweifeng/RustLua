@@ -49,8 +49,6 @@ pub use values::entity_lua_id;
 pub use vgraph_trace::VgraphTraceEvent;
 
 // WP11-USE:BEGIN
-use domain::animation::animation::AnimationFrameEvent;
-use domain::animation::animation_player::AnimationPlayerEvent;
 use domain::ecs::{
     entity::EntityId,
     particle::{Particle, ParticleEmitter, ParticleMode, ParticleSystem},
@@ -191,8 +189,11 @@ pub struct LuaParticleStream {
 ///
 /// 有了这张表，本层只认**名字**：谁把组件装进世界由组合根决定（它本来就依赖全部领域 crate）。
 /// 表按名字排序（`BTreeMap`），装配顺序因此是确定的——与原来手写 if 链的固定顺序一致。
+/// 第四个参数是工程根（未设置时为 `None`）：资源类组件（`.anim` 片段、glTF 模型、UI 图集）
+/// 的装配要按工程根解析相对路径。类型知识在领域 crate，路径解析也该在组合根完成——本层
+/// 只把已有的工程根原样递过去，不认识具体资源类型。
 pub(crate) type ComponentApplier =
-    Box<dyn Fn(&mut World, EntityId, &str) -> Result<(), String>>;
+    Box<dyn Fn(&mut World, EntityId, &str, Option<&std::path::Path>) -> Result<(), String>>;
 
 /// 领域登记过的组件装配器（见 [`ComponentApplier`]）。
 ///
@@ -273,8 +274,6 @@ pub(crate) struct ScriptState {
     gpu_bursts: Vec<([f32; 3], ParticleEmitter)>,
     /// 累计有多少次 `mode=gpu` 的 burst 因为队列已满而直接落在 CPU 上（诊断用）。
     gpu_burst_overflow: usize,
-    /// 动画域能力单元（P1 ⑤-10）：帧事件队列归动画域（rustlua-animation）。
-    animation: Handle<crate::script::domain::animation::animation_lua::AnimationState>,
     /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
     renderable: Handle<crate::script::domain::render::renderable_lua::RenderableState>,
     /// M82-B2：程序化贴图注册表（`texture.generate/free` 写、宿主每帧取走上传）。
@@ -1125,16 +1124,6 @@ impl LuaRuntime {
         // P1 ⑤-9：物理句柄与 `ScriptState` 是两处借用，先取句柄副本再动它（与 `with_world` 同法）。
         let physics = self.state.borrow().physics.clone();
         physics.with_mut(|physics| physics.take_debug_request())
-    }
-    /// WP4 ⑦：宿主推进动画后把本步触发的帧事件交进来，供 Lua `animation.events()` 轮询。
-    pub fn push_animation_events(&mut self, events: Vec<(EntityId, AnimationFrameEvent)>) {
-        let animation = self.state.borrow().animation.clone();
-        animation.with_mut(|state| state.push_events(events));
-    }
-    /// P3-E01-2：`AnimationPlayer` 的命名事件，与帧事件同一条"取走即清"通道。
-    pub fn push_animation_player_events(&mut self, events: Vec<(EntityId, AnimationPlayerEvent)>) {
-        let animation = self.state.borrow().animation.clone();
-        animation.with_mut(|state| state.push_player_events(events));
     }
     /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
     pub fn collider_debug_shapes(

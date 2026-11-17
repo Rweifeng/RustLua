@@ -346,7 +346,9 @@ impl RuntimeScene {
                     });
                     fired
                 });
-                scene.script.push_animation_events(fired);
+                scene
+                    .animation_state
+                    .with_mut(|state| state.push_events(fired));
                 // docs/54 §4.4：动画片段也进运行时身份表。键是片段的**内容签名**（贴图 + 帧数 +
                 // 帧率 + 循环 + 事件），因此同一段片段在进程内恒同句柄——"这份动画是哪一个"跨帧可比。
                 //
@@ -448,7 +450,9 @@ impl RuntimeScene {
                     }
                     (fired, ui_samples)
                 });
-                scene.script.push_animation_player_events(fired);
+                scene
+                    .animation_state
+                    .with_mut(|state| state.push_player_events(fired));
                 scene.publish_ui_animation_samples(&ui_samples);
                 Ok(())
             },

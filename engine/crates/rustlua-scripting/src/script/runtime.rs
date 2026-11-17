@@ -127,8 +127,6 @@ impl LuaRuntime {
             renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
             // M82-B2：程序化贴图注册表（维度无关基底）。
             texture_gen: crate::script::domain::render::texture_lua::TextureGenState::handle(),
-            // 动画域能力单元（P1 ⑤-10）：帧事件的一次性队列。
-            animation: crate::script::domain::animation::animation_lua::AnimationState::handle(),
             // UI 域能力单元（P1 ⑤-12）：动态文本/条/面板/图/网格/拖拽/视口。
             ui_state: crate::script::domain::ui::ui_state::UiState::handle(),
             // 实体账本能力单元（P1 ⑤-13）：名字/持久 id/血量/标签/场景声明表。
@@ -215,7 +213,7 @@ impl LuaRuntime {
     /// 组合根可能重新登记一遍）。
     pub fn add_component_applier<F>(&mut self, component: &'static str, install: F)
     where
-        F: Fn(&mut World, EntityId, &str) -> Result<(), String> + 'static,
+        F: Fn(&mut World, EntityId, &str, Option<&std::path::Path>) -> Result<(), String> + 'static,
     {
         self.state
             .borrow_mut()

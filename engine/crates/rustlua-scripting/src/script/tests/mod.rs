@@ -16,34 +16,53 @@ use rustlua_render::{
 use rustlua_scene::scene::Scene;
 use rustlua_ui::ui_events::UiClickTarget;
 
-/// 相机域的接线（能力单元 + `camera*` 三张表 + `Camera` 组件装配器）。
+/// 领域接线（能力单元 + 绑定表 + 组件装配器）的测试版。
 ///
 /// 正式的组合根在 `engine::host::script_packs`（见 `docs/62` P1）：本 crate 的单元测试不能
 /// 反向依赖 `engine`（那会绕回自己），所以这里把同一套接线手写一遍。这本身就是依赖倒置的
-/// 证明——脚本层不认识相机，只要有人把"能力单元 + 安装器 + 组件装配器"交进来。
+/// 证明——脚本层不认识这些领域，只要有人把"能力单元 + 安装器 + 组件装配器"交进来。
 ///
-/// 忘记接线的后果是**静默**的：`camera` 表缺失（脚本报 nil index）、场景里的 `Camera`
-/// 组件被当成未知组件跳过。所以凡是要实例化带 `Camera` 的场景、或要跑 `camera.*` 的测试，
-/// 都必须走这个函数。
-pub(crate) fn runtime_with_camera() -> (LuaRuntime, rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>)
-{
+/// 忘记接线的后果是**静默**的：表缺失（脚本报 nil index）、场景里的组件被当成未知组件跳过。
+/// 所以凡是要实例化带这些组件的场景、或要跑 `camera.*` / `animation.*` 的测试，都必须走它。
+pub(crate) fn runtime_with_domains() -> (
+    LuaRuntime,
+    rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
+    rustlua_lua_api::Handle<rustlua_animation::animation_lua::AnimationState>,
+) {
     let camera = rustlua_camera::camera_state::CameraState::handle();
+    let animation = rustlua_animation::animation_lua::AnimationState::handle();
     let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
-    let installer = camera.clone();
+
+    let camera_installer = camera.clone();
     runtime
         .add_deferred_installer(Box::new(move |lua, world, registry| {
-            rustlua_camera::camera_lua::install(lua, &installer, world, registry.pointer_cell())?;
+            rustlua_camera::camera_lua::install(
+                lua,
+                &camera_installer,
+                world,
+                registry.pointer_cell(),
+            )?;
             #[cfg(feature = "3d")]
             rustlua_camera::camera_lua::install_3d(
                 lua,
-                &installer,
+                &camera_installer,
                 world,
                 registry.pointer_cell(),
             )?;
             Ok(())
         }))
         .expect("相机表安装");
-    runtime.add_component_applier("Camera", |world, id, value| {
+    let animation_installer = animation.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            rustlua_animation::animation_lua::install(lua, &animation_installer, world)?;
+            #[cfg(feature = "3d")]
+            rustlua_animation::animation_lua::install_3d(lua, &animation_installer, world)?;
+            Ok(())
+        }))
+        .expect("动画表安装");
+
+    runtime.add_component_applier("Camera", |world, id, value, _| {
         let camera = rustlua_camera::camera::Camera::from_component_str(value)
             .map_err(|error| error.to_string())?;
         world
@@ -51,6 +70,59 @@ pub(crate) fn runtime_with_camera() -> (LuaRuntime, rustlua_lua_api::Handle<rust
             .map_err(|error| error.to_string())?;
         Ok(())
     });
+    runtime.add_component_applier("Animation", |world, id, value, _| {
+        let machine = rustlua_animation::animation::AnimationStateMachine::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        world.insert(id, machine).map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    runtime.add_component_applier("AnimationPlayer", |world, id, value, project_root| {
+        let mut player =
+            rustlua_animation::animation_player::AnimationPlayer::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        let root = project_root.ok_or_else(|| {
+            "needs a project root to load its AnimationPlayer clip".to_owned()
+        })?;
+        let clip_path = root.join(player.clip_path());
+        let text = rustlua_infra::vfs::read_resource(&clip_path)
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })
+            .map_err(|error| {
+                format!("AnimationPlayer failed to read {}: {error}", player.clip_path())
+            })?;
+        let clip = rustlua_animation::anim_asset::AnimClip::from_text(player.clip_path(), &text)
+            .map_err(|error| format!("invalid clip {}: {error}", player.clip_path()))?;
+        player
+            .attach_clip(clip)
+            .map_err(|error| format!("AnimationPlayer cannot use {}: {error}", player.clip_path()))?;
+        world.insert(id, player).map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    runtime.add_component_applier("Animation3D", |world, id, value, project_root| {
+        let descriptor =
+            rustlua_animation::animation3d::Animation3dDescriptor::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        let root = project_root
+            .ok_or_else(|| "needs a project root to load its Animation3D mesh".to_owned())?;
+        let animation =
+            rustlua_animation::animation3d::Animation3D::from_gltf_path(root, &descriptor)
+                .map_err(|error| error.to_string())?;
+        world
+            .insert(id, animation)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    (runtime, camera, animation)
+}
+
+/// 只需要相机接线时的简写（相机测试与 API 面快照用它）。
+pub(crate) fn runtime_with_camera() -> (
+    LuaRuntime,
+    rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
+) {
+    let (runtime, camera, _) = runtime_with_domains();
     (runtime, camera)
 }
 

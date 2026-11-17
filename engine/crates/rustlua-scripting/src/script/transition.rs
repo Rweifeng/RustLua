@@ -93,12 +93,6 @@ impl LuaRuntime {
             state.prefab_ui_nodes.clear();
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
-            // 相机选中项住在 `rustlua-camera` 的能力单元里，切场景要让旧实体 id 失效
-            // （控制器与快照保留：前者是创作意图，后者每帧回填）。清理是领域知识，钩子由
-            // 组合根登记；本层只保证"在换世界之后、实例化之前"这个时机。
-            if let Ok(mut animation) = state.animation.borrow_mut() {
-                animation.clear_for_scene_transition();
-            }
             if let Ok(mut renderable) = state.renderable.borrow_mut() {
                 renderable.clear_for_scene_transition();
             }

@@ -24,6 +24,7 @@
 //! 所以凡是自己建 `LuaRuntime` 的宿主（引擎运行时、示例工程、编辑器预览、离线工具）
 //! 都必须走 [`install`]；`tests/installers.rs` 那条 API 面断言就是防这个漏的。
 
+use rustlua_animation::animation_lua::AnimationState;
 use rustlua_camera::camera_state::CameraState;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::world::World;
@@ -32,11 +33,11 @@ use rustlua_scripting::script::LuaRuntime;
 
 /// 宿主需要留着自己驱动的那部分领域句柄。
 ///
-/// 相机要每帧被推进、被读取（`step_camera2d` / `effective_camera_2d_payload` /
-/// 帧末回填投影），所以句柄必须交回宿主——这正是"共享同一份状态"的实现：
-/// 绑定与宿主看的是同一个 `Handle<CameraState>`。
+/// 相机每帧被推进/读取（`step_camera2d` / 帧末回填投影），动画每步要把帧事件推进一次性
+/// 队列——两者都必须由组合根握住同一个 `Handle`，宿主与 Lua 绑定看的是同一份状态。
 pub struct ScriptDomainHandles {
     pub camera: Handle<CameraState>,
+    pub animation: Handle<AnimationState>,
 }
 
 /// 建一个**带全部领域绑定**的运行时：`LuaRuntime::with_installers(..)` + [`install`]。
@@ -78,14 +79,17 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     //
     // 「唯一的 `Camera` 组件」这条不变量没变：投影由判别字段给出，落进世界的就是这一个
     // 组件类型，消费方按投影分支取值（`as_orthographic` / `as_perspective`）。
-    script.add_component_applier("Camera", |world: &mut World, id: EntityId, value: &str| {
-        let camera = rustlua_camera::camera::Camera::from_component_str(value)
-            .map_err(|error| error.to_string())?;
-        world
-            .insert(id, camera)
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    });
+    script.add_component_applier(
+        "Camera",
+        |world: &mut World, id: EntityId, value: &str, _project_root| {
+            let camera = rustlua_camera::camera::Camera::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+            world
+                .insert(id, camera)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        },
+    );
 
     // ③ 切场景：选中项记的是实体 id，换世界后必须作废（控制器与每帧快照保留）。
     let transition = camera.clone();
@@ -93,5 +97,71 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         transition.with_mut(|state| state.clear_for_scene_transition());
     });
 
-    ScriptDomainHandles { camera }
+    // ④ 动画域：`animation` / `animation3d` 两张表 + 帧事件的一次性队列。
+    let animation = AnimationState::handle();
+    let animation_installer = animation.clone();
+    script
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            rustlua_animation::animation_lua::install(lua, &animation_installer, world)?;
+            // M81：animation3d 属 3D 包，2D 构建不登记（与原来的 API 面基线一致）。
+            #[cfg(feature = "3d")]
+            rustlua_animation::animation_lua::install_3d(lua, &animation_installer, world)?;
+            Ok(())
+        }))
+        .expect("动画表安装失败：VM 已建好却装不进绑定，脚本会拿不到 animation.*");
+
+    // ⑤ 场景里的三类动画组件。资源路径解析也在这里完成：组合根认识工程根，脚本层不认识。
+    script.add_component_applier("Animation", |world, id, value, _| {
+        let machine =
+            rustlua_animation::animation::AnimationStateMachine::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        world.insert(id, machine).map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    script.add_component_applier("AnimationPlayer", |world, id, value, project_root| {
+        let mut player =
+            rustlua_animation::animation_player::AnimationPlayer::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        let root = project_root.ok_or_else(|| {
+            "needs a project root to load its AnimationPlayer clip".to_owned()
+        })?;
+        let clip_path = root.join(player.clip_path());
+        let text = rustlua_infra::vfs::read_resource(&clip_path)
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            })
+            .map_err(|error| {
+                format!("AnimationPlayer failed to read {}: {error}", player.clip_path())
+            })?;
+        let clip = rustlua_animation::anim_asset::AnimClip::from_text(player.clip_path(), &text)
+            .map_err(|error| format!("invalid clip {}: {error}", player.clip_path()))?;
+        player
+            .attach_clip(clip)
+            .map_err(|error| format!("AnimationPlayer cannot use {}: {error}", player.clip_path()))?;
+        world.insert(id, player).map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    script.add_component_applier("Animation3D", |world, id, value, project_root| {
+        let descriptor =
+            rustlua_animation::animation3d::Animation3dDescriptor::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        let root = project_root
+            .ok_or_else(|| "needs a project root to load its Animation3D mesh".to_owned())?;
+        let animation =
+            rustlua_animation::animation3d::Animation3D::from_gltf_path(root, &descriptor)
+                .map_err(|error| error.to_string())?;
+        world
+            .insert(id, animation)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+
+    // ⑥ 切场景：旧实体 id 已失效，帧事件与命名事件都随世界一起作废。
+    let animation_transition = animation.clone();
+    script.add_scene_transition_hook(move || {
+        animation_transition.with_mut(|state| state.clear_for_scene_transition());
+    });
+
+    ScriptDomainHandles { camera, animation }
 }

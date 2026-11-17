@@ -151,14 +151,18 @@ const BUDGET: &[(&str, &[&str])] = &[
     // `add_component_applier` 按名字转交，切场景清理经 `add_scene_transition_hook`。
     // 这条边的消失是这次搬家的**唯一验收判据**——只搬绑定文件删不掉 Cargo.toml 那行。
     //
-    // 剩余 10 条领域依赖 + `lua-api` 契约层里，animation/gameplay/physics/ui 的绑定仍是
+    // **动画也削掉了**（2026-11-17，同一天第二条）：`ScriptState.animation` 字段、
+    // `animation_lua::install{,_3d}`、`spawn_entity_components` 的三类组件分支、两个宿主
+    // 事件推送访问器全部删除；组合根还多接了一个资源路径参数（装配器签名第 4 个参数
+    // `Option<&Path>`），`.anim` 片段与 glTF 的相对路径解析因此也归了领域侧。
+    //
+    // 剩余 9 条领域依赖 + `lua-api` 契约层里，gameplay/physics/ui 的绑定仍是
     // "借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
     // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
     // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
     (
         "rustlua-scripting",
         &[
-            "animation",
             "ecs",
             "gameplay",
             "infra",
