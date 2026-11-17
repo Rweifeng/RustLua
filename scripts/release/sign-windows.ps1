@@ -42,6 +42,7 @@ function Find-SignTool {
     $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $roots = @(
+        (Join-Path $env:LOCALAPPDATA "RustLua\signtool"),
         (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"),
         (Join-Path $env:ProgramFiles "Windows Kits\10\bin"),
         (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\8.1\bin")
