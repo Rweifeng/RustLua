@@ -76,8 +76,8 @@ fn camera2d_controller_follows_scripted_target() {
         .with_world(|world| world.entities_with::<Transform>().first().copied())
         .expect("player entity");
     runtime
-        .script
-        .camera2d_controller_mut(|controller| controller.follow(Some(player)));
+        .camera_state
+        .with_mut(|state| state.controller_mut().follow(Some(player)));
     runtime.set_camera_2d(Camera2D::new(Vec2::zero(), 1.0).expect("camera"));
 
     let input = InputSnapshot::default();
@@ -91,15 +91,15 @@ fn camera2d_controller_follows_scripted_target() {
     );
     // 回填一致性：Lua 侧 `camera2d.get` 必须等于宿主实际中心。
     assert_eq!(
-        runtime.script.camera2d_controller(|c| c.center()),
+        runtime.camera_state.with(|state| state.controller().center()),
         center,
         "camera2d.get 应读到宿主真实值"
     );
 
     // 平滑跟随：目标移动后不应一步到位。
     runtime
-        .script
-        .camera2d_controller_mut(|controller| controller.set_smoothing(6.0));
+        .camera_state
+        .with_mut(|state| state.controller_mut().set_smoothing(6.0));
     runtime.script.with_world_mut(|world| {
         world
             .get_mut::<Transform>(player)

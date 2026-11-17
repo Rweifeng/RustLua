@@ -20,7 +20,6 @@
 use crate::EditorApp;
 use eframe::egui;
 use rustlua_scene::scene::Scene;
-use rustlua_scripting::script::LuaRuntime;
 use serde_json::Value;
 use std::{
     fs,
@@ -556,8 +555,8 @@ fn collect_via_unified_entry(
     mut report: DomainDataReport,
 ) -> DomainDataReport {
     report.source = DomainValidationSource::UnifiedEntry;
-    let mut runtime = match LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()) {
-        Ok(runtime) => runtime,
+    let mut runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
+        Ok((runtime, _domains)) => runtime,
         Err(error) => {
             report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
             return report;
@@ -587,8 +586,8 @@ fn collect_via_unified_entry(
 /// 回退路径：逐模块 require + `validate_all()`（工程未提供统一入口）。
 fn collect_via_per_module_scan(root: &Path, mut report: DomainDataReport) -> DomainDataReport {
     report.source = DomainValidationSource::PerModule;
-    let mut runtime = match LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()) {
-        Ok(runtime) => runtime,
+    let mut runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
+        Ok((runtime, _domains)) => runtime,
         Err(error) => {
             report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
             return report;

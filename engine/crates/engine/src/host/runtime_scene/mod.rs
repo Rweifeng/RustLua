@@ -121,6 +121,13 @@ pub struct RuntimeScene {
     ///
     /// 与 `script` 一样是"宿主每帧推、Lua 读"的单向关系：脚本不反向驱动宿主。
     pub(crate) input: rustlua_input::host::HostInput,
+    /// `camera` 绑定的能力单元（`docs/62` P1 收口的最后一条相机边）：绑定与组件装配都住在
+    /// `rustlua-camera`，由 [`crate::host::script_packs`] 接给脚本层，宿主在这里持有同一份
+    /// 状态——2D 控制器推进、每帧投影回填、`camera.set_active` 的读取都走它。
+    ///
+    /// 脚本层对相机**零引用**：这是"绑定下沉"真正完成的判据（见
+    /// `rustlua-scripting/Cargo.toml` 与 `architecture_edges` 的 BUDGET）。
+    pub(crate) camera_state: rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
     /// 自上次 `take_script_micros` 以来 Lua 回调的累计耗时（微秒）：所有固定步里的
     /// `update()` + 每个渲染帧一次的 `on_frame()`。宿主把它送进
     /// `PerformanceStats::lua_ms`，性能面板因此显示的是"Lua 花了多少"而不是恒为 0

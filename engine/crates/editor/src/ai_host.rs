@@ -20,7 +20,6 @@ use rustlua_editor_ai::{
     RemoteImageProvider, ToolError, ToolHost, surface_tables, validate_api_calls,
 };
 use rustlua_scene::scene::{SceneEntity, SceneEntityId};
-use rustlua_scripting::script::LuaRuntime;
 use rustlua_ui_spec::{AssetProvenance, AssetSource, Severity, content_hash};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -236,8 +235,9 @@ impl EditorAiHost<'_> {
             "get_lua_api" => self.lua_api_docs(args),
             "eval_lua_readonly" => {
                 let expression = string_arg(args, "expression")?;
-                let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
-                    .map_err(|error| ToolError::Host(format!("创建 Lua VM 失败：{error}")))?;
+                let (runtime, _domains) =
+                    engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+                        .map_err(|error| ToolError::Host(format!("创建 Lua VM 失败：{error}")))?;
                 runtime
                     .set_instruction_budget(10_000_000)
                     .map_err(|error| ToolError::Rejected(error.to_string()))?;
@@ -935,8 +935,9 @@ impl EditorAiHost<'_> {
             ));
         }
         let path = self.project_path(raw_path)?;
-        let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
-            .map_err(|error| ToolError::Host(format!("创建 Lua VM 失败：{error}")))?;
+        let (runtime, _domains) =
+            engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+                .map_err(|error| ToolError::Host(format!("创建 Lua VM 失败：{error}")))?;
         runtime
             .validate_chunk(raw_path, code)
             .map_err(|error| ToolError::Rejected(format!("语法校验失败：{error}")))?;

@@ -56,9 +56,8 @@ pub fn run_desktop() -> Result<(), Box<dyn std::error::Error>> {
             println!("game_check_ok project={}", root.display());
             // M81 批 3：发布后的 API 面探针——运行期 `_G` 才是事实源（feature 边漏改时
             // 构建照样绿，只有这里能抓住"2D 包里混进 3D 表"）。打包脚本按 api 维度断言行内容。
-            let runtime = rustlua_scripting::script::LuaRuntime::with_installers(
-                rustlua_gameplay::input_lua::registry(),
-            )
+            let runtime = engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+            .map(|(runtime, _)| runtime)
             .map_err(|error| format!("API 面探针 VM 构建失败: {error}"))?;
             let surface = runtime
                 .eval_json(rustlua_scripting::script::LUA_API_PROBE)

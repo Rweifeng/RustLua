@@ -14,7 +14,6 @@
 //! （`docs/62` P1 的方向）；在那之前，门面保证"谁依赖了哪些领域"只有一处可读。
 
 pub(crate) use rustlua_animation as animation;
-pub(crate) use rustlua_camera as camera;
 pub(crate) use rustlua_ecs as ecs;
 pub(crate) use rustlua_gameplay as gameplay;
 pub(crate) use rustlua_infra as infra;

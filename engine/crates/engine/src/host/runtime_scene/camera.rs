@@ -182,7 +182,7 @@ impl RuntimeScene {
     /// `Camera2dController`（跟随/死区/平滑/抖动/脚本请求）继续决定。
     pub(super) fn effective_camera_2d_payload(&self) -> Option<Camera2D> {
         let selection = CameraSelection {
-            active: self.script.active_camera().map(|id| id.index() as u64),
+            active: self.camera_state.with(|state| state.active()).map(|id| id.index() as u64),
         };
         self.script.with_world(|world| {
             selected_camera_2d_in(world, selection)
@@ -206,7 +206,7 @@ impl RuntimeScene {
         // 与 `shake` 会静默失效。为什么"选中的是透视相机时不重置"：切换 3D 相机是常见操作，
         // 它绝不该把 2D 取景弹回作者值（见 `selected_camera_2d_in` 的语义说明）。
         let selection = CameraSelection {
-            active: self.script.active_camera().map(|id| id.index() as u64),
+            active: self.camera_state.with(|state| state.active()).map(|id| id.index() as u64),
         };
         let source = self
             .script
@@ -229,8 +229,8 @@ impl RuntimeScene {
         // `Camera2dController::resolve_camera` 内部，宿主不再自己拼这套顺序，也不会出现
         // "宿主与控制器各夹一次 bounds"的分叉。
         let follow = self
-            .script
-            .camera2d_controller(|controller| controller.follow_target());
+            .camera_state
+            .with(|state| state.controller().follow_target());
         let desired = follow.and_then(|entity| {
             self.script.with_world(|world| {
                 // WP2：跟随目标跟的是**世界**位置（父链下的子实体会跟着父一起动）。
@@ -246,12 +246,14 @@ impl RuntimeScene {
         )
         .unwrap_or_else(|_| Viewport::new(1.0, 1.0).expect("1x1 viewport is valid"));
         let current = self.camera;
-        self.camera = self.script.camera2d_controller_mut(|controller| {
-            controller.resolve_camera(current, desired, viewport, delta_seconds)
+        self.camera = self.camera_state.with_mut(|state| {
+            state
+                .controller_mut()
+                .resolve_camera(current, desired, viewport, delta_seconds)
         });
         // 回填真实状态：`camera2d.get` 必须读到宿主实际在用的值。
         let (center, zoom) = (self.camera.center, self.camera.zoom);
-        self.script
-            .camera2d_controller_mut(|controller| controller.report(center, zoom));
+        self.camera_state
+            .with_mut(|state| state.controller_mut().report(center, zoom));
     }
 }

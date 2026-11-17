@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 /// 这张表 + `script/domain.rs`。
 const PINNED_ALIASES: &[(&str, &str)] = &[
     ("animation", "rustlua_animation"),
-    ("camera", "rustlua_camera"),
     ("ecs", "rustlua_ecs"),
     ("gameplay", "rustlua_gameplay"),
     ("infra", "rustlua_infra"),

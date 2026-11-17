@@ -488,22 +488,28 @@ impl LuaRuntime {
                 .insert(id, tilemap)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
-        // docs/54 §8-①：场景可以声明自带的相机。它作为**初始**相机生效；之后 Lua
-        // `camera2d.*`/`camera3d.*` 与相机控制器照旧可以移动它（不是第二份姿态真源）。
+        // 领域登记的组件（组合根装配，见 [`ComponentAppliers`]）：本层只认名字，不认类型。
         //
-        // **唯一的 `Camera` 组件**：投影由判别字段给出，落进世界的就是**这一个**组件类型，
-        // 消费方按投影分支取值（`as_orthographic` / `as_perspective`）——这正是"运行时也只
-        // 有一个相机组件"的落地：世界存储、选帧遍历与 Lua 的 `camera.*` 都只看这一个类型。
-        if let Some(value) = components.get("Camera") {
-            let camera = crate::script::domain::camera::camera::Camera::from_component_str(value)
-                .map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
+        // 这一段接手的正是原来写死在这里的分支：`components.get("Camera")` 曾直接构造
+        // `rustlua_camera::camera::Camera`——于是"相机绑定早就下沉了"之后，这条依赖边仍然
+        // 由场景装配钉着。现在类型知识归组合根，本层对相机零引用。
+        //
+        // 位置固定在 `Transform` 之后：装配器可能要按实体的空间形态（2D/3D）决定怎么落脚。
+        // 遍历顺序是 `components()` 的键序（`BTreeMap`），同一组件名只会命中一次。
+        for (component, raw) in components {
+            if state.component_appliers.get(component).is_none() {
+                continue;
+            }
+            let mut world = state.world_mut().map_err(world_borrow)?;
+            let applier = state
+                .component_appliers
+                .get(component)
+                .expect("上面刚判过 Some");
+            applier(&mut world, id, raw).map_err(|reason| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid {component}: {reason}"
+                ))
             })?;
-            state
-                .world_mut()
-                .map_err(world_borrow)?
-                .insert(id, camera)
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // docs/54 §8-①：场景可以**声明**粒子发射器（连续发射由 `rate` 表达）。这里插入的是
         // 带累计器的运行时形态；发射本身由 `scene_emitters_step` 每步按速率推进。

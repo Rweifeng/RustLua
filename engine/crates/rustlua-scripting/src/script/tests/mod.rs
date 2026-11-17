@@ -16,6 +16,44 @@ use rustlua_render::{
 use rustlua_scene::scene::Scene;
 use rustlua_ui::ui_events::UiClickTarget;
 
+/// 相机域的接线（能力单元 + `camera*` 三张表 + `Camera` 组件装配器）。
+///
+/// 正式的组合根在 `engine::host::script_packs`（见 `docs/62` P1）：本 crate 的单元测试不能
+/// 反向依赖 `engine`（那会绕回自己），所以这里把同一套接线手写一遍。这本身就是依赖倒置的
+/// 证明——脚本层不认识相机，只要有人把"能力单元 + 安装器 + 组件装配器"交进来。
+///
+/// 忘记接线的后果是**静默**的：`camera` 表缺失（脚本报 nil index）、场景里的 `Camera`
+/// 组件被当成未知组件跳过。所以凡是要实例化带 `Camera` 的场景、或要跑 `camera.*` 的测试，
+/// 都必须走这个函数。
+pub(crate) fn runtime_with_camera() -> (LuaRuntime, rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>)
+{
+    let camera = rustlua_camera::camera_state::CameraState::handle();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let installer = camera.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, world, registry| {
+            rustlua_camera::camera_lua::install(lua, &installer, world, registry.pointer_cell())?;
+            #[cfg(feature = "3d")]
+            rustlua_camera::camera_lua::install_3d(
+                lua,
+                &installer,
+                world,
+                registry.pointer_cell(),
+            )?;
+            Ok(())
+        }))
+        .expect("相机表安装");
+    runtime.add_component_applier("Camera", |world, id, value| {
+        let camera = rustlua_camera::camera::Camera::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        world
+            .insert(id, camera)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    (runtime, camera)
+}
+
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

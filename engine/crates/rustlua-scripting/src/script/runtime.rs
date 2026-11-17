@@ -5,6 +5,7 @@
 
 // WP11-USE:BEGIN
 use crate::script::EntityEvent;
+use crate::script::DeferredInstaller;
 use crate::script::EntityScriptState;
 use crate::script::LuaRuntime;
 use crate::script::ReloadStatus;
@@ -119,9 +120,6 @@ impl LuaRuntime {
             // 世界的能力单元（P1 ⑤-7）：ECS 世界本身在这里起名。宿主仍经
             // `with_world`/`with_world_mut` 访问，绑定侧经 `ScriptState::world()` 借用。
             world: Handle::new(World::new(), "world"),
-            // 相机域的能力单元（P1 ⑤-8）：选中项、2D 控制器与两份每帧快照在这里起名，
-            // `camera`/`camera3d`/`camera2d` 三张表由 `rustlua_camera::camera_lua` 装。
-            camera: crate::script::domain::camera::camera_state::CameraState::handle(),
             // 物理域的能力单元（P1 ⑤-9）：两个模拟世界、分阶段回写队列与调试请求在这里起名，
             // `physics`/`physics3d` 两张表由 `rustlua_physics::physics_lua` 装。
             physics: crate::script::domain::physics::physics_state::PhysicsState::handle(),
@@ -163,10 +161,66 @@ impl LuaRuntime {
             entity_script_requests: Vec::new(),
             entity_script_requests_revision: u64::MAX,
             installers,
+            deferred_installers: Vec::new(),
+            scene_transition_hooks: RefCell::new(Vec::new()),
             vgraph_trace: std::rc::Rc::new(RefCell::new(
                 super::vgraph_trace::VgraphTrace::default(),
             )),
         })
+    }
+
+    /// 登记一个**延迟安装器**：在 VM 建好、内建模块就位之后，拿着世界与注册表装入某个领域的
+    /// Lua 表（见 [`DeferredInstaller`]）。
+    ///
+    /// 立即装进当前 VM，并登记进列表——热重载重建 VM 时会重放同一套，否则重载之后那批表会
+    /// 静默消失（脚本报的是 `attempt to index a nil value`，看不出是"重载漏装"）。
+    /// 登记顺序即安装顺序。
+    pub fn add_deferred_installer(
+        &mut self,
+        installer: DeferredInstaller,
+    ) -> Result<(), LuaBridgeError> {
+        self.run_deferred_installer(&installer, &self.lua)?;
+        self.deferred_installers.push(installer);
+        Ok(())
+    }
+
+    fn run_deferred_installer(
+        &self,
+        installer: &DeferredInstaller,
+        lua: &Lua,
+    ) -> Result<(), LuaBridgeError> {
+        // 句柄只在这一次安装里借用：世界是 `Rc<RefCell<World>>` 的克隆，安装器拿走的是
+        // 句柄而不是借用，装完即可释放。
+        let world = self.state.borrow().world.clone();
+        installer(lua, &world, &self.installers)
+            .map_err(|error| LuaBridgeError::Init(format!("延迟安装器失败：{error}")))
+    }
+
+    /// 登记一次场景切换后的领域清理（能力单元里的实体 id 要跟着旧世界作废）。
+    ///
+    /// 清理点在本 crate 的 `transition_to_scene` 里（Lua 的 `map.goto` 也走同一条路径），
+    /// 但**清理什么**是领域知识，因此由组合根登记，本 crate 只负责在正确的时机回调。
+    /// 钩子里**不许**借 `ScriptState`：回调点已经持有 `&mut ScriptState`。
+    pub fn add_scene_transition_hook(&self, hook: impl Fn() + 'static) {
+        self.scene_transition_hooks.borrow_mut().push(Box::new(hook));
+    }
+
+    /// 登记一个**组件装配器**：场景里出现该组件名时，由 `install` 把它装进世界。
+    ///
+    /// 与 [`LuaRuntime::add_deferred_installer`] 同因：组件类型住在领域 crate 里，本层的
+    /// `spawn_entity_components` 只该认识组件**名字**。登记后本层不再为这个组件名写死任何
+    /// 类型（原来那条 `components.get("Camera")` 分支已删除）。
+    ///
+    /// 必须在实例化场景**之前**登记；同名重复登记以最后一次为准（热重载/编辑器重建时
+    /// 组合根可能重新登记一遍）。
+    pub fn add_component_applier<F>(&mut self, component: &'static str, install: F)
+    where
+        F: Fn(&mut World, EntityId, &str) -> Result<(), String> + 'static,
+    {
+        self.state
+            .borrow_mut()
+            .component_appliers
+            .insert(component, Box::new(install));
     }
 
     pub fn execute_project_script(&mut self, path: &Path) -> Result<(), LuaBridgeError> {
@@ -575,6 +629,11 @@ impl LuaRuntime {
         let candidate = new_vm();
         api::register_all(&candidate, Rc::clone(&self.state), &self.installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        // 组合根登记的领域绑定（相机等）必须在新 VM 上重放：它们不在注册表里，注册表只负责
+        // "谁装、装什么名"，世界是每次建 VM 时才拿得到的。
+        for installer in &self.deferred_installers {
+            self.run_deferred_installer(installer, &candidate)?;
+        }
         // 候选状态是**新造的 Lua 状态**，不带 `LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())` 装过的那套钩子——而
         // `execute_project_script` 恰恰是在它上面跑工程脚本的（wasm 上卡死的那一段就是这里）。
         // 所以钩子必须在**这里**装：预算沿用当前值，周期从这一刻清零。

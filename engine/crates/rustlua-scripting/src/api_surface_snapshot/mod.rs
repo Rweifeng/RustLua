@@ -14,7 +14,6 @@
 use std::collections::BTreeMap;
 
 use crate::script::LUA_API_PROBE;
-use crate::script::LuaRuntime;
 
 /// 基线随源码提交（不放 `baselines/`——那个目录整体被 `.gitignore` 排除，
 /// CI 拿不到文件，门就不成其为门）。
@@ -47,8 +46,10 @@ fn surface_tables(value: &serde_json::Value) -> BTreeMap<String, Vec<String>> {
 
 #[test]
 fn lua_api_surface_matches_baseline() {
-    let runtime =
-        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    // 相机那批表由组合根装（`engine::host::script_packs`）；本 crate 的测试用等价的
+    // `tests::runtime_with_camera` 接线。基线里含 `camera`/`camera2d`/`camera3d`，
+    // 少接一处，这里就会报"整块消失"——这正是这条门该拦住的那种漏装。
+    let runtime = crate::script::tests::runtime_with_camera().0;
     let current = surface_tables(
         &runtime
             .eval_json(LUA_API_PROBE)
@@ -110,8 +111,10 @@ const CONTRACT_TRANSCRIPT: &str = include_str!("lua_api_contract_transcript.txt"
 /// 对的是**同一份基线**，所以 PC↔Web 的等价是传递性的，不需要另写一套"web 期望值"。
 #[test]
 fn lua_api_contract_matches_transcript() {
-    let runtime =
-        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    // 相机那批表由组合根装（`engine::host::script_packs`）；本 crate 的测试用等价的
+    // `tests::runtime_with_camera` 接线。基线里含 `camera`/`camera2d`/`camera3d`，
+    // 少接一处，这里就会报"整块消失"——这正是这条门该拦住的那种漏装。
+    let runtime = crate::script::tests::runtime_with_camera().0;
     runtime
         .lua()
         .load(CONTRACT)

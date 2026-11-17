@@ -90,25 +90,10 @@ pub(super) fn register_all(
         #[cfg(feature = "3d")]
         crate::script::domain::ecs::transform_lua::install_3d(lua, &world)?;
     }
-    // 相机绑定已下沉到相机域（P1 ⑤-8）：`camera` / `camera2d` 两张基底表。
-    {
-        let camera = state.borrow().camera.clone();
-        let world = state.borrow().world.clone();
-        crate::script::domain::camera::camera_lua::install(
-            lua,
-            &camera,
-            &world,
-            installers.pointer_cell(),
-        )?;
-        // M81：camera3d 属 3D 包，2D 构建不登记。
-        #[cfg(feature = "3d")]
-        crate::script::domain::camera::camera_lua::install_3d(
-            lua,
-            &camera,
-            &world,
-            installers.pointer_cell(),
-        )?;
-    }
+    // 相机绑定（`camera` / `camera2d` / `camera3d`）不再由本层装：能力单元与绑定一起住在
+    // `rustlua-camera`，由组合根经 [`LuaRuntime::add_deferred_installer`] 登记（见 `engine`
+    // 的 `host::script_packs`）。本 crate 因此不再 `use rustlua_camera`——它只提供"什么时候
+    // 可以装"（VM 与内建模块就位之后）和"世界在哪"（安装器的第一个参数）。
     // 瓦片地图绑定已下沉到物理域（P1 ⑤-14）：tilemap 改固态格要当帧重建静态刚体。
     {
         let world = state.borrow().world.clone();

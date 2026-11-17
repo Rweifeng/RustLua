@@ -93,8 +93,9 @@ fn lua_bridge_accepts_unified_transform_and_camera_components() {
                 .components
                 .insert((*name).to_owned(), (*value).to_owned());
         }
-        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
-            .unwrap()
+        // 场景里带 `Camera` 组件：装配器由组合根登记（这里是测试版，见 `tests::runtime_with_camera`）。
+        runtime_with_camera()
+            .0
             .instantiate_scene(&scene)
     };
 
@@ -166,7 +167,7 @@ fn lua_bridge_accepts_unified_transform_and_camera_components() {
             "projection=perspective;position=0.000000000,0.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000".to_owned(),
         );
     }
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_camera().0;
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
     let entity = runtime.with_world(|world| {
         world

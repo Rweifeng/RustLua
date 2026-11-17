@@ -21,7 +21,6 @@ anyhow.workspace = true
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-scene = { path = "../rustlua-scene" }
-rustlua-camera = { path = "../rustlua-camera" }
 rustlua-animation = { path = "../rustlua-animation" }
 rustlua-render = { path = "../rustlua-render" }
 rustlua-physics = { path = "../rustlua-physics" }
@@ -40,6 +39,10 @@ rustlua-infra = { path = "../rustlua-infra" }
 rustlua-visual-script = { path = "../rustlua-visual-script" }
 
 [dev-dependencies]
+# 相机绑定与组件装配已由组合根接管（`engine::host::script_packs`）：库本身不再依赖相机域，
+# 但测试要造相机组件、要按相机状态断言宿主回填的投影，所以它留在这里——dev 依赖不参与
+# 产物的依赖图（`architecture_edges` 的门也只扫库依赖）。
+rustlua-camera = { path = "../rustlua-camera" }
 # input 绑定下沉后库里不再依赖它（docs/62 P1 阶段 3）；测试仍要造快照。
 rustlua-input = { path = "../rustlua-input" }
 # 测试要真落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。

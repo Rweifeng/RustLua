@@ -51,7 +51,6 @@ pub use vgraph_trace::VgraphTraceEvent;
 // WP11-USE:BEGIN
 use domain::animation::animation::AnimationFrameEvent;
 use domain::animation::animation_player::AnimationPlayerEvent;
-use domain::camera::camera::{Camera2D, Camera3D};
 use domain::ecs::{
     entity::EntityId,
     particle::{Particle, ParticleEmitter, ParticleMode, ParticleSystem},
@@ -184,11 +183,48 @@ pub struct LuaParticleStream {
     pub emitter: ParticleEmitter,
 }
 
+/// 组件装配器：组件名 →「把这条载荷装进世界」。
+///
+/// 为什么需要它：`spawn_entity_components` 是「组件名 → 组件类型」的唯一映射点，而组件类型
+/// 住在各自的领域 crate 里。只要本层直接写 `if let Some(value) = components.get("Camera")`，
+/// 这条依赖边就删不掉——哪怕绑定早就搬走了。
+///
+/// 有了这张表，本层只认**名字**：谁把组件装进世界由组合根决定（它本来就依赖全部领域 crate）。
+/// 表按名字排序（`BTreeMap`），装配顺序因此是确定的——与原来手写 if 链的固定顺序一致。
+pub(crate) type ComponentApplier =
+    Box<dyn Fn(&mut World, EntityId, &str) -> Result<(), String>>;
+
+/// 领域登记过的组件装配器（见 [`ComponentApplier`]）。
+///
+/// `Debug` 手写：闭包没有 `Debug`，但 `ScriptState` 的 `Debug` 被诊断路径用着，不能丢。
+#[derive(Default)]
+pub(crate) struct ComponentAppliers {
+    entries: std::collections::BTreeMap<&'static str, ComponentApplier>,
+}
+
+impl ComponentAppliers {
+    pub(crate) fn insert(&mut self, component: &'static str, applier: ComponentApplier) {
+        self.entries.insert(component, applier);
+    }
+
+    pub(crate) fn get(&self, component: &str) -> Option<&ComponentApplier> {
+        self.entries.get(component)
+    }
+}
+
+impl std::fmt::Debug for ComponentAppliers {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ComponentAppliers")
+            .field("names", &self.entries.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
-    quit_requested: bool,
-    /// 世界的能力单元（P1 ⑤-7：ECS 世界从 `ScriptState` 的内联字段变成可共享的句柄）。
+    quit_requested: bool,/// 世界的能力单元（P1 ⑤-7：ECS 世界从 `ScriptState` 的内联字段变成可共享的句柄）。
     ///
     /// 这一步**只换借用面**，不搬绑定位置：`state.world()` / `state.world_mut()` 是调用点的
     /// 短写（字段与同名方法在 Rust 里是两个命名空间）。宿主仍走 `with_world`/`with_world_mut`，
@@ -220,10 +256,9 @@ pub(crate) struct ScriptState {
     last_frame_micros: u64,
     /// 世界数据域的能力单元（P1 ⑤-4c：状态与绑定都归 `rustlua-gameplay`）。
     world_data: Handle<crate::script::domain::gameplay::world_data_state::WorldDataState>,
-    /// 相机域的能力单元（P1 ⑤-8：选中项 / 2D 控制器 / 两份每帧快照与三张 Lua 表都归
-    /// `rustlua-camera`，绑定见 `rustlua_camera::camera_lua`）。
-    camera: Handle<crate::script::domain::camera::camera_state::CameraState>,
     particles: ParticleSystem,
+    /// 领域登记的组件装配器（见 [`ComponentAppliers`]）：本层按名字转交，不认识类型。
+    component_appliers: ComponentAppliers,
     /// Lua 声明的 3D 连续发射器。宿主每帧快照后同步给渲染器的环形流；
     /// 与场景 `ParticleEmitter{rate>0,mode=gpu}` 共用同一条渲染通道。
     /// 脚本显式 `particles.stop_stream3d` 才移除——没有 TTL，避免每帧都要重新声明。
@@ -455,6 +490,18 @@ impl EntityEvent {
 }
 
 /// Main-thread Lua runtime for project scripts.
+/// 组合根登记的延迟安装器：拿到 VM、世界与注册表之后把某个领域的 Lua 表装进去。
+///
+/// 三个参数都是**已存在的东西**，没有任何一个是本 crate 的类型知识——这正是这层存在的原因：
+/// `rustlua-scripting` 不知道 `handle` 背后的领域类型，只知道"该装了"。
+pub type DeferredInstaller = Box<
+    dyn Fn(
+        &Lua,
+        &Handle<World>,
+        &crate::script::domain::lua_api::Registry,
+    ) -> mlua::Result<()>,
+>;
+
 pub struct LuaRuntime {
     lua: Lua,
     state: Rc<RefCell<ScriptState>>,
@@ -481,6 +528,19 @@ pub struct LuaRuntime {
     /// 用 `Rc` 持有：热重载会重建 VM，每个新 VM 都要装同一套安装器；安装器本身捕获的
     /// 是 `rustlua-lua-api` 的 `Handle`（宿主能力单元），所以注册表可以被多个 VM 共享。
     installers: Rc<crate::script::domain::lua_api::Registry>,
+    /// 组合根登记的**延迟安装器**（见 [`LuaRuntime::add_deferred_installer`]）。
+    ///
+    /// 为什么需要这一层：多数领域绑定要两样东西——自己的能力单元，以及**本 crate 拥有的
+    /// ECS 世界**。能力单元组合根建得出来，世界建不出来。于是组合根把"拿到世界之后再装"
+    /// 登记成闭包，由本 crate 在建 VM 时回调。注册表 + 这份列表都跨热重载存活，新 VM 会被
+    /// 同一套安装器重新装一遍——否则重载后那一批 Lua 表会静默消失。
+    deferred_installers: Vec<DeferredInstaller>,
+    /// 场景切换时要做的领域清理（见 [`LuaRuntime::add_scene_transition_hook`]）。
+    ///
+    /// `RefCell` 是因为清理发生在 `&self` 路径上（`transition_to_scene` 与 Lua 的 `map.goto`
+    /// 都会走到），而登记只发生在装配期。钩子**不允许**借 `ScriptState`：清理点已经在
+    /// 持有 `&mut ScriptState` 的临界区里，再借一次就是重入。
+    scene_transition_hooks: RefCell<Vec<Box<dyn Fn()>>>,
     /// E03-4b：`.vgraph` 当前执行节点探针；热重载重建 VM 后回调仍写同一份。
     vgraph_trace: vgraph_trace::SharedVgraphTrace,
 }
@@ -532,25 +592,6 @@ impl LuaRuntime {
         self.installers.set_delta_seconds(delta_seconds);
     }
 
-    /// 读 2D 相机控制器（WP4）。相机数据本身仍在宿主侧，这里只放"center 该怎么算"。
-    ///
-    /// P1 ⑤-8 之后控制器住在 `Handle<CameraState>` 里；宿主侧签名保持不变（引擎与编辑器
-    /// 的 7 处调用一字未改），重入由 [`Handle::with`] 的命名 panic 兜底。
-    pub fn camera2d_controller<R>(
-        &self,
-        visit: impl FnOnce(&crate::script::domain::camera::camera::Camera2dController) -> R,
-    ) -> R {
-        let camera = self.state.borrow().camera.clone();
-        camera.with(|state| visit(state.controller()))
-    }
-    /// 改 2D 相机控制器（Lua `camera2d.*` 与宿主每帧推进共用）。
-    pub fn camera2d_controller_mut<R>(
-        &mut self,
-        visit: impl FnOnce(&mut crate::script::domain::camera::camera::Camera2dController) -> R,
-    ) -> R {
-        let camera = self.state.borrow().camera.clone();
-        camera.with_mut(|state| visit(state.controller_mut()))
-    }
     /// 声明文字是否按整数物理像素排版（hinted 档）以及设计→物理比例。
     ///
     /// `ui.measure_text` 是唯一需要它的绑定：渲染侧 `build_hinted` 把字号量化成
@@ -1003,20 +1044,6 @@ impl LuaRuntime {
     pub fn clear_particle_streams(&mut self) {
         self.state.borrow_mut().clear_particle_streams();
     }
-    /// WP4 ⑧：宿主每帧把**本帧实际渲染用的** 2D 相机与视口回填进来，供 Lua 做
-    /// 屏幕↔世界换算。放在帧末（渲染前）回填，因此脚本看到的是玩家刚看到的那一帧。
-    pub fn set_camera_view(&mut self, camera: Camera2D, viewport: [f32; 2]) {
-        let handle = self.state.borrow().camera.clone();
-        handle.with_mut(|state| state.set_view_2d(camera, viewport));
-    }
-
-    /// docs/54 §8-⑦：宿主每帧把**3D pass 实际用的那台相机**与视口回填进来，供 Lua
-    /// `camera3d.ray` / `camera3d.world_to_screen` 使用（与编辑器 picking 同一套投影函数）。
-    pub fn set_camera3d_view(&mut self, camera: Camera3D, viewport: [f32; 2]) {
-        let handle = self.state.borrow().camera.clone();
-        handle.with_mut(|state| state.set_view_3d(camera, viewport));
-    }
-
     /// 宿主侧直接生成一次粒子爆发，与 Lua `particles.burst` 走同一实现。
     ///
     /// 给宿主/基准用：不必为了发粒子而绕一趟 Lua。参数非法时**不生成粒子**
@@ -1168,14 +1195,6 @@ impl LuaRuntime {
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
         let entities = self.state.borrow().entity_state.clone();
         entities.with(|entities| entities.names.first_name(id))
-    }
-
-    /// Returns the entity whose `Camera` the passes should use, if Lua selected one with
-    /// `camera.set_active`（3D pass 只在它是透视相机时用它，2D 只在它是正交相机时用它）。
-    #[must_use]
-    pub fn active_camera(&self) -> Option<EntityId> {
-        let handle = self.state.borrow().camera.clone();
-        handle.with(|state| state.active())
     }
 
     /// Returns the entity whose `Light` the renderer should use, if Lua
@@ -1465,4 +1484,4 @@ impl LuaStateBorrow for std::rc::Rc<std::cell::RefCell<ScriptState>> {
     }
 }
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

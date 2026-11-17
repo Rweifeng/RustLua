@@ -71,7 +71,19 @@ const BUDGET: &[(&str, &[&str])] = &[
     // `scene` 已经依赖 animation，因此这条边同样不开新方向、不新增传递 crate。
     (
         "rustlua-assets-import",
-        &["animation", "assets", "infra", "math", "scene", "ui"],
+        // `visual-script`（docs/80 `.sgraph` 特效模板）：导入器要按 `.sgraph` 的**同一份**
+        // 文法解析/校验着色器图，`ShaderGraph` 的值类型住在 `rustlua-visual-script`。
+        // 它是纯叶子（serde/serde_json/thiserror，不认 scene/render），所以这条边不开新方向、
+        // 也不把重型依赖带进导入层——与上面 `animation`/`scene` 那两条同因。
+        &[
+            "animation",
+            "assets",
+            "infra",
+            "math",
+            "scene",
+            "ui",
+            "visual-script",
+        ],
     ),
     // P1 ⑤-8：相机绑定（`camera`/`camera3d`/`camera2d`）与拾取共享链都住进相机域，因此多认
     // 一个 `lua-api`（叶子契约层：`Handle`/`api_error`，谁都能依赖它）。
@@ -131,15 +143,22 @@ const BUDGET: &[(&str, &[&str])] = &[
     // ── 聚合层：预算只减不增 ────────────────────────────────────────────────
     // `rustlua-scripting`：P1 已削掉 assets（`AssetId` 下沉到 infra::ids）、audio 与 input
     // （绑定下沉到 `rustlua-audio` / `rustlua-input`，接线在 `rustlua_gameplay::{audio_lua,input_lua}`）。
-    // 剩余 11 条领域依赖 + `lua-api` 契约层里，animation/camera/gameplay/physics/ui 的绑定
-    // 仍是"借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
+    //
+    // **相机也削掉了**（2026-11-17）：三条边一起断的——`ScriptState.camera` 字段、
+    // `api::register_all` 里的 `camera_lua::install`、`spawn_entity_components` 里的
+    // `components.get("Camera")`。现在接线在 `engine::host::script_packs`（组合根）：
+    // 能力单元它建，VM 装配期经 `add_deferred_installer` 回调，场景装配期经
+    // `add_component_applier` 按名字转交，切场景清理经 `add_scene_transition_hook`。
+    // 这条边的消失是这次搬家的**唯一验收判据**——只搬绑定文件删不掉 Cargo.toml 那行。
+    //
+    // 剩余 10 条领域依赖 + `lua-api` 契约层里，animation/gameplay/physics/ui 的绑定仍是
+    // "借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
     // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
     // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
     (
         "rustlua-scripting",
         &[
             "animation",
-            "camera",
             "ecs",
             "gameplay",
             "infra",
