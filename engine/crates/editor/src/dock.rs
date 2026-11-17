@@ -298,7 +298,61 @@ pub(crate) fn deserialize(value: &serde_json::Value) -> Option<DockState<DockTab
     tabs.sort_by_key(|tab| *tab as u8);
     let count = tabs.len();
     tabs.dedup();
-    (tabs.len() == count).then_some(state)
+    if tabs.len() != count {
+        return None;
+    }
+    // 修掉一类**历史遗留的坏结构**：旧版 `ShaderGraph` 不在默认树里，靠首帧 `add_tab` 的
+    // `Split::Right(0.34)` 补入，于是那时存下的 `layout.json` 里它就是 Scene 右侧的分屏。
+    // 默认树早已改成"同叶第二标签"，但磁盘上那份文件还在——不修的话老用户的 Scene
+    // 会永远窄三分之一，而新用户完全看不到这个问题（他们没有那份文件）。
+    //
+    // 只在**结构确实退化**时动手：ShaderGraph 存在、且不在 Scene 所在叶 → 搬回 Scene 叶。
+    // 用户如果自己把 ShaderGraph 拖到别处（比如和属性同叶），那不是退化的形状，
+    // 这里也就不会去动它（判断依据是"是否与 Scene 同叶"过于粗暴，所以下面只认
+    // "独立成一个只有它的叶子"这一种典型退化）。
+    repair_split_shader_graph(&mut state);
+    Some(state)
+}
+
+/// 把"单独占一个叶子的 `ShaderGraph`"搬回 Scene 所在叶（见 [`deserialize`] 的说明）。
+///
+/// 判据刻意收窄：
+/// - 目标叶里**只有** `ShaderGraph`（旧版 `add_tab` 建的正是这样的叶）；
+/// - Scene 存在（否则无从搬回）。
+///
+/// 用户自己排过的树一般不满足第一条（拖过去多半会和别的标签同叶），因此不会误伤。
+fn repair_split_shader_graph(state: &mut DockState<DockTab>) {
+    let tree = state.main_surface_mut();
+    let Some((shader_node, shader_index)) =
+        tree.find_tab_from(|candidate| *candidate == DockTab::ShaderGraph)
+    else {
+        return;
+    };
+    let Node::Leaf(shader_leaf) = &tree[shader_node] else {
+        return;
+    };
+    if shader_leaf.tabs().len() != 1 {
+        return;
+    }
+    let Some((scene_node, _)) = tree.find_tab_from(|candidate| *candidate == DockTab::Scene) else {
+        return;
+    };
+    if scene_node == shader_node {
+        return;
+    }
+    // 先摘标签再找落点：`remove_tab` 会重建树、搬动 `NodeIndex`，先前取到的
+    // `scene_node` 会失效（越界 panic）。摘掉之后 Scene 才好重新定位。
+    tree.remove_tab((shader_node, shader_index));
+    let Some((scene_node, scene_index)) =
+        tree.find_tab_from(|candidate| *candidate == DockTab::Scene)
+    else {
+        return;
+    };
+    let Node::Leaf(scene_leaf) = &mut tree[scene_node] else {
+        return;
+    };
+    scene_leaf.insert_tab(scene_index.0 + 1, DockTab::ShaderGraph);
+    scene_leaf.set_active_tab(scene_index);
 }
 
 /// 结构指纹：只覆盖"用户能感知的布局"——表面（含浮动窗）集合、树形状、拆分方向与比例、
@@ -843,6 +897,19 @@ mod tests {
         EditorApp::new(project, None, LogSink::new(16))
     }
 
+    /// 按标称窗口画一帧（测试里多处需要"让布局真的算一遍"）。
+    fn draw_one_frame(app: &mut EditorApp) {
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(NOMINAL_WIDTH, NOMINAL_HEIGHT),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw, |context| show_workspace(context, app));
+    }
+
     fn tabs_of(state: &DockState<DockTab>) -> Vec<DockTab> {
         state.main_surface().tabs().copied().collect()
     }
@@ -984,8 +1051,76 @@ mod tests {
         );
     }
 
-    /// 打开再关掉图面板，Scene 的宽度必须**原样回来**。
+    /// 旧版本存下来的"ShaderGraph 右侧分裂"布局，必须被**修正**，而不是一直继承。
     ///
+    /// 背景：M83 刚落地时 `ShaderGraph` 不在默认树里，靠首帧 `sync_visibility` → `add_tab`
+    /// 走 `Split::Right(0.34)` 补入，于是那时的 `layout.json` 里存的就是"Scene 右侧开了
+    /// 一个 34% 的分屏"。默认树已经修成"同叶第二标签"，但**磁盘上那份坏布局还在**：
+    /// `deserialize` 只做去重校验，不修结构，老用户会一直卡在 Scene 被切掉三分之一。
+    ///
+    /// 这类"已修 bug 的历史产物"最容易漏：代码对了、用户还是错的，
+    /// 而新装用户看不到（他们没有那份文件）。
+    #[test]
+    fn a_legacy_layout_with_a_split_shader_graph_is_repaired() {
+        // 造一份"旧版布局"：把 ShaderGraph 从默认树里摘掉，再走**旧版那条补入路径**
+        // （`add_tab` 的 `Split::Right(0.34)`）—— 这正是当年用户磁盘上那棵树的形状。
+        //
+        // 必须经真实帧再序列化：`split_at` 之后新节点矩形是 `Rect::NOTHING`（±∞），
+        // 直接 `serialize` 会因 `null` 浮点失败；而真实的 `layout.json` 永远是画过帧之后写的。
+        let mut app = sample_app();
+        {
+            let mut state = app.dock_state.take().expect("dock 树应在 app 里");
+            let tree = state.main_surface_mut();
+            let (node, index) = tree
+                .find_tab_from(|tab| *tab == DockTab::ShaderGraph)
+                .expect("默认树里应有 ShaderGraph");
+            tree.remove_tab((node, index));
+            add_tab(&mut state, DockTab::ShaderGraph);
+            app.dock_state = Some(state);
+        }
+        draw_one_frame(&mut app);
+        let state = app.dock_state.take().expect("帧末必须放回 dock 树");
+
+        // 此时确实是"右侧分裂"：ShaderGraph 与 Scene 不同叶，Scene 因此窄了。
+        // 这里记**宽度**而不是 NodeIndex：树一旦重建，`NodeIndex` 必然变，比它没有意义。
+        let split_width = rect_of(&state, DockTab::Scene).width();
+        {
+            let tree = state.main_surface();
+            let scene = tree
+                .find_tab_from(|tab| *tab == DockTab::Scene)
+                .map(|(n, _)| n);
+            let shader = tree
+                .find_tab_from(|tab| *tab == DockTab::ShaderGraph)
+                .map(|(n, _)| n);
+            assert_ne!(scene, shader, "构造出来的旧布局应当是右侧分裂");
+        }
+
+        // 走真实的持久化往返：存 → 读回 → 再画一帧。修好的布局必须在读回后就正过来。
+        let value = serialize(&state).expect("旧布局应能序列化");
+        app.dock_state = Some(deserialize(&value).expect("旧布局应能读回"));
+        draw_one_frame(&mut app);
+        let state = app.dock_state.take().expect("帧末必须放回 dock 树");
+        let tree = state.main_surface();
+        let scene = tree
+            .find_tab_from(|tab| *tab == DockTab::Scene)
+            .map(|(n, _)| n);
+        let shader = tree
+            .find_tab_from(|tab| *tab == DockTab::ShaderGraph)
+            .map(|(n, _)| n);
+        assert_eq!(
+            scene, shader,
+            "读回时 ShaderGraph 应与 Scene 同叶（旧版的右侧分裂必须被修掉，\
+             否则老用户的 Scene 永远窄三分之一）"
+        );
+        // 宽度必须回到"没被切掉"的水平（= 默认布局里 Scene 的宽度）。
+        let repaired_width = rect_of(&state, DockTab::Scene).width();
+        assert!(
+            repaired_width > split_width + 100.0,
+            "修完之后 Scene 应该宽回来：分裂时 {split_width:.1}，修完 {repaired_width:.1}"
+        );
+    }
+
+    /// 打开再关掉图面板，Scene 的宽度必须**原样回来**。    ///
     /// 按需进入的图类面板（`.vgraph` 的 Graph、特效的 ShaderGraph）走 `add_tab` 的
     /// `Split::Right(0.34)`——打开时把 Scene 让出三分之一是合理的（用户主动要看图）。
     /// 但"关掉之后呢"此前没人钉：
