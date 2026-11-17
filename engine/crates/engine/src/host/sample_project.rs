@@ -91,8 +91,7 @@ fn scene_name(path: &Path) -> String {
 /// 共享脚本（api_demo/lab/router 等）不算——它们被所有场景 require，算进去会全场连坐。
 #[cfg(not(feature = "3d"))]
 fn out_of_surface_skip(root: &Path, name: &str) -> Option<String> {
-    let runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     let surface = runtime
@@ -240,8 +239,7 @@ fn bootstrap_project_require(runtime: &mut LuaRuntime, root: &Path) {
 
 /// `scripts/capabilities.lua` 的 JSON 形态（能力图谱是演示工程 3.0 的单一真源）。
 fn capability_catalog(root: &Path) -> serde_json::Value {
-    let mut runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let mut runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     bootstrap_project_require(&mut runtime, root);
@@ -273,8 +271,7 @@ fn sample_project_capability_catalog_is_complete() {
     let registered = registered_scenes(&root);
     let modules = scene_modules(&root);
     let catalog = capability_catalog(&root);
-    let mut runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let mut runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     bootstrap_project_require(&mut runtime, &root);
@@ -863,8 +860,7 @@ fn sample_project_demos_self_test() {
 #[test]
 fn sample_project_scripts_all_compile() {
     let root = project_root();
-    let mut runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let mut runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     runtime.set_project_root(root.clone());
@@ -964,8 +960,7 @@ fn sample_project_shared_overlay_is_not_covered() {
 #[test]
 fn sample_project_scene_text_has_every_glyph() {
     let root = project_root();
-    let mut runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let mut runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     runtime.set_project_root(root.clone());
@@ -1021,8 +1016,7 @@ fn sample_project_scene_text_has_every_glyph() {
 #[test]
 fn sample_project_demos_cover_every_lua_api() {
     let root = project_root();
-    let runtime =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let runtime = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     let surface = runtime
@@ -1347,8 +1341,7 @@ fn sample_project_index_labels_fit_their_cards() {
     }
     let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("实例化入口场景");
     let rects = runtime.scene_entity_ui_layout_rects(ids, [1280.0, 720.0]);
-    let mut probe =
-        crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    let mut probe = crate::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
         .expect("lua vm")
         .0;
     probe.set_project_root(root.clone());

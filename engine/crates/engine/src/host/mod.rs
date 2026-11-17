@@ -22,11 +22,11 @@ pub mod runtime_scene;
 mod sample_project;
 /// 表现层组件 codec 的装表入口（P1 ④）：组合根在这里把 render/ui 的 codec 接给 scene。
 pub mod scene_codecs;
+/// 场景文本 → 渲染层类型的旧提取（P1 ④ 之后从 `rustlua-scene` 搬来：它产出 render 的类型）。
+pub mod scene_extract;
 /// 领域 Lua 绑定/组件/切场景清理的组合根（`docs/62` P1）：把 `rustlua-scripting` 对领域
 /// crate 的依赖边收掉的那一层（见模块文档）。
 pub mod script_packs;
-/// 场景文本 → 渲染层类型的旧提取（P1 ④ 之后从 `rustlua-scene` 搬来：它产出 render 的类型）。
-pub mod scene_extract;
 /// TankBattle 外部工程的活体验证（仅 `RUSTLUA_TANK_PROJECT` 指向工程根时运行）。
 #[cfg(test)]
 mod tank_project;

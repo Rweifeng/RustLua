@@ -74,18 +74,20 @@ pub(crate) fn runtime_with_domains() -> (
         Ok(())
     });
     runtime.add_component_applier("Animation", |world, id, value, _| {
-        let machine = rustlua_animation::animation::AnimationStateMachine::from_component_str(value)
+        let machine =
+            rustlua_animation::animation::AnimationStateMachine::from_component_str(value)
+                .map_err(|error| error.to_string())?;
+        world
+            .insert(id, machine)
             .map_err(|error| error.to_string())?;
-        world.insert(id, machine).map_err(|error| error.to_string())?;
         Ok(())
     });
     runtime.add_component_applier("AnimationPlayer", |world, id, value, project_root| {
         let mut player =
             rustlua_animation::animation_player::AnimationPlayer::from_component_str(value)
                 .map_err(|error| error.to_string())?;
-        let root = project_root.ok_or_else(|| {
-            "needs a project root to load its AnimationPlayer clip".to_owned()
-        })?;
+        let root = project_root
+            .ok_or_else(|| "needs a project root to load its AnimationPlayer clip".to_owned())?;
         let clip_path = root.join(player.clip_path());
         let text = rustlua_infra::vfs::read_resource(&clip_path)
             .and_then(|bytes| {
@@ -93,14 +95,19 @@ pub(crate) fn runtime_with_domains() -> (
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
             })
             .map_err(|error| {
-                format!("AnimationPlayer failed to read {}: {error}", player.clip_path())
+                format!(
+                    "AnimationPlayer failed to read {}: {error}",
+                    player.clip_path()
+                )
             })?;
         let clip = rustlua_animation::anim_asset::AnimClip::from_text(player.clip_path(), &text)
             .map_err(|error| format!("invalid clip {}: {error}", player.clip_path()))?;
-        player
-            .attach_clip(clip)
-            .map_err(|error| format!("AnimationPlayer cannot use {}: {error}", player.clip_path()))?;
-        world.insert(id, player).map_err(|error| error.to_string())?;
+        player.attach_clip(clip).map_err(|error| {
+            format!("AnimationPlayer cannot use {}: {error}", player.clip_path())
+        })?;
+        world
+            .insert(id, player)
+            .map_err(|error| error.to_string())?;
         Ok(())
     });
     runtime.add_component_applier("Animation3D", |world, id, value, project_root| {
@@ -155,7 +162,11 @@ pub(crate) fn runtime_with_domains() -> (
     });
     let applier = physics.clone();
     runtime.add_component_applier("Tilemap", move |world, id, _, _| {
-        let Some(tilemap) = world.get::<rustlua_ecs::tilemap::Tilemap>(id).ok().flatten() else {
+        let Some(tilemap) = world
+            .get::<rustlua_ecs::tilemap::Tilemap>(id)
+            .ok()
+            .flatten()
+        else {
             return Ok(());
         };
         if !tilemap.solid.iter().any(|solid| *solid) {
@@ -293,9 +304,7 @@ fn install_ui_bindings(
             let entities = entities_installer.clone();
             interact.set(
                 "get_prompt",
-                lua.create_function(move |_, ()| {
-                    Ok(entities.borrow()?.interact_prompt.clone())
-                })?,
+                lua.create_function(move |_, ()| Ok(entities.borrow()?.interact_prompt.clone()))?,
             )?;
             Ok(())
         }))
@@ -307,8 +316,8 @@ fn install_ui_appliers(runtime: &mut LuaRuntime) {
     macro_rules! ui_applier {
         ($component:literal, $type:path) => {
             runtime.add_component_applier($component, |world, id, value, _| {
-                let component = <$type>::from_component_str(value)
-                    .map_err(|error| error.to_string())?;
+                let component =
+                    <$type>::from_component_str(value).map_err(|error| error.to_string())?;
                 world
                     .insert(id, component)
                     .map_err(|error| error.to_string())?;
@@ -431,7 +440,11 @@ impl std::ops::DerefMut for TestRuntime {
 
 pub(crate) fn runtime_with_all() -> TestRuntime {
     let (runtime, _camera, _animation, physics, ui) = runtime_with_domains();
-    TestRuntime { runtime, physics, ui }
+    TestRuntime {
+        runtime,
+        physics,
+        ui,
+    }
 }
 
 impl TestRuntime {
@@ -496,11 +509,16 @@ impl TestRuntime {
         written
     }
 
+    // 以下三个镜像生产侧 `physics_driver` 的接口：本 crate 当前的测试没走到它们，
+    // 但保留完整镜像是有意的——测试版组合根要与生产组合根同形，缺一个下次接线时
+    // 就会先撞编译错误而不是撞行为差异。
+    #[allow(dead_code)]
     pub(crate) fn discard_pending_writeback(&self) {
         self.physics
             .with_mut(|physics| physics.clear_pending_writebacks());
     }
 
+    #[allow(dead_code)]
     pub(crate) fn sync_kinematic_bodies(&self) -> usize {
         let physics = self.physics.clone();
         let mut synced = 0;
@@ -515,6 +533,7 @@ impl TestRuntime {
         synced
     }
 
+    #[allow(dead_code)]
     pub(crate) fn sync_kinematic_bodies_3d(&self) -> usize {
         let physics = self.physics.clone();
         let mut synced = 0;
@@ -555,17 +574,16 @@ impl TestRuntime {
             .with_mut(|physics| physics.drain_event_contacts());
         let mut delivered = 0;
         for contact in contacts.into_iter().filter(|contact| contact.started) {
-            if self.runtime.dispatch_entity_event(
-                contact.a,
-                EntityEvent::Collision { other: contact.b },
-            )? {
+            if self
+                .runtime
+                .dispatch_entity_event(contact.a, EntityEvent::Collision { other: contact.b })?
+            {
                 delivered += 1;
             }
             if contact.a != contact.b
-                && self.runtime.dispatch_entity_event(
-                    contact.b,
-                    EntityEvent::Collision { other: contact.a },
-                )?
+                && self
+                    .runtime
+                    .dispatch_entity_event(contact.b, EntityEvent::Collision { other: contact.a })?
             {
                 delivered += 1;
             }

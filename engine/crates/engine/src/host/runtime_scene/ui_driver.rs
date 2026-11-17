@@ -61,7 +61,8 @@ impl RuntimeScene {
             &BTreeMap<String, rustlua_ui::ui::UiGrid>,
         ) -> R,
     ) -> R {
-        self.ui_state.with(|ui| f(ui.panels(), ui.images(), ui.grids()))
+        self.ui_state
+            .with(|ui| f(ui.panels(), ui.images(), ui.grids()))
     }
 
     /// 场景文字按名隐藏集（`ui.scene_text_visible` 写入）的只读视图。

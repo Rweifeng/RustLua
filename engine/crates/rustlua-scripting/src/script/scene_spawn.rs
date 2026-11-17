@@ -14,13 +14,13 @@ use crate::script::domain::ecs::particle::SceneParticleEmitter;
 use crate::script::domain::ecs::tilemap::Tilemap;
 use crate::script::domain::ecs::transform::Transform3D;
 use crate::script::domain::infra::ids::AssetId;
+use crate::script::domain::lua_api::ui_events::{UiClickTarget, UiEventType};
 use crate::script::domain::render::atlas::resolve_atlas_reference;
 use crate::script::domain::render::light::Light;
 use crate::script::domain::render::mesh3d::MeshRenderer;
 use crate::script::domain::render::sprite::SpriteAsset;
 use crate::script::domain::render::sprite::SpriteComponent;
 use crate::script::domain::scene::scene::Scene;
-use crate::script::domain::lua_api::ui_events::{UiClickTarget, UiEventType};
 use crate::script::error::LuaBridgeError;
 use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
 use mlua::Value;
@@ -763,14 +763,10 @@ impl LuaRuntime {
         // 返回的新串写进 `sources`——那是宿主重建布局节点的事实源，与世界不一致就会
         // "画面按 A 摆、脚本查到 B"。
         let writer = state.prefab_rect_writer.as_ref().ok_or_else(|| {
-            LuaBridgeError::Api(
-                "prefab.set_rect: 组合根未注入 UiLayout 写入端口".to_owned(),
-            )
+            LuaBridgeError::Api("prefab.set_rect: 组合根未注入 UiLayout 写入端口".to_owned())
         })?;
         let updated = (writer.0)(&state.world, id, &raw, edges).ok_or_else(|| {
-            LuaBridgeError::Api(format!(
-                "prefab.set_rect: 节点 {name:?} 的 UiLayout 无效"
-            ))
+            LuaBridgeError::Api(format!("prefab.set_rect: 节点 {name:?} 的 UiLayout 无效"))
         })?;
         {
             let Some(spawn) = state.prefab_spawns.get_mut(&handle) else {

@@ -749,7 +749,8 @@ fn verify_domain_data(root: &Path) -> Vec<String> {
     if !rustlua_infra::vfs::is_file(&entry) {
         return Vec::new();
     }
-    let runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
+    let runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+    {
         Ok((runtime, _domains)) => runtime,
         Err(error) => return vec![format!("Lua 运行时初始化失败: {error}")],
     };

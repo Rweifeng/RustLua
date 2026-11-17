@@ -4,8 +4,8 @@
 //! 成功后才把 `self.lua` 换掉——状态在 Rust 侧（`ScriptState`），换 VM 不丢世界数据。
 
 // WP11-USE:BEGIN
-use crate::script::EntityEvent;
 use crate::script::DeferredInstaller;
+use crate::script::EntityEvent;
 use crate::script::EntityScriptState;
 use crate::script::LuaRuntime;
 use crate::script::ReloadStatus;
@@ -191,7 +191,9 @@ impl LuaRuntime {
     /// 但**清理什么**是领域知识，因此由组合根登记，本 crate 只负责在正确的时机回调。
     /// 钩子里**不许**借 `ScriptState`：回调点已经持有 `&mut ScriptState`。
     pub fn add_scene_transition_hook(&self, hook: impl Fn() + 'static) {
-        self.scene_transition_hooks.borrow_mut().push(Box::new(hook));
+        self.scene_transition_hooks
+            .borrow_mut()
+            .push(Box::new(hook));
     }
 
     /// 登记一个**组件装配器**：场景里出现该组件名时，由 `install` 把它装进世界。

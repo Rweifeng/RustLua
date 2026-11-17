@@ -282,8 +282,9 @@ mod tests {
     /// 未加载游戏模块时逐条给出「读取失败」文本而不是 panic。
     #[test]
     fn probes_fail_gracefully_without_runtime_state() {
-        let (runtime, _domains) = engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
-            .expect("lua runtime");
+        let (runtime, _domains) =
+            engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+                .expect("lua runtime");
         let results = run_runtime_probes(&runtime);
         assert_eq!(results.len(), runtime_probes().len());
         assert!(results.len() >= 7, "覆盖地图/玩家/NPC/任务/农田/建筑/存档");
@@ -319,8 +320,9 @@ mod tests {
     /// 探针内部用 `pcall` 收敛错误：即使模块存在但读取抛错，也返回结构化错误。
     #[test]
     fn probe_wrapper_reports_pcall_errors_as_text() {
-        let (runtime, _domains) = engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
-            .expect("lua runtime");
+        let (runtime, _domains) =
+            engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+                .expect("lua runtime");
         let value = runtime
             .eval_json(
                 r#"(function()

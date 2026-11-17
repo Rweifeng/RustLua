@@ -403,8 +403,7 @@ impl RuntimeScene {
             return;
         }
         let instances = self.script.prefab_ui_layout_sources();
-        let mut spawned: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> =
-            BTreeMap::new();
+        let mut spawned: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> = BTreeMap::new();
         for instance in &instances {
             // 隐藏是**子树**语义：根记进 `hidden` 的整棵子树一个节点都不建（宿主拿不到
             // 矩形就既不画也不产点击目标），沿父链展开与"先藏父再显子"的顺序无关。

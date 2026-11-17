@@ -91,7 +91,9 @@ fn camera2d_controller_follows_scripted_target() {
     );
     // 回填一致性：Lua 侧 `camera2d.get` 必须等于宿主实际中心。
     assert_eq!(
-        runtime.camera_state.with(|state| state.controller().center()),
+        runtime
+            .camera_state
+            .with(|state| state.controller().center()),
         center,
         "camera2d.get 应读到宿主真实值"
     );

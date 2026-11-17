@@ -39,13 +39,11 @@ fn prefab_ui_layout_revision_advances_with_instance_lifecycle() {
         root.join("hud.prefab"),
         // `.prefab` 是 tab 分隔的行式记录（与 `.scene` 同一口径）：根实体 3 段、子实体 4 段，
         // 组件单独成行。手写这份数据是为了让"修订号随实例生命周期推进"这条用例自足。
-        format!(
-            "prefab_version=1\nasset_id=00000000-0000-0000-0000-000000000001\nname=hud\nroot=1\n\
-             entity\t1\tRoot\n\
-             entity\t2\tLabel\t1\n\
-             component\t2\tText\ttext=HP;font_size=18;color=1,1,1\n\
-             component\t2\tUiLayout\tanchors=0,0,0,0;offsets=0,0,100,20\n"
-        ),
+        "prefab_version=1\nasset_id=00000000-0000-0000-0000-000000000001\nname=hud\nroot=1\n\
+         entity\t1\tRoot\n\
+         entity\t2\tLabel\t1\n\
+         component\t2\tText\ttext=HP;font_size=18;color=1,1,1\n\
+         component\t2\tUiLayout\tanchors=0,0,0,0;offsets=0,0,100,20\n",
     )
     .unwrap();
 
@@ -75,10 +73,7 @@ fn prefab_ui_layout_revision_advances_with_instance_lifecycle() {
         .exec()
         .expect("prefab.set_visible");
     let after_visible = runtime.prefab_ui_layout_revision();
-    assert!(
-        after_visible > after_spawn,
-        "set_visible 必须推进修订号"
-    );
+    assert!(after_visible > after_spawn, "set_visible 必须推进修订号");
 
     runtime
         .lua
@@ -94,10 +89,7 @@ fn prefab_ui_layout_revision_advances_with_instance_lifecycle() {
         .exec()
         .expect("prefab.despawn");
     let after_despawn = runtime.prefab_ui_layout_revision();
-    assert!(
-        after_despawn > after_rect,
-        "despawn 必须推进修订号"
-    );
+    assert!(after_despawn > after_rect, "despawn 必须推进修订号");
     assert!(
         runtime.prefab_ui_layout_sources().is_empty(),
         "despawn 之后视图应为空"
@@ -177,9 +169,7 @@ fn lua_bridge_accepts_unified_transform_and_camera_components() {
                 .insert((*name).to_owned(), (*value).to_owned());
         }
         // 场景里带 `Camera` 组件：装配器由组合根登记（这里是测试版，见 `tests::runtime_with_camera`）。
-        runtime_with_camera()
-            .0
-            .instantiate_scene(&scene)
+        runtime_with_camera().0.instantiate_scene(&scene)
     };
 
     // 2D 实体（无 3D 专属组件）+ 统一 `Camera`（正交）。

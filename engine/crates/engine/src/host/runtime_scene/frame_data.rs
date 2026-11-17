@@ -550,7 +550,10 @@ impl RuntimeScene {
         // `CameraSelection` 表述；宿主只在遍历候选时套用它，不再自己写一遍判断。
         // docs/54 §4.2：`enabled=false` 的相机不参与选择（既不当"第一个"，也不响应显式选中）。
         let selection = CameraSelection {
-            active: self.camera_state.with(|state| state.active()).map(|id| id.index() as u64),
+            active: self
+                .camera_state
+                .with(|state| state.active())
+                .map(|id| id.index() as u64),
         };
         let camera = self.script.with_world(|world| {
             // 单趟遍历、**不建候选表**：显式选中优先，否则排序序第一个启用项。
@@ -681,10 +684,9 @@ impl RuntimeScene {
         // WP4 ⑧：把本帧渲染用的 2D 相机与视口回填给 Lua，供 `camera2d.screen_to_world`
         // 一类换算使用。帧首回填 ⇒ 脚本看到的是上一帧末相机控制器算出的、也就是玩家刚看到的
         // 那一帧的投影；脚本在首帧渲染前调用换算会报错而不是猜一个默认相机。
-        self.camera_state
-            .with_mut(|state| {
-                state.set_view_2d(self.camera, [width.max(1) as f32, height.max(1) as f32])
-            });
+        self.camera_state.with_mut(|state| {
+            state.set_view_2d(self.camera, [width.max(1) as f32, height.max(1) as f32])
+        });
         // docs/54 §8-⑦：把本帧 **3D pass 实际用的那台相机**回填给 Lua，于是 `camera3d.ray`
         // 与编辑器 3D 点选走的是同一份投影数学（同一条 `Camera3D::ray_from_screen`）。
         // 拆分批 7：回填的是**组件载荷本身**——宽高比由 Lua 侧的视口给出，不再写回相机。
@@ -692,10 +694,9 @@ impl RuntimeScene {
         // `scene_3d` 与 3D 调试线框复用同一份，于是"渲染用的相机"与"回填给 Lua 的相机"由**构造**
         // 决定同源，而不是靠"两步之间没人改世界"的巧合。
         let camera3d = self.active_camera3d();
-        self.camera_state
-            .with_mut(|state| {
-                state.set_view_3d(camera3d, [width.max(1) as f32, height.max(1) as f32])
-            });
+        self.camera_state.with_mut(|state| {
+            state.set_view_3d(camera3d, [width.max(1) as f32, height.max(1) as f32])
+        });
         self.frame_view_3d = Some(FrameView3d {
             camera: camera3d,
             viewport,

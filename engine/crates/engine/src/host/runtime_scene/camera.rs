@@ -182,7 +182,10 @@ impl RuntimeScene {
     /// `Camera2dController`（跟随/死区/平滑/抖动/脚本请求）继续决定。
     pub(super) fn effective_camera_2d_payload(&self) -> Option<Camera2D> {
         let selection = CameraSelection {
-            active: self.camera_state.with(|state| state.active()).map(|id| id.index() as u64),
+            active: self
+                .camera_state
+                .with(|state| state.active())
+                .map(|id| id.index() as u64),
         };
         self.script.with_world(|world| {
             selected_camera_2d_in(world, selection)
@@ -206,7 +209,10 @@ impl RuntimeScene {
         // 与 `shake` 会静默失效。为什么"选中的是透视相机时不重置"：切换 3D 相机是常见操作，
         // 它绝不该把 2D 取景弹回作者值（见 `selected_camera_2d_in` 的语义说明）。
         let selection = CameraSelection {
-            active: self.camera_state.with(|state| state.active()).map(|id| id.index() as u64),
+            active: self
+                .camera_state
+                .with(|state| state.active())
+                .map(|id| id.index() as u64),
         };
         let source = self
             .script

@@ -115,9 +115,22 @@ use crate::script::domain::ecs::tilemap::Tilemap;
 use crate::script::domain::ecs::transform::Transform;
 
 /// 组合根注入的 `prefab.set_text` 写入端口（Debug 包装，见 [`ScriptState::prefab_text_writer`]）。
-pub(crate) struct PrefabTextPort(
-    Box<dyn Fn(&Handle<crate::script::domain::ecs::world::World>, EntityId, &str) -> bool>,
-);
+/// 参数：世界句柄、目标实体、新文字；返回 `true` = 该节点确实有 `Text` 组件并被改写。
+type PrefabTextWriter =
+    dyn Fn(&Handle<crate::script::domain::ecs::world::World>, EntityId, &str) -> bool;
+
+/// 组合根注入的 `prefab.set_rect` 写入端口（Debug 包装，见 [`ScriptState::prefab_rect_writer`]）。
+/// 参数：世界句柄、目标实体、authored 的 `UiLayout` 串、新的四条边；返回改写后的串
+/// （`None` = 原串无效，调用方按报错处理）。
+type PrefabRectWriter = dyn Fn(
+    &Handle<crate::script::domain::ecs::world::World>,
+    EntityId,
+    &str,
+    [f32; 4],
+) -> Option<String>;
+
+/// 组合根注入的 `prefab.set_text` 写入端口（Debug 包装，见 [`ScriptState::prefab_text_writer`]）。
+pub(crate) struct PrefabTextPort(Box<PrefabTextWriter>);
 
 impl std::fmt::Debug for PrefabTextPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -126,16 +139,7 @@ impl std::fmt::Debug for PrefabTextPort {
 }
 
 /// 组合根注入的 `prefab.set_rect` 写入端口（Debug 包装，见 [`ScriptState::prefab_rect_writer`]）。
-pub(crate) struct PrefabRectPort(
-    Box<
-        dyn Fn(
-            &Handle<crate::script::domain::ecs::world::World>,
-            EntityId,
-            &str,
-            [f32; 4],
-        ) -> Option<String>,
-    >,
-);
+pub(crate) struct PrefabRectPort(Box<PrefabRectWriter>);
 
 impl std::fmt::Debug for PrefabRectPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,8 +167,6 @@ pub struct PrefabLayoutSource {
     pub parent: Option<u64>,
     pub components: BTreeMap<String, String>,
 }
-
-/// 一帧里最多排多少条待派发的 GPU burst（P3-R07-2）。
 
 /// 一帧里最多排多少条待派发的 GPU burst（P3-R07-2）。
 ///
@@ -229,7 +231,8 @@ impl std::fmt::Debug for ComponentAppliers {
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
-    quit_requested: bool,/// 世界的能力单元（P1 ⑤-7：ECS 世界从 `ScriptState` 的内联字段变成可共享的句柄）。
+    quit_requested: bool,
+    /// 世界的能力单元（P1 ⑤-7：ECS 世界从 `ScriptState` 的内联字段变成可共享的句柄）。
     ///
     /// 这一步**只换借用面**，不搬绑定位置：`state.world()` / `state.world_mut()` 是调用点的
     /// 短写（字段与同名方法在 Rust 里是两个命名空间）。宿主仍走 `with_world`/`with_world_mut`，
@@ -495,11 +498,7 @@ impl EntityEvent {
 /// 三个参数都是**已存在的东西**，没有任何一个是本 crate 的类型知识——这正是这层存在的原因：
 /// `rustlua-scripting` 不知道 `handle` 背后的领域类型，只知道"该装了"。
 pub type DeferredInstaller = Box<
-    dyn Fn(
-        &Lua,
-        &Handle<World>,
-        &crate::script::domain::lua_api::Registry,
-    ) -> mlua::Result<()>,
+    dyn Fn(&Lua, &Handle<World>, &crate::script::domain::lua_api::Registry) -> mlua::Result<()>,
 >;
 
 pub struct LuaRuntime {
@@ -683,11 +682,7 @@ impl LuaRuntime {
     /// 组合根用 `rustlua_ui` 的类型实现后注入（见 `engine::host::script_packs`）。
     pub fn set_prefab_ui_helpers(
         &mut self,
-        text_writer: impl Fn(
-            &Handle<crate::script::domain::ecs::world::World>,
-            EntityId,
-            &str,
-        ) -> bool
+        text_writer: impl Fn(&Handle<crate::script::domain::ecs::world::World>, EntityId, &str) -> bool
         + 'static,
         rect_writer: impl Fn(
             &Handle<crate::script::domain::ecs::world::World>,
@@ -1076,7 +1071,9 @@ impl LuaRuntime {
     }
     /// 实体账本的句柄：宿主同步物理刚体移除登记（`entity.destroy`）时用。
     /// 这是 ECS 能力单元，不引入新的领域依赖边；物理域自己的状态由组合根直接持有。
-    pub fn entity_state_handle(&self) -> Handle<crate::script::domain::ecs::entity_state::EntityState> {
+    pub fn entity_state_handle(
+        &self,
+    ) -> Handle<crate::script::domain::ecs::entity_state::EntityState> {
         self.state.borrow().entity_state.clone()
     }
 

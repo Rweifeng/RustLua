@@ -555,13 +555,14 @@ fn collect_via_unified_entry(
     mut report: DomainDataReport,
 ) -> DomainDataReport {
     report.source = DomainValidationSource::UnifiedEntry;
-    let mut runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
-        Ok((runtime, _domains)) => runtime,
-        Err(error) => {
-            report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
-            return report;
-        }
-    };
+    let mut runtime =
+        match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
+            Ok((runtime, _domains)) => runtime,
+            Err(error) => {
+                report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
+                return report;
+            }
+        };
     runtime.set_project_root(root.to_path_buf());
     if let Err(error) = runtime.execute_project_script(entry) {
         report.bootstrap_error = Some(format!(
@@ -586,13 +587,14 @@ fn collect_via_unified_entry(
 /// 回退路径：逐模块 require + `validate_all()`（工程未提供统一入口）。
 fn collect_via_per_module_scan(root: &Path, mut report: DomainDataReport) -> DomainDataReport {
     report.source = DomainValidationSource::PerModule;
-    let mut runtime = match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
-        Ok((runtime, _domains)) => runtime,
-        Err(error) => {
-            report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
-            return report;
-        }
-    };
+    let mut runtime =
+        match engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry()) {
+            Ok((runtime, _domains)) => runtime,
+            Err(error) => {
+                report.bootstrap_error = Some(format!("Lua VM 初始化失败：{error}"));
+                return report;
+            }
+        };
     if let Err(error) = runtime.execute_console(&bootstrap_source(root)) {
         report.bootstrap_error = Some(format!(
             "工程 Lua 搜索路径引导失败（工程根目录：{}）：{error}",

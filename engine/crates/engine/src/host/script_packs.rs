@@ -26,10 +26,10 @@
 
 use rustlua_animation::animation_lua::AnimationState;
 use rustlua_camera::camera_state::CameraState;
-use rustlua_physics::physics_state::PhysicsState;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::world::World;
 use rustlua_lua_api::Handle;
+use rustlua_physics::physics_state::PhysicsState;
 use rustlua_scripting::script::LuaRuntime;
 use std::rc::Rc;
 
@@ -123,16 +123,17 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         let machine =
             rustlua_animation::animation::AnimationStateMachine::from_component_str(value)
                 .map_err(|error| error.to_string())?;
-        world.insert(id, machine).map_err(|error| error.to_string())?;
+        world
+            .insert(id, machine)
+            .map_err(|error| error.to_string())?;
         Ok(())
     });
     script.add_component_applier("AnimationPlayer", |world, id, value, project_root| {
         let mut player =
             rustlua_animation::animation_player::AnimationPlayer::from_component_str(value)
                 .map_err(|error| error.to_string())?;
-        let root = project_root.ok_or_else(|| {
-            "needs a project root to load its AnimationPlayer clip".to_owned()
-        })?;
+        let root = project_root
+            .ok_or_else(|| "needs a project root to load its AnimationPlayer clip".to_owned())?;
         let clip_path = root.join(player.clip_path());
         let text = rustlua_infra::vfs::read_resource(&clip_path)
             .and_then(|bytes| {
@@ -140,14 +141,19 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
             })
             .map_err(|error| {
-                format!("AnimationPlayer failed to read {}: {error}", player.clip_path())
+                format!(
+                    "AnimationPlayer failed to read {}: {error}",
+                    player.clip_path()
+                )
             })?;
         let clip = rustlua_animation::anim_asset::AnimClip::from_text(player.clip_path(), &text)
             .map_err(|error| format!("invalid clip {}: {error}", player.clip_path()))?;
-        player
-            .attach_clip(clip)
-            .map_err(|error| format!("AnimationPlayer cannot use {}: {error}", player.clip_path()))?;
-        world.insert(id, player).map_err(|error| error.to_string())?;
+        player.attach_clip(clip).map_err(|error| {
+            format!("AnimationPlayer cannot use {}: {error}", player.clip_path())
+        })?;
+        world
+            .insert(id, player)
+            .map_err(|error| error.to_string())?;
         Ok(())
     });
     script.add_component_applier("Animation3D", |world, id, value, project_root| {
@@ -215,7 +221,11 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     script.add_component_applier("Tilemap", move |world, id, _, _| {
         // ECS 的 `Tilemap` 组件由脚本层的手写分支先插入（在装配器循环之前），这里只加它的
         // 固态格对应的静态刚体——所以是"装配后副作用"，不是组件本体的装配。
-        let Some(tilemap) = world.get::<rustlua_ecs::tilemap::Tilemap>(id).ok().flatten() else {
+        let Some(tilemap) = world
+            .get::<rustlua_ecs::tilemap::Tilemap>(id)
+            .ok()
+            .flatten()
+        else {
             return Ok(());
         };
         if !tilemap.solid.iter().any(|solid| *solid) {
@@ -330,12 +340,11 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
             let entities = prompt_entities.clone();
             interact.set(
                 "get_prompt",
-                lua.create_function(move |_, ()| {
-                    Ok(entities.borrow()?.interact_prompt.clone())
-                })?,
+                lua.create_function(move |_, ()| Ok(entities.borrow()?.interact_prompt.clone()))?,
             )?;
             Ok(())
-        }))        .expect("interact.prompt 安装失败：表由 ECS 域建好，取不到说明装配顺序变了");
+        }))
+        .expect("interact.prompt 安装失败：表由 ECS 域建好，取不到说明装配顺序变了");
 
     // ── ⑫ `prefab.set_text` / `prefab.set_rect` 的世界写入端口 ────────────
     // `Text` / `UiLayout` 组件的类型住在 UI 域，脚本层不能出现它们；这两个端口由组合根
@@ -381,8 +390,8 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     macro_rules! ui_applier {
         ($component:literal, $type:path) => {
             script.add_component_applier($component, |world, id, value, _| {
-                let component = <$type>::from_component_str(value)
-                    .map_err(|error| error.to_string())?;
+                let component =
+                    <$type>::from_component_str(value).map_err(|error| error.to_string())?;
                 world
                     .insert(id, component)
                     .map_err(|error| error.to_string())?;
@@ -406,8 +415,8 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     ui_applier!("UiLayout", rustlua_ui::ui_layout::UiRectLayout);
     // `UiEvents` 的解析入口叫 `parse`（不是 `from_component_str`），单列一支。
     script.add_component_applier("UiEvents", |world, id, value, _| {
-        let events = rustlua_ui::ui_events::UiEvents::parse(value)
-            .map_err(|error| error.to_string())?;
+        let events =
+            rustlua_ui::ui_events::UiEvents::parse(value).map_err(|error| error.to_string())?;
         world
             .insert(id, events)
             .map_err(|error| error.to_string())?;

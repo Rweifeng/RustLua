@@ -23,6 +23,7 @@ Thumbs.db
 .dbg/
 .cargo-target/
 .tools/
+.workbuddy/
 
 # Per-project working directory: resource database, import cache, save data
 **/.cache/

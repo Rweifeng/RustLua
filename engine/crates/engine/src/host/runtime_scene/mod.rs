@@ -50,7 +50,6 @@ mod scene;
 mod schedule;
 mod script;
 mod spatial;
-mod ui_driver;
 /// 本模块的测试集合（WP12 阶段 1 从本文件搬出，100 项）：作为 `runtime_scene` 的后代，
 /// 它们靠 `use super::*;` 的 glob 拿私有项，因此这里不需要为测试放宽任何可见性。
 #[cfg(test)]
@@ -59,6 +58,7 @@ mod text;
 mod tilemap;
 mod ui_bindings;
 mod ui_controls;
+mod ui_driver;
 mod ui_input;
 mod ui_scroll;
 mod ui_virtual_list;
