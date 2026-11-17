@@ -87,4 +87,23 @@ impl RuntimeScene {
     pub fn set_ui_viewport(&mut self, width: u32, height: u32) {
         self.ui_state.with_mut(|ui| ui.set_viewport(width, height));
     }
+
+    /// 当前已加载的场景名（`None` = 还没加载过）。
+    ///
+    /// 给组合根外部的调用方（集成测试、工具链）用：`script` 字段是 crate 内部细节，
+    /// 而"当前在哪个场景"是运行时的公共状态，值得一个稳定的读取口。
+    #[must_use]
+    pub fn current_scene_name(&self) -> Option<String> {
+        self.script.scene_name()
+    }
+
+    /// 在当前 Lua VM 里执行一段控制台语句，返回 `string`/`number` 等的文本形式。
+    ///
+    /// 与编辑器的 `runtime_debug` 探测走同一条路（`LuaRuntime::execute_console`），
+    /// 因此错误也经同一套结构化调试器上报。给集成测试驱动脚本用。
+    pub fn run_lua_console(&mut self, source: &str) -> anyhow::Result<String> {
+        self.script
+            .execute_console(source)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
 }
