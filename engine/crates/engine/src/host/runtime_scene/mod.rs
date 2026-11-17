@@ -45,6 +45,7 @@ mod environment;
 mod fonts;
 mod frame_data;
 mod mesh_ui;
+mod physics_driver;
 mod scene;
 mod schedule;
 mod script;
@@ -133,6 +134,9 @@ pub struct RuntimeScene {
     /// [`crate::host::script_packs`]）。
     pub(crate) animation_state:
         rustlua_lua_api::Handle<rustlua_animation::animation_lua::AnimationState>,
+    /// 物理模拟的能力单元：两个世界、分阶段回写队列与调试请求。步进、回写与刚体同步的
+    /// 驱动逻辑在 [`super::physics_driver`]（宿主侧），脚本层只保留绑定。
+    pub(crate) physics_state: rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
     /// 自上次 `take_script_micros` 以来 Lua 回调的累计耗时（微秒）：所有固定步里的
     /// `update()` + 每个渲染帧一次的 `on_frame()`。宿主把它送进
     /// `PerformanceStats::lua_ms`，性能面板因此显示的是"Lua 花了多少"而不是恒为 0

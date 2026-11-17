@@ -120,9 +120,6 @@ impl LuaRuntime {
             // 世界的能力单元（P1 ⑤-7）：ECS 世界本身在这里起名。宿主仍经
             // `with_world`/`with_world_mut` 访问，绑定侧经 `ScriptState::world()` 借用。
             world: Handle::new(World::new(), "world"),
-            // 物理域的能力单元（P1 ⑤-9）：两个模拟世界、分阶段回写队列与调试请求在这里起名，
-            // `physics`/`physics3d` 两张表由 `rustlua_physics::physics_lua` 装。
-            physics: crate::script::domain::physics::physics_state::PhysicsState::handle(),
             // 渲染域的脚本可见状态（P1 ⑤-10）：本帧主光的选择。
             renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
             // M82-B2：程序化贴图注册表（维度无关基底）。
@@ -539,28 +536,6 @@ impl LuaRuntime {
                 Ok(true)
             }
         }
-    }
-
-    /// 把本帧物理接触转发给双方实体的 `on_collision`（只投 `started` 边沿）。
-    ///
-    /// 接触来自物理域单独的事件队列，Lua `physics.events()` 仍能拿到同一批事件；
-    /// 每帧由宿主在固定步之后调用一次，返回实际投递成功的实体事件数。
-    pub fn dispatch_collision_contacts(&self) -> Result<usize, LuaBridgeError> {
-        let physics = self.state.borrow().physics.clone();
-        let contacts = physics.with_mut(|physics| physics.drain_event_contacts());
-        let mut delivered = 0;
-        for contact in contacts.into_iter().filter(|contact| contact.started) {
-            if self.dispatch_entity_event(contact.a, EntityEvent::Collision { other: contact.b })? {
-                delivered += 1;
-            }
-            if contact.a != contact.b
-                && self
-                    .dispatch_entity_event(contact.b, EntityEvent::Collision { other: contact.a })?
-            {
-                delivered += 1;
-            }
-        }
-        Ok(delivered)
     }
 
     /// 实体脚本可以有两种源：普通 `.lua`，或直接挂 `.vgraph`。

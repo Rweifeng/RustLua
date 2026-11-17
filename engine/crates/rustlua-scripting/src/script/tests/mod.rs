@@ -28,6 +28,7 @@ pub(crate) fn runtime_with_domains() -> (
     LuaRuntime,
     rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
     rustlua_lua_api::Handle<rustlua_animation::animation_lua::AnimationState>,
+    rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
 ) {
     let camera = rustlua_camera::camera_state::CameraState::handle();
     let animation = rustlua_animation::animation_lua::AnimationState::handle();
@@ -114,7 +115,82 @@ pub(crate) fn runtime_with_domains() -> (
             .map_err(|error| error.to_string())?;
         Ok(())
     });
-    (runtime, camera, animation)
+    // 物理域：三张表 + 刚体装配。tilemap 绑定要实体账本，句柄从 runtime 取。
+    let physics = rustlua_physics::physics_state::PhysicsState::handle();
+    let entities = runtime.entity_state_handle();
+    let physics_installer = physics.clone();
+    let entities_installer = entities.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, world, _| {
+            rustlua_physics::tilemap_lua::install(
+                lua,
+                world,
+                &entities_installer,
+                &physics_installer,
+            )?;
+            rustlua_physics::physics_lua::install(lua, &physics_installer, world)?;
+            #[cfg(feature = "3d")]
+            rustlua_physics::physics_lua::install_3d(lua, &physics_installer, world)?;
+            Ok(())
+        }))
+        .expect("物理表安装");
+    let applier = physics.clone();
+    runtime.add_component_applier("Collider", move |world, id, value, _| {
+        let collider = rustlua_physics::physics::ColliderDesc::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        let position = world
+            .get::<rustlua_ecs::transform::Transform>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or_default();
+        applier.with_mut(|state| {
+            state
+                .world2d_mut()
+                .add_body(id, position, collider.dynamic, vec![collider])
+                .map_err(|error| error.to_string())
+        })
+    });
+    let applier = physics.clone();
+    runtime.add_component_applier("Tilemap", move |world, id, _, _| {
+        let Some(tilemap) = world.get::<rustlua_ecs::tilemap::Tilemap>(id).ok().flatten() else {
+            return Ok(());
+        };
+        if !tilemap.solid.iter().any(|solid| *solid) {
+            return Ok(());
+        }
+        let colliders = rustlua_physics::tilemap_lua::solid_cell_colliders(tilemap);
+        let position = world
+            .get::<rustlua_ecs::transform::Transform>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or_default();
+        applier.with_mut(|state| {
+            state
+                .world2d_mut()
+                .add_body(id, position, false, colliders)
+                .map_err(|error| error.to_string())
+        })
+    });
+    let applier = physics.clone();
+    runtime.add_component_applier("Collider3d", move |world, id, value, _| {
+        let collider = rustlua_physics::physics3d::ColliderDesc3d::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        let position = world
+            .get::<rustlua_ecs::transform::Transform3D>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or(rustlua_math::math3d::Vec3::ZERO);
+        applier.with_mut(|state| {
+            state
+                .world3d_mut()
+                .add_body(id, position, collider.dynamic, vec![collider])
+                .map_err(|error| error.to_string())
+        })
+    });
+    (runtime, camera, animation, physics)
 }
 
 /// 只需要相机接线时的简写（相机测试与 API 面快照用它）。
@@ -122,8 +198,171 @@ pub(crate) fn runtime_with_camera() -> (
     LuaRuntime,
     rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
 ) {
-    let (runtime, camera, _) = runtime_with_domains();
+    let (runtime, camera, _, _) = runtime_with_domains();
     (runtime, camera)
+}
+
+/// 带宿主侧物理驱动的测试运行时。
+///
+/// 生产侧的驱动住在 `engine::host::runtime_scene::physics_driver`，本 crate 的测试不能反向
+/// 依赖 `engine`，所以这里用同一份句柄手写一遍（`runtime_with_all` 完成接线）。`Deref` 到
+/// `LuaRuntime` 让原有测试里的 VM 调用一字不改，物理方法则由本类型提供。
+pub(crate) struct TestRuntime {
+    runtime: LuaRuntime,
+    pub(crate) physics: rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
+}
+
+impl std::ops::Deref for TestRuntime {
+    type Target = LuaRuntime;
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl std::ops::DerefMut for TestRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
+}
+
+pub(crate) fn runtime_with_all() -> TestRuntime {
+    let (runtime, _camera, _animation, physics) = runtime_with_domains();
+    TestRuntime { runtime, physics }
+}
+
+impl TestRuntime {
+    pub(crate) fn step_physics(&self, delta_seconds: f32) {
+        let entities = self.runtime.entity_state_handle();
+        let pending = entities.with_mut(|e| e.take_physics_removals());
+        self.physics.with_mut(|physics| {
+            for entity in &pending {
+                let _ = physics.world2d_mut().remove_body(*entity);
+                let _ = physics.world3d_mut().remove_body(*entity);
+            }
+            let moved = physics.world2d_mut().step(delta_seconds);
+            physics.set_pending_writeback_2d(moved);
+        });
+    }
+
+    pub(crate) fn step_physics3d(&self, delta_seconds: f32) {
+        self.physics.with_mut(|physics| {
+            let moved = physics.world3d_mut().step(delta_seconds);
+            physics.set_pending_writeback_3d(moved);
+        });
+    }
+
+    pub(crate) fn writeback_physics(&mut self) -> usize {
+        let moved = self
+            .physics
+            .with_mut(|physics| physics.take_pending_writeback_2d());
+        let mut written = 0;
+        for (entity, position) in moved {
+            self.runtime.with_world_mut(|world| {
+                if let Ok(Some(transform)) =
+                    world.get_mut::<rustlua_ecs::transform::Transform>(entity)
+                {
+                    transform.position = position;
+                    written += 1;
+                }
+            });
+        }
+        written
+    }
+
+    pub(crate) fn writeback_physics3d(&mut self) -> usize {
+        let moved = self
+            .physics
+            .with_mut(|physics| physics.take_pending_writeback_3d());
+        let mut written = 0;
+        for (entity, position) in moved {
+            self.runtime.with_world_mut(|world| {
+                if let Ok(Some(transform)) =
+                    world.get_mut::<rustlua_ecs::transform::Transform3D>(entity)
+                {
+                    transform.position = position;
+                    written += 1;
+                }
+            });
+        }
+        written
+    }
+
+    pub(crate) fn discard_pending_writeback(&self) {
+        self.physics
+            .with_mut(|physics| physics.clear_pending_writebacks());
+    }
+
+    pub(crate) fn sync_kinematic_bodies(&self) -> usize {
+        let physics = self.physics.clone();
+        let mut synced = 0;
+        self.runtime.with_world(|world| {
+            let targets: Vec<_> = physics.with(|p| p.world2d().kinematic_positions(world));
+            for (entity, position) in targets {
+                if physics.with_mut(|p| p.world2d_mut().set_position(entity, position).is_ok()) {
+                    synced += 1;
+                }
+            }
+        });
+        synced
+    }
+
+    pub(crate) fn sync_kinematic_bodies_3d(&self) -> usize {
+        let physics = self.physics.clone();
+        let mut synced = 0;
+        self.runtime.with_world(|world| {
+            let targets: Vec<_> = physics.with(|p| p.world3d().kinematic_positions(world));
+            for (entity, position) in targets {
+                if physics.with_mut(|p| p.world3d_mut().set_position(entity, position).is_ok()) {
+                    synced += 1;
+                }
+            }
+        });
+        synced
+    }
+
+    pub(crate) fn take_collider_debug_request(&self) -> Option<bool> {
+        self.physics.with_mut(|p| p.take_debug_request())
+    }
+
+    pub(crate) fn collider_debug_shapes(
+        &self,
+    ) -> Vec<rustlua_physics::physics::ColliderDebugShape> {
+        self.physics.with(|p| p.debug_shapes())
+    }
+
+    pub(crate) fn collider_debug_shapes_3d(
+        &self,
+    ) -> Vec<rustlua_physics::physics3d::ColliderDebugShape3d> {
+        self.physics.with(|p| p.debug_shapes_3d())
+    }
+
+    pub(crate) fn take_collider_debug_request_3d(&self) -> Option<bool> {
+        self.physics.with_mut(|p| p.take_debug_request_3d())
+    }
+
+    pub(crate) fn dispatch_collision_contacts(&self) -> Result<usize, LuaBridgeError> {
+        let contacts = self
+            .physics
+            .with_mut(|physics| physics.drain_event_contacts());
+        let mut delivered = 0;
+        for contact in contacts.into_iter().filter(|contact| contact.started) {
+            if self.runtime.dispatch_entity_event(
+                contact.a,
+                EntityEvent::Collision { other: contact.b },
+            )? {
+                delivered += 1;
+            }
+            if contact.a != contact.b
+                && self.runtime.dispatch_entity_event(
+                    contact.b,
+                    EntityEvent::Collision { other: contact.a },
+                )?
+            {
+                delivered += 1;
+            }
+        }
+        Ok(delivered)
+    }
 }
 
 use std::{

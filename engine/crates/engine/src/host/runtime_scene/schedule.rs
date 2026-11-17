@@ -177,8 +177,8 @@ impl RuntimeScene {
                 if scene.physics_authority.syncs_before_step()
                     && scene.physics_stage_order == PhysicsStageOrder::Unified
                 {
-                    let synced_2d = scene.script.sync_kinematic_bodies();
-                    let synced_3d = scene.script.sync_kinematic_bodies_3d();
+                    let synced_2d = scene.sync_kinematic_bodies();
+                    let synced_3d = scene.sync_kinematic_bodies_3d();
                     scene.last_physics_sync = (synced_2d, synced_3d);
                 } else {
                     scene.last_physics_sync = (0, 0);
@@ -191,10 +191,10 @@ impl RuntimeScene {
             ScheduleStage::Physics,
             [] as [&str; 0],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
-                scene.script.step_physics(delta_seconds);
+                scene.step_physics(delta_seconds);
                 // 回滚档：收敛前 2D 是"步进即回写"，且它的回写夹在 3D 推进之前。
                 if scene.physics_stage_order == PhysicsStageOrder::Legacy {
-                    scene.script.writeback_physics();
+                    scene.writeback_physics();
                 }
                 Ok(())
             },
@@ -204,7 +204,7 @@ impl RuntimeScene {
             ScheduleStage::Physics,
             [] as [&str; 0],
             |scene: &mut RuntimeScene, delta_seconds: f32| {
-                scene.script.step_physics3d(delta_seconds);
+                scene.step_physics3d(delta_seconds);
                 Ok(())
             },
         ));
@@ -220,18 +220,18 @@ impl RuntimeScene {
                 // 这里只处理 3D（顺序与收敛前一致：2D 回写 → 3D 推进 → 3D 回写）。
                 if scene.physics_stage_order == PhysicsStageOrder::Legacy {
                     if scene.physics_authority.writes_back_to_ecs() {
-                        scene.script.writeback_physics3d();
+                        scene.writeback_physics3d();
                     } else {
-                        scene.script.discard_pending_writeback();
+                        scene.discard_pending_writeback();
                     }
                     return Ok(());
                 }
                 if scene.physics_authority.writes_back_to_ecs() {
-                    scene.script.writeback_physics();
-                    scene.script.writeback_physics3d();
+                    scene.writeback_physics();
+                    scene.writeback_physics3d();
                 } else {
                     // 不回写也要把暂存清掉，避免它在下一步被误当成"本步的移动"。
-                    scene.script.discard_pending_writeback();
+                    scene.discard_pending_writeback();
                 }
                 Ok(())
             },
@@ -545,7 +545,7 @@ impl RuntimeScene {
         if outcome.is_ok() {
             // E03-3：固定步里的物理接触在整帧收尾统一投给实体 `on_collision`。
             // 放在传播世界变换之前：回调可以移动实体，渲染必须看到同一帧的结果。
-            self.script.dispatch_collision_contacts()?;
+            self.dispatch_collision_contacts()?;
         }
         // P3-R238：推进**场景时钟**（秒）。程序化实例运动（实例批次的路径流）由引擎按它
         // 求值，所以时钟必须跟着**模拟步**走：0 步帧不推进（那一帧没有模拟发生），

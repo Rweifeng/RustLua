@@ -219,7 +219,7 @@ impl RuntimeScene {
         if !self.collider_debug_draw {
             return;
         }
-        let shapes = self.script.collider_debug_shapes();
+        let shapes = self.collider_debug_shapes();
         if shapes.is_empty() {
             return;
         }
@@ -283,7 +283,7 @@ impl RuntimeScene {
         if !self.collider_debug_draw_3d {
             return;
         }
-        let shapes = self.script.collider_debug_shapes_3d();
+        let shapes = self.collider_debug_shapes_3d();
         if shapes.is_empty() {
             return;
         }
@@ -710,6 +710,7 @@ impl RuntimeScene {
         let handles = crate::host::script_packs::install(&mut script);
         let camera_state = handles.camera;
         let animation_state = handles.animation;
+        let physics_state = handles.physics;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
@@ -802,6 +803,7 @@ impl RuntimeScene {
             input,
             camera_state,
             animation_state,
+            physics_state,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),

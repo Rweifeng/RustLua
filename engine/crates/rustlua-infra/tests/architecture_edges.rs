@@ -156,7 +156,13 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 事件推送访问器全部删除；组合根还多接了一个资源路径参数（装配器签名第 4 个参数
     // `Option<&Path>`），`.anim` 片段与 glTF 的相对路径解析因此也归了领域侧。
     //
-    // 剩余 9 条领域依赖 + `lua-api` 契约层里，gameplay/physics/ui 的绑定仍是
+    // **物理也削掉了**（2026-11-17，同一天第三条）：这条边钉得最深——除了字段、两张绑定
+    // 表和三类刚体装配，还有 8 个每帧驱动方法（步进/回写/运动学同步/碰撞分发/调试请求）。
+    // 驱动整体搬到 `RuntimeScene::physics_driver`，调用方只把 `scene.script.step_physics(..)`
+    // 改成 `scene.step_physics(..)`；`tilemap` 安装要实体账本，复用 `entity_state_handle()`
+    // （ecs 能力单元，不开新方向）。
+    //
+    // 剩余 8 条领域依赖 + `lua-api` 契约层里，gameplay/ui 的绑定仍是
     // "借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
     // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
     // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
@@ -168,7 +174,6 @@ const BUDGET: &[(&str, &[&str])] = &[
             "infra",
             "lua-api",
             "math",
-            "physics",
             "render",
             "scene",
             "ui",

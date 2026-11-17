@@ -348,9 +348,6 @@ pub(crate) struct ScriptState {
     entity_state: Handle<crate::script::domain::ecs::entity_state::EntityState>,
     /// UI 域的能力单元（P1 ⑤-12：动态文本/条/面板/图/网格/拖拽/视口都归 `rustlua-ui`）。
     ui_state: Handle<crate::script::domain::ui::ui_state::UiState>,
-    /// 物理模拟域的能力单元（P1 ⑤-9：两个世界、分阶段回写队列与调试请求都归
-    /// `rustlua-physics`，绑定见 `rustlua_physics::physics_lua`）。
-    physics: Handle<crate::script::domain::physics::physics_state::PhysicsState>,
     /// 物品/背包/商店域的能力单元（P1 ⑤-6：数据与槽位规则归 `rustlua-gameplay`）。
     inventory: Handle<crate::script::domain::gameplay::inventory_state::InventoryState>,
     /// 存档域的能力单元（P1 ⑤：数据/路径/槽位归 `rustlua-gameplay`）。
@@ -1118,33 +1115,12 @@ impl LuaRuntime {
         let world = self.state.borrow().world.clone();
         world.with(f)
     }
-    /// WP7 ②：取走 Lua 通过 `physics.debug_draw(...)` 登记的请求（取走即清空，与
-    /// `camera2d` 的 pending 请求同一语义：请求只在被消费的那一帧生效）。
-    pub fn take_collider_debug_request(&mut self) -> Option<bool> {
-        // P1 ⑤-9：物理句柄与 `ScriptState` 是两处借用，先取句柄副本再动它（与 `with_world` 同法）。
-        let physics = self.state.borrow().physics.clone();
-        physics.with_mut(|physics| physics.take_debug_request())
+    /// 实体账本的句柄：宿主同步物理刚体移除登记（`entity.destroy`）时用。
+    /// 这是 ECS 能力单元，不引入新的领域依赖边；物理域自己的状态由组合根直接持有。
+    pub fn entity_state_handle(&self) -> Handle<crate::script::domain::ecs::entity_state::EntityState> {
+        self.state.borrow().entity_state.clone()
     }
-    /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
-    pub fn collider_debug_shapes(
-        &self,
-    ) -> Vec<crate::script::domain::physics::physics::ColliderDebugShape> {
-        let physics = self.state.borrow().physics.clone();
-        physics.with(|physics| physics.debug_shapes())
-    }
-    /// WP7 ②/docs/54 §8-⑥：取走 Lua 通过 `physics3d.debug_draw(...)` 登记的 3D 请求
-    /// （与 2D 同一条"取走即清空"语义）。
-    pub fn take_collider_debug_request_3d(&mut self) -> Option<bool> {
-        let physics = self.state.borrow().physics.clone();
-        physics.with_mut(|physics| physics.take_debug_request_3d())
-    }
-    /// 物理世界里当前所有 3D 碰撞体的姿态与形状，供宿主做 3D collider 调试绘制。
-    pub fn collider_debug_shapes_3d(
-        &self,
-    ) -> Vec<crate::script::domain::physics::physics3d::ColliderDebugShape3d> {
-        let physics = self.state.borrow().physics.clone();
-        physics.with(|physics| physics.debug_shapes_3d())
-    }
+
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         let world = self.state.borrow().world.clone();

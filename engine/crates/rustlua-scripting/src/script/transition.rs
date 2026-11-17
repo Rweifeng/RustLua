@@ -60,10 +60,6 @@ impl LuaRuntime {
             }
             // docs/60 §4.1：场景生命周期内的清理按领域收敛到各自
             // `clear_for_scene_transition`，新增场景态字段只需登记到所属域。
-            // P1 ⑤-9：物理世界与两条回写队列都在句柄里，切场景换掉它们（旧实体句柄作废）。
-            if let Ok(mut physics) = state.physics.borrow_mut() {
-                physics.clear_for_scene_transition();
-            }
             state.particles = ParticleSystem::new();
             {
                 let entities = state.entity_state.clone();

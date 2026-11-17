@@ -14,7 +14,7 @@ use super::*;
 /// 脚本登记的调试请求，宿主取得到；且是"取走即清空"。
 #[test]
 fn host_and_script_share_one_physics_state() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_all();
     let path = script(
         "function update()\n\
          physics.debug_draw(true)\n\
@@ -39,15 +39,13 @@ fn host_and_script_share_one_physics_state() {
 /// 句柄有名：重入借用给的是"物理正被借着"，能直接定位到是哪个能力单元。
 #[test]
 fn the_physics_handle_is_named_in_reentrancy_errors() {
-    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let runtime = runtime_with_all();
     let message = runtime
-        .state
-        .borrow()
         .physics
         .borrow_mut()
         .and_then(|_physics| {
             // 已经持有可写借用，再借一次必须失败（正常路径不会这样，这里刻意制造重入）。
-            runtime.state.borrow().physics.borrow_mut().map(|_| ())
+            runtime.physics.borrow_mut().map(|_| ())
         })
         .err()
         .map(|error| error.to_string())
@@ -61,7 +59,7 @@ fn the_physics_handle_is_named_in_reentrancy_errors() {
 /// 切场景把两个世界一起换掉：宿主推进过的一步不该跨场景留到下一张图。
 #[test]
 fn scene_transition_replaces_both_physics_worlds() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_all();
     // 脚本登记请求 + 宿主推进一步，制造"有状态"的物理域。
     let path = script(
         "function update()\n\
@@ -76,8 +74,7 @@ fn scene_transition_replaces_both_physics_worlds() {
 
     // 与 `transition.rs` 同一条路径：在句柄上清场。
     {
-        let state = runtime.state.borrow();
-        let mut physics = state.physics.borrow_mut().unwrap();
+        let mut physics = runtime.physics.borrow_mut().unwrap();
         physics.clear_for_scene_transition();
     }
     assert_eq!(

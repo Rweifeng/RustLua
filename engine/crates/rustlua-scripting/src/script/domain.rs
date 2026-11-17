@@ -18,7 +18,6 @@ pub(crate) use rustlua_gameplay as gameplay;
 pub(crate) use rustlua_infra as infra;
 pub(crate) use rustlua_lua_api as lua_api;
 pub(crate) use rustlua_math as math;
-pub(crate) use rustlua_physics as physics;
 pub(crate) use rustlua_render as render;
 pub(crate) use rustlua_scene as scene;
 pub(crate) use rustlua_ui as ui;

@@ -1245,10 +1245,10 @@ impl RuntimeScene {
         }
         // WP7 ②：collider 调试绘制（世界内容之上、屏幕 UI 之下）。Lua 的开关请求
         // 在这里被取走，与 camera2d 的请求/消费模式一致。
-        if let Some(enabled) = self.script.take_collider_debug_request() {
+        if let Some(enabled) = self.take_collider_debug_request() {
             self.collider_debug_draw = enabled;
         }
-        if let Some(enabled) = self.script.take_collider_debug_request_3d() {
+        if let Some(enabled) = self.take_collider_debug_request_3d() {
             self.collider_debug_draw_3d = enabled;
         }
         self.push_collider_debug(&mut vertices, &mut draws, viewport);

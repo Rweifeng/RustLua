@@ -121,7 +121,7 @@ fn vgraph_entity_runs_four_events_and_hot_reloads() {
         "shape=ball;radius=6;dynamic=false".into(),
     );
 
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_all();
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     // on_spawn 映射到图上 on_start；同一次 sync 不执行 on_update。
@@ -287,7 +287,7 @@ fn vgraph_on_start_sets_the_scene_transform() {
         );
     }
 
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_all();
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     assert_eq!(runtime.call_entity_scripts(0.016).unwrap(), 1);

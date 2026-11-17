@@ -23,7 +23,6 @@ const PINNED_ALIASES: &[(&str, &str)] = &[
     ("infra", "rustlua_infra"),
     ("lua_api", "rustlua_lua_api"),
     ("math", "rustlua_math"),
-    ("physics", "rustlua_physics"),
     ("render", "rustlua_render"),
     ("scene", "rustlua_scene"),
     ("ui", "rustlua_ui"),

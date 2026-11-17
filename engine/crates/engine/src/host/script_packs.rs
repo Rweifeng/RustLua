@@ -26,6 +26,7 @@
 
 use rustlua_animation::animation_lua::AnimationState;
 use rustlua_camera::camera_state::CameraState;
+use rustlua_physics::physics_state::PhysicsState;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::world::World;
 use rustlua_lua_api::Handle;
@@ -38,6 +39,7 @@ use rustlua_scripting::script::LuaRuntime;
 pub struct ScriptDomainHandles {
     pub camera: Handle<CameraState>,
     pub animation: Handle<AnimationState>,
+    pub physics: Handle<PhysicsState>,
 }
 
 /// 建一个**带全部领域绑定**的运行时：`LuaRuntime::with_installers(..)` + [`install`]。
@@ -163,5 +165,97 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         animation_transition.with_mut(|state| state.clear_for_scene_transition());
     });
 
-    ScriptDomainHandles { camera, animation }
+    // ⑦ 物理域：`tilemap` / `physics` / `physics3d` 三张表。tilemap 绑定还要实体账本，
+    //    那个句柄从 LuaRuntime 取（ecs 能力单元，不新增依赖边）。
+    let physics = PhysicsState::handle();
+    let entities = script.entity_state_handle();
+    let physics_installer = physics.clone();
+    let entities_installer = entities.clone();
+    script
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            rustlua_physics::tilemap_lua::install(
+                lua,
+                world,
+                &entities_installer,
+                &physics_installer,
+            )?;
+            rustlua_physics::physics_lua::install(lua, &physics_installer, world)?;
+            #[cfg(feature = "3d")]
+            rustlua_physics::physics_lua::install_3d(lua, &physics_installer, world)?;
+            Ok(())
+        }))
+        .expect("物理表安装失败：VM 已建好却装不进绑定，脚本会拿不到 physics.*");
+
+    // ⑧ 刚体装配：ECS 世界里只有 `Transform` / `Tilemap`，真正的碰撞体住在 PhysicsState
+    //    自己的两个模拟世界里。装配器同时读 ECS、写物理世界——这正是它必须在组合根的原因。
+    let applier = physics.clone();
+    script.add_component_applier("Collider", move |world, id, value, _| {
+        let collider = rustlua_physics::physics::ColliderDesc::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        let position = world
+            .get::<rustlua_ecs::transform::Transform>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or_default();
+        applier.with_mut(|state| {
+            state
+                .world2d_mut()
+                .add_body(id, position, collider.dynamic, vec![collider])
+                .map_err(|error| error.to_string())
+        })
+    });
+    let applier = physics.clone();
+    script.add_component_applier("Tilemap", move |world, id, _, _| {
+        // ECS 的 `Tilemap` 组件由脚本层的手写分支先插入（在装配器循环之前），这里只加它的
+        // 固态格对应的静态刚体——所以是"装配后副作用"，不是组件本体的装配。
+        let Some(tilemap) = world.get::<rustlua_ecs::tilemap::Tilemap>(id).ok().flatten() else {
+            return Ok(());
+        };
+        if !tilemap.solid.iter().any(|solid| *solid) {
+            return Ok(());
+        }
+        let colliders = rustlua_physics::tilemap_lua::solid_cell_colliders(tilemap);
+        let position = world
+            .get::<rustlua_ecs::transform::Transform>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or_default();
+        applier.with_mut(|state| {
+            state
+                .world2d_mut()
+                .add_body(id, position, false, colliders)
+                .map_err(|error| error.to_string())
+        })
+    });
+    let applier = physics.clone();
+    script.add_component_applier("Collider3d", move |world, id, value, _| {
+        let collider = rustlua_physics::physics3d::ColliderDesc3d::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        let position = world
+            .get::<rustlua_ecs::transform::Transform3D>(id)
+            .ok()
+            .flatten()
+            .map(|transform| transform.position)
+            .unwrap_or(rustlua_math::math3d::Vec3::ZERO);
+        applier.with_mut(|state| {
+            state
+                .world3d_mut()
+                .add_body(id, position, collider.dynamic, vec![collider])
+                .map_err(|error| error.to_string())
+        })
+    });
+
+    // ⑨ 切场景：两个模拟世界连同回写队列、调试请求一起重建。
+    let transition = physics.clone();
+    script.add_scene_transition_hook(move || {
+        transition.with_mut(|state| state.clear_for_scene_transition());
+    });
+
+    ScriptDomainHandles {
+        camera,
+        animation,
+        physics,
+    }
 }

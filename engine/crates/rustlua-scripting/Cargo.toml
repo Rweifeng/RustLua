@@ -22,7 +22,6 @@ rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-render = { path = "../rustlua-render" }
-rustlua-physics = { path = "../rustlua-physics" }
 rustlua-ui = { path = "../rustlua-ui" }
 # 时钟：wasm32-unknown-unknown 上 `std::time::Instant::now()` 是 panic 路径（与 ecs/infra、gamepad
 # 同一颗雷）；`web-time` 在原生上就是它的再导出，零行为变化。
@@ -44,6 +43,8 @@ rustlua-visual-script = { path = "../rustlua-visual-script" }
 rustlua-camera = { path = "../rustlua-camera" }
 # 动画的组件类型与帧事件类型同样是测试要造/要断言的领域知识（绑定与装配已归组合根）。
 rustlua-animation = { path = "../rustlua-animation" }
+# 物理组件类型与碰撞形状同样是测试要造/要断言的领域知识（绑定、装配与驱动已归组合根）。
+rustlua-physics = { path = "../rustlua-physics" }
 # input 绑定下沉后库里不再依赖它（docs/62 P1 阶段 3）；测试仍要造快照。
 rustlua-input = { path = "../rustlua-input" }
 # 测试要真落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。

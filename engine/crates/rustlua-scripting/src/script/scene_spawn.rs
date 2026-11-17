@@ -12,13 +12,8 @@ use crate::script::domain::ecs::entity_state::PersistedEntity;
 use crate::script::domain::ecs::particle::ParticleEmitter;
 use crate::script::domain::ecs::particle::SceneParticleEmitter;
 use crate::script::domain::ecs::tilemap::Tilemap;
-use crate::script::domain::ecs::transform::Transform;
 use crate::script::domain::ecs::transform::Transform3D;
 use crate::script::domain::infra::ids::AssetId;
-use crate::script::domain::math::math3d::Vec3;
-use crate::script::domain::physics::physics::ColliderDesc;
-use crate::script::domain::physics::physics3d::ColliderDesc3d;
-use crate::script::domain::physics::tilemap_lua::solid_cell_colliders;
 use crate::script::domain::render::atlas::resolve_atlas_reference;
 use crate::script::domain::render::light::Light;
 use crate::script::domain::render::mesh3d::MeshRenderer;
@@ -45,11 +40,6 @@ fn entity_borrow(error: mlua::Error) -> LuaBridgeError {
 }
 fn world_borrow(error: mlua::Error) -> LuaBridgeError {
     LuaBridgeError::Api(format!("world borrow failed: {error}"))
-}
-
-/// 物理句柄的借用失败同样降级成可读错误（重入时点名 `physics`，见 `Handle` 的命名）。
-fn physics_borrow(error: mlua::Error) -> LuaBridgeError {
-    LuaBridgeError::Api(format!("physics borrow failed: {error}"))
 }
 
 impl LuaRuntime {
@@ -798,65 +788,6 @@ impl LuaRuntime {
                 .map_err(entity_borrow)?
                 .names
                 .insert(name.to_owned(), id);
-        }
-        let world_handle = state.world.clone();
-        let world = world_handle.borrow().map_err(world_borrow)?;
-        let position = world
-            .get::<Transform>(id)
-            .ok()
-            .flatten()
-            .map(|transform| transform.position)
-            .unwrap_or_default();
-        drop(world);
-        if let Some(value) = components.get("Collider") {
-            let collider = ColliderDesc::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Collider: {error}"))
-            })?;
-            let physics = state.physics.clone();
-            let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
-            physics
-                .world2d_mut()
-                .add_body(id, position, collider.dynamic, vec![collider])
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-        }
-        if components.contains_key("Tilemap") {
-            // 世界守卫借的是句柄副本，不占 `&state`；物理世界同理（P1 ⑤-7 / ⑤-9）。
-            let world_handle = state.world.clone();
-            let world = world_handle.borrow().map_err(world_borrow)?;
-            let tilemap = world.get::<Tilemap>(id).ok().flatten();
-            if let Some(tilemap) = tilemap
-                && tilemap.solid.iter().any(|solid| *solid)
-            {
-                let colliders = solid_cell_colliders(tilemap);
-                let physics = state.physics.clone();
-                let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
-                physics
-                    .world2d_mut()
-                    .add_body(id, position, false, colliders)
-                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
-            }
-        }
-        if let Some(value) = components.get("Collider3d") {
-            let collider = ColliderDesc3d::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} has an invalid Collider3d: {error}"
-                ))
-            })?;
-            let world_handle = state.world.clone();
-            let world = world_handle.borrow().map_err(world_borrow)?;
-            let position = world
-                .get::<Transform3D>(id)
-                .ok()
-                .flatten()
-                .map(|transform| transform.position)
-                .unwrap_or(Vec3::ZERO);
-            drop(world);
-            let physics = state.physics.clone();
-            let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
-            physics
-                .world3d_mut()
-                .add_body(id, position, collider.dynamic, vec![collider])
-                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         Ok(id)
     }

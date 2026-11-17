@@ -94,24 +94,8 @@ pub(super) fn register_all(
     // `rustlua-camera`，由组合根经 [`LuaRuntime::add_deferred_installer`] 登记（见 `engine`
     // 的 `host::script_packs`）。本 crate 因此不再 `use rustlua_camera`——它只提供"什么时候
     // 可以装"（VM 与内建模块就位之后）和"世界在哪"（安装器的第一个参数）。
-    // 瓦片地图绑定已下沉到物理域（P1 ⑤-14）：tilemap 改固态格要当帧重建静态刚体。
-    {
-        let world = state.borrow().world.clone();
-        let entities = state.borrow().entity_state.clone();
-        let physics = state.borrow().physics.clone();
-        crate::script::domain::physics::tilemap_lua::install(lua, &world, &entities, &physics)?;
-    }
     // grid 是纯网格换算（无状态），跟着网格数学留在 gameplay。
     crate::script::domain::gameplay::grid_lua::install(lua)?;
-    // 物理绑定已下沉到物理域（P1 ⑤-9）：`physics` 基底表。
-    {
-        let physics = state.borrow().physics.clone();
-        let world = state.borrow().world.clone();
-        crate::script::domain::physics::physics_lua::install(lua, &physics, &world)?;
-        // M81：physics3d 属 3D 包，2D 构建不登记。
-        #[cfg(feature = "3d")]
-        crate::script::domain::physics::physics_lua::install_3d(lua, &physics, &world)?;
-    }
     // `particles` 留在脚本层：粒子是 `rustlua-ecs` 的发射器实例列表，没有领域规则要搬。
     particles::register(lua, Rc::clone(&state))?;
     render_tuning::register(lua, Rc::clone(&state))?;
