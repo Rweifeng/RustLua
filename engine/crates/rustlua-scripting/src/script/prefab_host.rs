@@ -10,7 +10,7 @@
 use crate::script::LuaRuntime;
 use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
-use crate::script::domain::ui::prefab_lua::PrefabHost;
+use crate::script::domain::lua_api::PrefabHost;
 use crate::script::values::entity_to_lua;
 use std::cell::RefCell;
 use std::rc::Rc;

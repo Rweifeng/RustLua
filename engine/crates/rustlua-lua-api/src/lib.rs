@@ -33,11 +33,13 @@
 use mlua::Result as LuaResult;
 
 mod cell;
+mod prefab_host;
 mod project_root;
 mod registry;
 pub mod values;
 
 pub use cell::Handle;
+pub use prefab_host::PrefabHost;
 pub use project_root::ProjectRoot;
 pub use registry::{
     API_PACK_VERSION, ApiDimension, ApiPack, ApiPackInfo, ApiSurface, Installer, Registry,

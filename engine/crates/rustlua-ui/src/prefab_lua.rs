@@ -15,26 +15,10 @@ use mlua::Result as LuaResult;
 use rustlua_lua_api::api_error;
 use std::rc::Rc;
 
-/// 组合根实现这组操作，UI 域只负责把它们接到 Lua 上。
-///
-/// 约定：`Err(String)` 里是**完整的** Lua 错误文案（含 `prefab.xxx` 前缀与参数细节）。这样
-/// 迁移前后脚本看到的字串逐字相同，不必在两侧各拼一半。
-pub trait PrefabHost {
-    /// 从工程相对路径读 `.prefab` 并实例化，返回实例 handle。
-    fn spawn(&self, path: &str) -> Result<i64, String>;
-    /// 销毁实例；handle 不存在时返回 `false`（幂等，不报错）。
-    fn despawn(&self, handle: i64) -> Result<bool, String>;
-    /// 实例的根实体（Lua 侧 id）。
-    fn root(&self, handle: i64) -> Result<i64, String>;
-    /// 实例里某个名字的节点（Lua 侧 id）。
-    fn node(&self, handle: i64, name: &str) -> Result<i64, String>;
-    /// 改节点的场景 `Text` 组件文字（不动字体/字号/颜色）。
-    fn set_text(&self, handle: i64, name: &str, text: &str) -> Result<(), String>;
-    /// 显示/隐藏节点及其整棵子树。
-    fn set_visible(&self, handle: i64, name: &str, visible: bool) -> Result<(), String>;
-    /// 改节点 `UiLayout` 的四边（anchors 沿用预设里 authored 的值）。
-    fn set_rect(&self, handle: i64, name: &str, rect: [f32; 4]) -> Result<(), String>;
-}
+// 宿主端口住在契约层 `rustlua-lua-api`（叶子 crate），这样实现方 `rustlua-scripting` 只需
+// 依赖契约层就能实现它，不必为了一个 trait 反向依赖本 crate。这里再导出一份，保持既有
+// 消费者 `rustlua_ui::prefab_lua::PrefabHost` 的路径不变。
+pub use rustlua_lua_api::PrefabHost;
 
 /// 把七个函数装进 `prefab` 表并设为全局。
 pub fn install(lua: &Lua, host: Rc<dyn PrefabHost>) -> LuaResult<()> {

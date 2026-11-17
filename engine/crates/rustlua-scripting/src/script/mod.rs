@@ -1121,6 +1121,29 @@ impl LuaRuntime {
         self.state.borrow().entity_state.clone()
     }
 
+    /// UI 动态层与导航栈的能力单元句柄（组合根接线用）。
+    ///
+    /// UI 绑定本身由组合根（`engine::host::script_packs`）经延迟安装器接到脚本层；宿主每帧
+    /// 也要读写同一份状态（文本/条/面板与焦点环），所以把句柄交出去共享，而不是在两边各造
+    /// 一份——那会让"脚本写的文字宿主读不到"。
+    pub fn ui_state_handle(&self) -> Handle<crate::script::domain::ui::ui_state::UiState> {
+        self.state.borrow().ui_state.clone()
+    }
+
+    /// UI 导航栈的能力单元句柄（组合根接线用，见 [`Self::ui_state_handle`]）。
+    pub fn nav_handle(&self) -> Handle<crate::script::domain::ui::lua_nav::NavState> {
+        self.state.borrow().nav.clone()
+    }
+
+    /// `prefab` 表的中立宿主端口（组合根接线用）。
+    ///
+    /// `prefab.*` 的 Lua 表面在 `rustlua-ui`，但实现要按 `&mut ScriptState` 往世界里装 18 类
+    /// 组件，只能留在本层。这里把实现以 [`rustlua_lua_api::PrefabHost`]（叶子契约层 trait）
+    /// 的形式交出去，组合根拿它去装 Lua 表——本层因此对 UI 域零引用。
+    pub fn prefab_host(&self) -> std::rc::Rc<dyn crate::script::domain::lua_api::PrefabHost> {
+        std::rc::Rc::new(prefab_host::PrefabOps::new(Rc::clone(&self.state)))
+    }
+
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         let world = self.state.borrow().world.clone();
