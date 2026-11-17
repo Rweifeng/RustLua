@@ -214,7 +214,7 @@ fn runtime_spawned_entity_can_attach_world_text() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime.execute_project_script(&first).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let texts =

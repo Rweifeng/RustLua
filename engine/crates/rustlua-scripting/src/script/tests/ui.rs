@@ -15,7 +15,7 @@ fn click_target(function: &str) -> UiClickTarget {
 /// 严格档（默认）：点击回调报错必须上报给宿主——验收路径的语义不变。
 #[test]
 fn ui_click_error_propagates_in_strict_policy() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     let path = script(
         "function on_click(name) error('click boom') end\nfunction update() return 'ok' end",
     );
@@ -38,7 +38,7 @@ fn ui_click_error_propagates_in_strict_policy() {
 /// 按钮上时也一起失效。
 #[test]
 fn ui_click_error_is_contained_and_later_targets_still_fire() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime.set_error_policy(ScriptErrorPolicy::Contain);
     let path = script(
         "function broken(name) error('click boom') end\n\
@@ -75,7 +75,7 @@ fn ui_click_error_is_contained_and_later_targets_still_fire() {
 
 #[test]
 fn ui_text_at_accepts_optional_scale_and_font_size() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     let path = script(
         "ui.text_at('small', 10, 10, 'a')\nui.text_at('big', 10, 30, 'b', 3)\nui.text_at('huge', 10, 50, 'c', nil, 24)\nfunction update() return 'ok' end",
     );
@@ -111,7 +111,7 @@ fn ui_text_at_accepts_optional_scale_and_font_size() {
 /// 缺失（nil）与 true 均视为显示。语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐。
 #[test]
 fn ui_scene_text_visible_toggles_hidden_set() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     let path =
         script("ui.scene_text_visible('BtnStartLabel', false)\nfunction update() return 'ok' end");
     runtime.execute_project_script(&path).unwrap();
@@ -121,7 +121,7 @@ fn ui_scene_text_visible_toggles_hidden_set() {
         "false registers the name as hidden"
     );
     let _ = fs::remove_file(path);
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     let path = script(
         "ui.scene_text_visible('BtnStartLabel', true)\nui.scene_text_visible('BtnExitLabel', nil)\nfunction update() return 'ok' end",
     );
@@ -141,7 +141,7 @@ fn ui_scene_text_visible_toggles_hidden_set() {
 
 #[test]
 fn ui_panels_images_grids_and_drag_lua_api() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime.set_ui_viewport(1280, 720);
     let path = script(
         "ui.panel('bg', 0, 0, 200, 200, 0.1, 0.1, 0.2, 1)\n\
@@ -196,7 +196,7 @@ fn measure_text_and_text_get_lua_api() {
     )
     .unwrap();
 
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime.set_project_root(root.clone());
     let path = script(
         "
@@ -251,7 +251,7 @@ fn click_event_dispatches_lua_on_click() {
         );
     menu.save(scenes.join("menu.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime.set_project_root(root.clone());
     let load = script("scene.load('menu')\nfunction update() return 'ok' end");
     runtime.execute_project_script(&load).unwrap();
@@ -292,7 +292,7 @@ fn click_event_dispatches_lua_on_click() {
 /// M20-02：`ui.focus_*` 焦点环——方向移动、环绕、网格列、越界与未知方向。
 #[test]
 fn ui_focus_lua_api_navigates_lists_and_grids() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime
         .execute_console(
             // 单列 3 项：下/上移动 + 边界环绕。
@@ -335,7 +335,7 @@ fn ui_focus_lua_api_navigates_lists_and_grids() {
 /// M20-02：`ui.scroll_*` 滚动状态——钳制、按行、滚入视口与可见区间。
 #[test]
 fn ui_scroll_lua_api_clamps_and_reveals_items() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime
         .execute_console(
             "ui.scroll_open('s', 100, 250)\n\
@@ -370,7 +370,7 @@ fn ui_scroll_lua_api_clamps_and_reveals_items() {
 /// 也还没有宿主驱动，那两段能力不在本测试的断言范围内。
 #[test]
 fn advanced_ui_kernels_are_wired_into_the_ui_table() {
-    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let mut runtime = runtime_with_domains().0;
     runtime
         .execute_console(
             "assert(type(ui.virtual_list) == 'function')\n\

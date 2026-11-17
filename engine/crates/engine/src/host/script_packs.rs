@@ -31,6 +31,7 @@ use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::world::World;
 use rustlua_lua_api::Handle;
 use rustlua_scripting::script::LuaRuntime;
+use std::rc::Rc;
 
 /// 宿主需要留着自己驱动的那部分领域句柄。
 ///
@@ -40,6 +41,11 @@ pub struct ScriptDomainHandles {
     pub camera: Handle<CameraState>,
     pub animation: Handle<AnimationState>,
     pub physics: Handle<PhysicsState>,
+    /// UI 动态层（文本/条/面板/图/网格/视图模型/隐藏集）。宿主每帧驱动 UI 渲染与绑定，
+    /// Lua 的 `ui.*` 绑定写的是同一份；组合根建句柄、经延迟安装器交给绑定。
+    pub ui: Handle<rustlua_ui::ui_state::UiState>,
+    /// UI 导航栈（焦点环/滚动位置）。
+    pub nav: Handle<rustlua_ui::lua_nav::NavState>,
 }
 
 /// 建一个**带全部领域绑定**的运行时：`LuaRuntime::with_installers(..)` + [`install`]。
@@ -253,6 +259,41 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         transition.with_mut(|state| state.clear_for_scene_transition());
     });
 
+    // ── ⑩ UI 域：七处 Lua 绑定 ────────────────────────────────────────────
+    // `ui` 表由脚本层在建 VM 时创建并存进 globals（还装了 measure_text）；每次建 VM 都是
+    // 一张新表。因此这里在**回调内现场取表**再补键，绝不捕获 Table 句柄——上次把取表放在
+    // 注册期，热重载重建 VM 后就把 ui.image 等装进了旧表，脚本读到 nil。
+    // 能力单元从脚本层拿同一份（不是新建），否则"脚本写的文字宿主读不到"。
+    let ui = script.ui_state_handle();
+    let nav = script.nav_handle();
+    let ui_installer = ui.clone();
+    let nav_installer = nav.clone();
+    let prefab_host = script.prefab_host();
+    script
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            // `world_text` 与 `prefab` 是独立全局表，不写进 ui 表。world 句柄由回调参数给出。
+            rustlua_ui::world_text_lua::install(lua, world)?;
+            rustlua_ui::prefab_lua::install(lua, Rc::clone(&prefab_host))?;
+            // 现场取脚本层刚建好的 ui 表（引用语义，克隆只是多一个句柄）。
+            let table: rustlua_lua_api::Table = lua.globals().get("ui")?;
+            rustlua_ui::ui_lua::install(lua, table.clone(), &ui_installer)?;
+            rustlua_ui::ui_panel_lua::install(lua, table.clone(), &ui_installer)?;
+            rustlua_ui::ui_controls_lua::install(lua, table.clone(), world)?;
+            rustlua_ui::lua_nav::install(lua, &table, &nav_installer)?;
+            rustlua_ui::lua_advanced::install(lua, &table, &ui_installer)?;
+            Ok(())
+        }))
+        .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
+
+    // 切场景：UI 动态层与导航栈的实体 id 随世界作废（viewport/reference 保留）。
+    let ui_transition = ui.clone();
+    let nav_transition = nav.clone();
+    script.add_scene_transition_hook(move || {
+        if let Ok(mut state) = ui_transition.borrow_mut() {
+            state.clear_for_scene_transition(&nav_transition);
+        }
+    });
+
     // ── UI 域的 15 类场景组件 ──────────────────────────────────────────────
     // 这些原来是 `scene_spawn::spawn_entity_components` 里写死的 if 链，每支直接构造一个
     // `rustlua_ui` 组件。组件类型住在 UI 域，装配知识因此归组合根；脚本层只认组件名。
@@ -298,5 +339,7 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         camera,
         animation,
         physics,
+        ui,
+        nav,
     }
 }

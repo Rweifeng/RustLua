@@ -22,6 +22,7 @@ fn sample_project_index_scene_runs_the_project_script() {
     let (installers, _host) = rustlua_gameplay::input_lua::registry_with_handles();
     let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     install_ui_appliers(&mut runtime);
+    install_ui_bindings(&mut runtime);
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     runtime
@@ -52,6 +53,7 @@ fn sample_project_menu_click_loads_the_demo_scene() {
     let (installers, _host) = rustlua_gameplay::input_lua::registry_with_handles();
     let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     install_ui_appliers(&mut runtime);
+    install_ui_bindings(&mut runtime);
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     runtime
@@ -111,6 +113,7 @@ fn sample_project_demo_saves_and_esc_returns_to_menu() {
     let (installers, host) = rustlua_gameplay::input_lua::registry_with_handles();
     let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     install_ui_appliers(&mut runtime);
+    install_ui_bindings(&mut runtime);
     runtime.set_project_root(root.clone());
     runtime.set_save_path(save_path.clone());
     runtime.instantiate_scene(&scene).unwrap();

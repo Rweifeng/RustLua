@@ -194,8 +194,36 @@ pub(crate) fn runtime_with_domains() -> (
     // UI 域的 15 类场景组件：与生产组合根 `engine::host::script_packs` 同一套装配，
     // 测试不能反向依赖 engine，所以在这里手写一遍。
     install_ui_appliers(&mut runtime);
+    // UI 域的七处 Lua 绑定（ui.* / prefab / world_text）：同样镜像生产组合根。
+    install_ui_bindings(&mut runtime);
 
     (runtime, camera, animation, physics)
+}
+
+/// UI 域的七处 Lua 绑定（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。
+///
+/// 关键约定（上次回归的教训）：`ui` 表每次建 VM 都是一张新表，取表必须放在**回调内现场**做，
+/// 绝不能在注册期捕获 `Table` 句柄——热重载重建 VM 后捕获的旧表会让脚本读到 nil。
+fn install_ui_bindings(runtime: &mut LuaRuntime) {
+    let ui = runtime.ui_state_handle();
+    let nav = runtime.nav_handle();
+    let prefab_host = runtime.prefab_host();
+    let ui_installer = ui.clone();
+    let nav_installer = nav.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            // `world_text` 与 `prefab` 是独立全局表，不写进 ui 表。world 句柄由回调参数给出。
+            rustlua_ui::world_text_lua::install(lua, world)?;
+            rustlua_ui::prefab_lua::install(lua, Rc::clone(&prefab_host))?;
+            let table: rustlua_lua_api::Table = lua.globals().get("ui")?;
+            rustlua_ui::ui_lua::install(lua, table.clone(), &ui_installer)?;
+            rustlua_ui::ui_panel_lua::install(lua, table.clone(), &ui_installer)?;
+            rustlua_ui::ui_controls_lua::install(lua, table.clone(), world)?;
+            rustlua_ui::lua_nav::install(lua, &table, &nav_installer)?;
+            rustlua_ui::lua_advanced::install(lua, &table, &ui_installer)?;
+            Ok(())
+        }))
+        .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
 }
 
 /// 15 类 UI 组件装配器（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。

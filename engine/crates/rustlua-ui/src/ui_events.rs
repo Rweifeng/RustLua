@@ -2,51 +2,10 @@
 
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UiEventType {
-    PointerEnter,
-    PointerExit,
-    PointerDown,
-    PointerUp,
-    Click,
-    Focus,
-    Submit,
-    ValueChanged,
-    Drag,
-}
-
-impl UiEventType {
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "pointer_enter" => Some(Self::PointerEnter),
-            "pointer_exit" => Some(Self::PointerExit),
-            "pointer_down" => Some(Self::PointerDown),
-            "pointer_up" => Some(Self::PointerUp),
-            "click" => Some(Self::Click),
-            "focus" => Some(Self::Focus),
-            "submit" => Some(Self::Submit),
-            "value_changed" => Some(Self::ValueChanged),
-            "drag" => Some(Self::Drag),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PointerEnter => "pointer_enter",
-            Self::PointerExit => "pointer_exit",
-            Self::PointerDown => "pointer_down",
-            Self::PointerUp => "pointer_up",
-            Self::Click => "click",
-            Self::Focus => "focus",
-            Self::Submit => "submit",
-            Self::ValueChanged => "value_changed",
-            Self::Drag => "drag",
-        }
-    }
-}
+// 事件种类与命中目标住在契约层 `rustlua-lua-api`（叶子 crate），这样脚本层的点击派发能
+// 引用它们而不必依赖本 crate。这里再导出一份，保持既有消费者 `rustlua_ui::ui_events::*`
+// 的路径不变。
+pub use rustlua_lua_api::ui_events::{UiClickTarget, UiEventType};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiEventBinding {
@@ -113,15 +72,6 @@ impl UiEventBinding {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiEvents {
     pub bindings: Vec<UiEventBinding>,
-}
-
-/// A hit-tested target carrying the Lua callbacks to dispatch.
-#[derive(Clone, Debug, Default)]
-pub struct UiClickTarget {
-    pub name: String,
-    pub origin: [f32; 2],
-    pub size: [f32; 2],
-    pub functions: Vec<String>,
 }
 
 impl UiEvents {

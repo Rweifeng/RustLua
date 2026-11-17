@@ -36,11 +36,13 @@ mod cell;
 mod prefab_host;
 mod project_root;
 mod registry;
+pub mod ui_events;
 pub mod values;
 
 pub use cell::Handle;
 pub use prefab_host::PrefabHost;
 pub use project_root::ProjectRoot;
+pub use ui_events::{UiClickTarget, UiEventType};
 pub use registry::{
     API_PACK_VERSION, ApiDimension, ApiPack, ApiPackInfo, ApiSurface, Installer, Registry,
 };
@@ -65,3 +67,7 @@ pub fn reentrant_borrow(what: &str, error: impl std::fmt::Display) -> mlua::Erro
 
 /// `LuaResult` 的再导出（领域 crate 不必各自 `use mlua::Result`）。
 pub type Result<T> = LuaResult<T>;
+
+/// Lua 表句柄的再导出：组合根从 `globals()` 现场取表时用它做类型标注，
+/// 这样引擎侧不必为了一个类型标注直接依赖 mlua。
+pub use mlua::Table;

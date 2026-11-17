@@ -77,11 +77,10 @@ pub(super) fn register_all(
         let project_root = state.borrow().project_root.clone();
         crate::script::domain::render::texture_lua::install(lua, &texture_gen, &project_root)?;
     }
-    // world_text 归 UI 域（WorldText 的排版规则住在 ustlua-ui，不拉 ender → ui 的边）。
-    {
-        let world = state.borrow().world.clone();
-        crate::script::domain::ui::world_text_lua::install(lua, &world)?;
-    }
+    // world_text / prefab / ui_lua / ui_panel / ui_controls / lua_nav / lua_advanced 七处绑定
+    // 已下沉到 UI 域（docs/62 P1 阶段 4d）：能力单元由组合根持有，经延迟安装器接到脚本层
+    // （见 `engine::host::script_packs`）。本层只建 `ui` 表并装 `measure_text`（要读脚本层的
+    // 字体探针），其余键由组合根在**现场取到这张表后**补齐。
     // 变换绑定已下沉到 ECS 域（P1 ⑤-10）：transform 基底表（按组件分派，不按维度裁）。
     {
         let world = state.borrow().world.clone();
@@ -100,36 +99,11 @@ pub(super) fn register_all(
     particles::register(lua, Rc::clone(&state))?;
     render_tuning::register(lua, Rc::clone(&state))?;
     world_data::register(lua, Rc::clone(&state))?;
-    // prefab 的 Lua 表面在 UI 域（P1 ⑤-15），实现由本层的组合根注入：
-    // 运行期实例化要按 &mut ScriptState 装配 18 类组件，领域 crate 不能反向依赖本层。
-    crate::script::domain::ui::prefab_lua::install(
-        lua,
-        Rc::new(crate::script::prefab_host::PrefabOps::new(Rc::clone(
-            &state,
-        ))),
-    )?;
-    // `ui` 表由三段共享：mlua 的 `Table` 是引用语义，克隆只是多一个句柄。
+    // `ui` 表由建表、本层的 `measure_text`、组合根的其余绑定三方共享；mlua 的 `Table` 是
+    // 引用语义，克隆只是多一个句柄。**每次建 VM 都新建这张表并 set 到 globals**，组合根的
+    // 延迟安装器因此必须在回调内现场 `globals().get("ui")` 取当次的表，绝不能捕获旧表句柄
+    // （否则热重载/多 VM 路径下 `ui.image` 等键会装进旧表，脚本看到 nil）。
     let ui = lua.create_table()?;
-    // `ui` 表由三段共享（P1 ⑤-12：`ui` / `ui_panel` 已下沉到 UI 域，本层只剩 `measure_text`）。
-    {
-        let ui_state = state.borrow().ui_state.clone();
-        crate::script::domain::ui::ui_lua::install(lua, ui.clone(), &ui_state)?;
-        crate::script::domain::ui::ui_panel_lua::install(lua, ui.clone(), &ui_state)?;
-    }
-    // M80-04：运行时控件按实体 id 读写（与 `world_text` 同一形态：组件住在 UI 域）。
-    {
-        let world = state.borrow().world.clone();
-        crate::script::domain::ui::ui_controls_lua::install(lua, ui.clone(), &world)?;
-    }
-    {
-        let nav = state.borrow().nav.clone();
-        crate::script::domain::ui::lua_nav::install(lua, &ui, &nav)?;
-    }
-    // M76-07：虚拟列表 / 富文本 / 文本输入 / 导航栈四个高级控件内核。
-    {
-        let ui_state = state.borrow().ui_state.clone();
-        crate::script::domain::ui::lua_advanced::install(lua, &ui, &ui_state)?;
-    }
     ui_measure::register(lua, ui.clone(), Rc::clone(&state))?;
     lua.globals().set("ui", ui)?;
     // 背包绑定已下沉到物品域（P1 ⑤-6）：`item` / `inv` / `container` / `shop` 四张表。
