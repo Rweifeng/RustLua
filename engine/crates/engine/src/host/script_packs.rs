@@ -263,9 +263,12 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     // `ui` 表由脚本层在建 VM 时创建并存进 globals（还装了 measure_text）；每次建 VM 都是
     // 一张新表。因此这里在**回调内现场取表**再补键，绝不捕获 Table 句柄——上次把取表放在
     // 注册期，热重载重建 VM 后就把 ui.image 等装进了旧表，脚本读到 nil。
-    // 能力单元从脚本层拿同一份（不是新建），否则"脚本写的文字宿主读不到"。
-    let ui = script.ui_state_handle();
-    let nav = script.nav_handle();
+    // 能力单元由组合根创建（P1 ⑤-12 后脚本层不再持有 UI 状态）；同一份句柄在这里装给
+    // 绑定、经 `ScriptDomainHandles` 交给宿主的每帧读写——两边各造一份会让"脚本写的
+    // 文字宿主读不到"。设计基准尺寸也在这里登记一次：视口未配置时按它归一布局。
+    let ui = rustlua_ui::ui_state::UiState::handle();
+    ui.with_mut(|state| state.set_reference(rustlua_ui::ui::UI_REFERENCE_SIZE));
+    let nav = rustlua_ui::lua_nav::NavState::handle();
     let ui_installer = ui.clone();
     let nav_installer = nav.clone();
     let prefab_host = script.prefab_host();
@@ -284,6 +287,55 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
             Ok(())
         }))
         .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
+
+    // ── ⑪ interact.prompt / clear_prompt / get_prompt ─────────────────────
+    // 这三支要同时写 ECS 账本的文案与 UI 覆盖层文本（`__interact_prompt`），是跨域操作，
+    // 所以归组合根；`interact` 表本身由 ECS 域建好，这里现场取表补最后三个键。
+    // 回调可能被多次重放（热重载重建 VM），内层闭包捕获的 handle 必须每次 clone 局部副本。
+    let prompt_entities = script.entity_state_handle();
+    let prompt_ui = ui.clone();
+    let prompt_ui_clear = ui.clone();
+    script
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            let interact: rustlua_lua_api::Table = lua.globals().get("interact")?;
+            let entities = prompt_entities.clone();
+            let ui = prompt_ui.clone();
+            interact.set(
+                "prompt",
+                lua.create_function(move |_, text: String| {
+                    entities.borrow_mut()?.interact_prompt = Some(text.clone());
+                    ui.borrow_mut()?.texts_mut().insert(
+                        "__interact_prompt".to_owned(),
+                        rustlua_ui::ui_state::UiText {
+                            text,
+                            visible: true,
+                            position: [16.0, 48.0],
+                            scale: 1.0,
+                            font_size: Some(18.0),
+                        },
+                    );
+                    Ok(())
+                })?,
+            )?;
+            let entities = prompt_entities.clone();
+            let ui = prompt_ui_clear.clone();
+            interact.set(
+                "clear_prompt",
+                lua.create_function(move |_, ()| {
+                    entities.borrow_mut()?.interact_prompt = None;
+                    ui.borrow_mut()?.texts_mut().remove("__interact_prompt");
+                    Ok(())
+                })?,
+            )?;
+            let entities = prompt_entities.clone();
+            interact.set(
+                "get_prompt",
+                lua.create_function(move |_, ()| {
+                    Ok(entities.borrow()?.interact_prompt.clone())
+                })?,
+            )?;
+            Ok(())
+        }))        .expect("interact.prompt 安装失败：表由 ECS 域建好，取不到说明装配顺序变了");
 
     // 切场景：UI 动态层与导航栈的实体 id 随世界作废（viewport/reference 保留）。
     let ui_transition = ui.clone();

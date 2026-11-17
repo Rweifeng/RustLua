@@ -345,7 +345,7 @@ impl super::RuntimeScene {
         }
         // 动态 UI 与场景实体 Text 只在 `render_ui_overlay` 打开时才绘制（编辑器场景视图关着）。
         if self.render_ui_overlay {
-            self.script.with_ui(|texts, _| {
+            self.with_ui(|texts, _| {
                 for text in texts.values().filter(|text| text.visible) {
                     entries.push((
                         String::new(),

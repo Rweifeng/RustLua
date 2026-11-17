@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn ui_particles_and_audio_lua_api() {
-    let mut runtime = runtime_with_domains().0;
+    let mut runtime = runtime_with_ui();
     let path = script(
         "particles.burst(5, -3, 10)\nui.bar('hp', 20, 30, 100, 10, 0.5, 1, 0, 0)\nui.text_at('objective', 20, 20, 'Reach the door')\naudio.volume(0.5)\nfunction update() return 'ok' end",
     );

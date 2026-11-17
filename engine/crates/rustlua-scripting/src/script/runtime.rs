@@ -124,8 +124,6 @@ impl LuaRuntime {
             renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
             // M82-B2：程序化贴图注册表（维度无关基底）。
             texture_gen: crate::script::domain::render::texture_lua::TextureGenState::handle(),
-            // UI 域能力单元（P1 ⑤-12）：动态文本/条/面板/图/网格/拖拽/视口。
-            ui_state: crate::script::domain::ui::ui_state::UiState::handle(),
             // 实体账本能力单元（P1 ⑤-13）：名字/持久 id/血量/标签/场景声明表。
             entity_state: crate::script::domain::ecs::entity_state::EntityState::handle(),
             // 工程根同样是能力单元：`data.*` 绑定读它，`set_project_root` 换工程时
@@ -133,10 +131,6 @@ impl LuaRuntime {
             project_root: crate::script::domain::lua_api::ProjectRoot::handle(),
             ..ScriptState::default()
         }));
-        {
-            let ui = state.borrow().ui_state.clone();
-            ui.with_mut(|ui| ui.set_reference(crate::script::domain::ui::ui::UI_REFERENCE_SIZE));
-        }
         api::register_all(&lua, Rc::clone(&state), &installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         // 心跳 + 指令预算：**每个 Lua 状态都装**（工程脚本、每实体脚本各自一份状态）。

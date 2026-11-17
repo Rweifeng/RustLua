@@ -711,6 +711,7 @@ impl RuntimeScene {
         let camera_state = handles.camera;
         let animation_state = handles.animation;
         let physics_state = handles.physics;
+        let ui_state = handles.ui;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
@@ -804,6 +805,7 @@ impl RuntimeScene {
             camera_state,
             animation_state,
             physics_state,
+            ui_state,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),

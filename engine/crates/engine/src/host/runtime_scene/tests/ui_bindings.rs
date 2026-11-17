@@ -132,7 +132,7 @@ fn one_way_bindings_write_text_visibility_and_progress() {
         runtime.ui_hit_data().iter().any(|item| item.name == "Icon"),
         "visible=true 时图像仍参与命中"
     );
-    runtime.script.with_ui(|_, bars| {
+    runtime.with_ui(|_, bars| {
         assert_eq!(bars["HpBar"].ratio, 0.4, "progress.value 写到动态进度条");
     });
     // 夹具里 `NoBar` 是故意缺进度条的目标，诊断只应有它一条。
@@ -264,7 +264,7 @@ track=UiAnimation.opacity;interp=linear;keys=0:0;1:1
     runtime
         .run_script_steps(1, 0.5, &InputSnapshot::default())
         .expect("step 0.5s");
-    runtime.script.with_ui_view_model(|view_model| {
+    runtime.with_ui_view_model(|view_model| {
         assert_eq!(
             view_model["anim.Panel.opacity"],
             BindingValue::Number(0.5),
@@ -292,7 +292,7 @@ fn two_way_binding_writes_back_and_one_way_rejects() {
             BindingValue::Text("Bob".to_owned()),
         )
         .unwrap();
-    runtime.script.with_ui_view_model(|view_model| {
+    runtime.with_ui_view_model(|view_model| {
         assert_eq!(
             view_model["data.name"],
             BindingValue::Text("Bob".to_owned()),

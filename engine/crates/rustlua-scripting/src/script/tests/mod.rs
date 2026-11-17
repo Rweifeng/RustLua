@@ -15,6 +15,7 @@ use rustlua_render::{
 };
 use rustlua_scene::scene::Scene;
 use rustlua_ui::ui_events::UiClickTarget;
+use std::collections::BTreeSet;
 
 /// 领域接线（能力单元 + 绑定表 + 组件装配器）的测试版。
 ///
@@ -29,6 +30,7 @@ pub(crate) fn runtime_with_domains() -> (
     rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
     rustlua_lua_api::Handle<rustlua_animation::animation_lua::AnimationState>,
     rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
+    rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
 ) {
     let camera = rustlua_camera::camera_state::CameraState::handle();
     let animation = rustlua_animation::animation_lua::AnimationState::handle();
@@ -194,22 +196,31 @@ pub(crate) fn runtime_with_domains() -> (
     // UI 域的 15 类场景组件：与生产组合根 `engine::host::script_packs` 同一套装配，
     // 测试不能反向依赖 engine，所以在这里手写一遍。
     install_ui_appliers(&mut runtime);
+    // UI 域能力单元由测试组合根创建（生产侧同款，见 `engine::host::script_packs`）：
+    // 脚本层已不再持有 UI 状态，同一份句柄必须从这里传给绑定与断言两侧。
+    let ui = rustlua_ui::ui_state::UiState::handle();
+    let nav = rustlua_ui::lua_nav::NavState::handle();
     // UI 域的七处 Lua 绑定（ui.* / prefab / world_text）：同样镜像生产组合根。
-    install_ui_bindings(&mut runtime);
+    install_ui_bindings(&mut runtime, &ui, &nav);
 
-    (runtime, camera, animation, physics)
+    (runtime, camera, animation, physics, ui)
 }
 
 /// UI 域的七处 Lua 绑定（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。
 ///
 /// 关键约定（上次回归的教训）：`ui` 表每次建 VM 都是一张新表，取表必须放在**回调内现场**做，
 /// 绝不能在注册期捕获 `Table` 句柄——热重载重建 VM 后捕获的旧表会让脚本读到 nil。
-fn install_ui_bindings(runtime: &mut LuaRuntime) {
-    let ui = runtime.ui_state_handle();
-    let nav = runtime.nav_handle();
+fn install_ui_bindings(
+    runtime: &mut LuaRuntime,
+    ui: &rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
+    nav: &rustlua_lua_api::Handle<rustlua_ui::lua_nav::NavState>,
+) {
+    ui.with_mut(|state| state.set_reference(rustlua_ui::ui::UI_REFERENCE_SIZE));
     let prefab_host = runtime.prefab_host();
+    let entities_source = runtime.entity_state_handle();
     let ui_installer = ui.clone();
     let nav_installer = nav.clone();
+    let entities_installer = entities_source.clone();
     runtime
         .add_deferred_installer(Box::new(move |lua, world, _registry| {
             // `world_text` 与 `prefab` 是独立全局表，不写进 ui 表。world 句柄由回调参数给出。
@@ -221,6 +232,47 @@ fn install_ui_bindings(runtime: &mut LuaRuntime) {
             rustlua_ui::ui_controls_lua::install(lua, table.clone(), world)?;
             rustlua_ui::lua_nav::install(lua, &table, &nav_installer)?;
             rustlua_ui::lua_advanced::install(lua, &table, &ui_installer)?;
+            // interact.prompt / clear_prompt / get_prompt：跨 ECS+UI 的三个键，镜像生产组合根。
+            let entities = entities_installer.clone();
+            let ui = ui_installer.clone();
+            let interact: rustlua_lua_api::Table = lua.globals().get("interact")?;
+            let entities_for_clear = entities.clone();
+            let ui_for_clear = ui.clone();
+            interact.set(
+                "prompt",
+                lua.create_function(move |_, text: String| {
+                    entities.borrow_mut()?.interact_prompt = Some(text.clone());
+                    ui.borrow_mut()?.texts_mut().insert(
+                        "__interact_prompt".to_owned(),
+                        rustlua_ui::ui_state::UiText {
+                            text,
+                            visible: true,
+                            position: [16.0, 48.0],
+                            scale: 1.0,
+                            font_size: Some(18.0),
+                        },
+                    );
+                    Ok(())
+                })?,
+            )?;
+            interact.set(
+                "clear_prompt",
+                lua.create_function(move |_, ()| {
+                    entities_for_clear.borrow_mut()?.interact_prompt = None;
+                    ui_for_clear
+                        .borrow_mut()?
+                        .texts_mut()
+                        .remove("__interact_prompt");
+                    Ok(())
+                })?,
+            )?;
+            let entities = entities_installer.clone();
+            interact.set(
+                "get_prompt",
+                lua.create_function(move |_, ()| {
+                    Ok(entities.borrow()?.interact_prompt.clone())
+                })?,
+            )?;
             Ok(())
         }))
         .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
@@ -269,8 +321,64 @@ pub(crate) fn runtime_with_camera() -> (
     LuaRuntime,
     rustlua_lua_api::Handle<rustlua_camera::camera_state::CameraState>,
 ) {
-    let (runtime, camera, _, _) = runtime_with_domains();
+    let (runtime, camera, ..) = runtime_with_domains();
     (runtime, camera)
+}
+
+/// 需要 UI 域句柄做断言时的简写：返回的包装经 `Deref` 仍是 `LuaRuntime`，VM 调用一行不改；
+/// `with_ui` 等宿主视图方法由本类型用**同一份**句柄直读（脚本层不再有这些入口）。
+pub(crate) struct UiRuntime {
+    runtime: LuaRuntime,
+    pub(crate) ui: rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
+}
+
+impl std::ops::Deref for UiRuntime {
+    type Target = LuaRuntime;
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl std::ops::DerefMut for UiRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
+}
+
+impl UiRuntime {
+    pub(crate) fn with_ui<R>(
+        &self,
+        f: impl FnOnce(
+            &BTreeMap<String, rustlua_ui::ui_state::UiText>,
+            &BTreeMap<String, rustlua_ui::ui_state::UiBar>,
+        ) -> R,
+    ) -> R {
+        self.ui.with(|ui| f(ui.texts(), ui.bars()))
+    }
+
+    pub(crate) fn with_dynamic_ui<R>(
+        &self,
+        f: impl FnOnce(
+            &BTreeMap<String, rustlua_ui::ui::UiPanel>,
+            &BTreeMap<String, rustlua_ui::ui::DynamicUiImage>,
+            &BTreeMap<String, rustlua_ui::ui::UiGrid>,
+        ) -> R,
+    ) -> R {
+        self.ui.with(|ui| f(ui.panels(), ui.images(), ui.grids()))
+    }
+
+    pub(crate) fn scene_text_hidden(&self) -> BTreeSet<String> {
+        self.ui.with(|ui| ui.scene_text_hidden().clone())
+    }
+
+    pub(crate) fn set_ui_viewport(&mut self, width: u32, height: u32) {
+        self.ui.with_mut(|ui| ui.set_viewport(width, height));
+    }
+}
+
+pub(crate) fn runtime_with_ui() -> UiRuntime {
+    let (runtime, _, _, _, ui) = runtime_with_domains();
+    UiRuntime { runtime, ui }
 }
 
 /// 带宿主侧物理驱动的测试运行时。
@@ -281,6 +389,7 @@ pub(crate) fn runtime_with_camera() -> (
 pub(crate) struct TestRuntime {
     runtime: LuaRuntime,
     pub(crate) physics: rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
+    pub(crate) ui: rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
 }
 
 impl std::ops::Deref for TestRuntime {
@@ -297,11 +406,16 @@ impl std::ops::DerefMut for TestRuntime {
 }
 
 pub(crate) fn runtime_with_all() -> TestRuntime {
-    let (runtime, _camera, _animation, physics) = runtime_with_domains();
-    TestRuntime { runtime, physics }
+    let (runtime, _camera, _animation, physics, ui) = runtime_with_domains();
+    TestRuntime { runtime, physics, ui }
 }
 
 impl TestRuntime {
+    /// UI 视口登记（LuaRuntime 上的同名入口已随 UI 域外移删除，测试经句柄直写）。
+    pub(crate) fn set_ui_viewport(&self, width: u32, height: u32) {
+        self.ui.with_mut(|ui| ui.set_viewport(width, height));
+    }
+
     pub(crate) fn step_physics(&self, delta_seconds: f32) {
         let entities = self.runtime.entity_state_handle();
         let pending = entities.with_mut(|e| e.take_physics_removals());

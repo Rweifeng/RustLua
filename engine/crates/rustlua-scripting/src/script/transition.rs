@@ -67,12 +67,7 @@ impl LuaRuntime {
                     entities.clear_for_scene_transition();
                 }
             }
-            // 先取句柄副本，避免 UI 句柄与 `&state.nav` 同时对 `state` 借用。
-            let nav = state.nav.clone();
-            let ui = state.ui_state.clone();
-            if let Ok(mut ui) = ui.borrow_mut() {
-                ui.clear_for_scene_transition(&nav);
-            }
+            // UI 覆盖层与导航栈的清理已外移到组合根的场景切换钩子（`script_packs` ⑩段）。
             if let Ok(mut inventory) = state.inventory.borrow_mut() {
                 inventory.clear_for_scene_transition();
             }

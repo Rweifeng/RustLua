@@ -58,7 +58,7 @@ impl RuntimeScene {
         self.ui_binding_hidden_images
             .retain(|name| image_targets.contains(name));
 
-        let view_model = self.script.with_ui_view_model(std::clone::Clone::clone);
+        let view_model = self.with_ui_view_model(std::clone::Clone::clone);
         let outcomes = self.ui_binding_runtime.update(&bindings, &view_model);
         if outcomes.is_empty() {
             self.ui_binding_report.clear();
@@ -115,7 +115,7 @@ impl RuntimeScene {
         }
         if !bar_updates.is_empty() {
             let mut missing = Vec::new();
-            self.script.with_ui_bars_mut(|bars| {
+            self.with_ui_bars_mut(|bars| {
                 for (name, ratio) in bar_updates {
                     match bars.get_mut(&name) {
                         Some(bar) => bar.ratio = ratio,
@@ -147,7 +147,9 @@ impl RuntimeScene {
         };
         // 借用面：交互运行时与 UI 能力单元是两个字段，闭包只捕获前者，不碰 `&mut self`。
         let runtime = &mut self.ui_binding_runtime;
-        let result = self.script.with_ui_view_model_mut(|view_model| {
+        let ui = &self.ui_state;
+        let result = ui.with_mut(|ui| {
+            let view_model = ui.view_model_mut();
             runtime.push(&bindings, target, property, value, view_model)
         });
         result?;
@@ -174,7 +176,7 @@ impl RuntimeScene {
             .iter()
             .filter_map(|(id, values)| self.script.entity_name(*id).map(|name| (name, values)))
             .collect::<Vec<_>>();
-        self.script.with_ui_view_model_mut(|view_model| {
+        self.with_ui_view_model_mut(|view_model| {
             view_model.retain(|key, _| !key.starts_with("anim."));
             for (name, values) in &named {
                 for (property, value) in values.iter() {

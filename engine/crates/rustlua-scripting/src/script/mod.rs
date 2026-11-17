@@ -1,7 +1,7 @@
 use mlua::{Lua, Result as LuaResult, Value};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -62,7 +62,6 @@ use domain::math::math2d::Vec2;
 #[allow(unused_imports)] // 经 `script::tests` 的 `use super::*` 链供 `tests/camera.rs` 使用
 use domain::math::math3d::Vec3;
 use domain::scene::scene::SceneEntityId;
-use domain::ui::ui::{DynamicUiImage, UiGrid, UiPanel};
 use error::ScriptFingerprint;
 use values::{format_lua_value, lua_value_to_json};
 // `ui` 的运行期元素类型跟着状态单元搬去了 UI 域（P1 ⑤-12），路径保持不变以便宿主继续用。
@@ -346,14 +345,10 @@ pub(crate) struct ScriptState {
     // ---- docs/60 §4.1：按领域拆分的子状态 ----
     /// 实体账本的能力单元（P1 ⑤-13：名字/持久 id/血量/标签/场景声明表归 `rustlua-ecs`）。
     entity_state: Handle<crate::script::domain::ecs::entity_state::EntityState>,
-    /// UI 域的能力单元（P1 ⑤-12：动态文本/条/面板/图/网格/拖拽/视口都归 `rustlua-ui`）。
-    ui_state: Handle<crate::script::domain::ui::ui_state::UiState>,
     /// 物品/背包/商店域的能力单元（P1 ⑤-6：数据与槽位规则归 `rustlua-gameplay`）。
     inventory: Handle<crate::script::domain::gameplay::inventory_state::InventoryState>,
     /// 存档域的能力单元（P1 ⑤：数据/路径/槽位归 `rustlua-gameplay`）。
     save: Handle<SaveStore>,
-    /// UI 导航的能力单元（P1 ⑤-3：焦点环/滚动位置归 `rustlua-ui`）。
-    nav: Handle<crate::script::domain::ui::lua_nav::NavState>,
 }
 
 impl ScriptState {
@@ -598,20 +593,6 @@ impl LuaRuntime {
         self.state.borrow_mut().text_hint_scale = scale;
     }
 
-    /// Stores the current viewport so Lua `ui.grid_hit` can resolve screen
-    /// coordinates. The host calls this before rendering each frame.
-    pub fn set_ui_viewport(&mut self, width: u32, height: u32) {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with_mut(|ui| ui.set_viewport(width, height));
-    }
-
-    /// Stores the Canvas 空间 UI 参考分辨率（设计分辨率），供 Lua 侧
-    /// `process_ui_clicks` / `ui.grid_hit` 命中测试与渲染保持一致。
-    pub fn set_ui_reference(&mut self, reference: [f32; 2]) {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with_mut(|ui| ui.set_reference(reference));
-    }
-
     /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
     ///
     /// 同时把**生效的设置根**写进注册表：`audio.load_settings` 等下沉后的设置持久化绑定读的是
@@ -649,62 +630,6 @@ impl LuaRuntime {
     /// 先把项目根写进去，后续 `set_settings_root` 会覆盖。
     fn publish_settings_root(&self, root: PathBuf) {
         self.installers.set_root(Some(root));
-    }
-
-    /// Gives the host a read view of the UI text and bar elements.
-    pub fn with_ui<R>(
-        &self,
-        f: impl FnOnce(&BTreeMap<String, UiText>, &BTreeMap<String, UiBar>) -> R,
-    ) -> R {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with(|ui| f(ui.texts(), ui.bars()))
-    }
-
-    /// M76-02：`UiBindings` 的视图模型只读视图（`ui.view_model_set` 写入）。
-    pub fn with_ui_view_model<R>(
-        &self,
-        f: impl FnOnce(&BTreeMap<String, crate::script::domain::ui::ui_binding::BindingValue>) -> R,
-    ) -> R {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with(|ui| f(ui.view_model()))
-    }
-
-    /// 双向绑定的写回入口：只改视图模型，目标（文字/可见性/进度）由宿主下一步 resolve。
-    pub fn with_ui_view_model_mut<R>(
-        &mut self,
-        f: impl FnOnce(&mut BTreeMap<String, crate::script::domain::ui::ui_binding::BindingValue>) -> R,
-    ) -> R {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with_mut(|ui| f(ui.view_model_mut()))
-    }
-
-    /// `progress.value` 绑定的落点：按 id 改动态进度条的填充比例（不创建新条）。
-    pub fn with_ui_bars_mut<R>(&mut self, f: impl FnOnce(&mut BTreeMap<String, UiBar>) -> R) -> R {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with_mut(|ui| f(ui.bars_mut()))
-    }
-
-    /// 场景文字按名隐藏集（`ui.scene_text_visible` 写入）的只读视图。
-    #[must_use]
-    pub fn scene_text_hidden(&self) -> BTreeSet<String> {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with(|ui| ui.scene_text_hidden().clone())
-    }
-
-    /// P3-②：一次借用判定"实体的名字是否被隐藏"——此前宿主每帧为每个文字
-    /// `scene_text_hidden().clone()` 整份隐藏集再 `contains`。
-    #[must_use]
-    pub fn is_entity_scene_text_hidden(&self, id: EntityId) -> bool {
-        let state = self.state.borrow();
-        let ui = state.ui_state.clone();
-        let hidden = ui.with(|ui| ui.scene_text_hidden().clone());
-        let entities = state.entity_state.clone();
-        // 只扫**这个实体自己的**名字（原来是扫全表每一条），"任一名字命中即隐藏"的语义原样保留。
-        entities.with(|entities| {
-            entities
-                .names
-                .any_name_matches(id, |name| hidden.contains(name))
-        })
     }
 
     /// 运行期 spawn 的 UI 预设实体的布局节点（键 = 活实体槽位号）。宿主每帧解算场景
@@ -859,19 +784,6 @@ impl LuaRuntime {
     pub fn scene_entity_count(&self) -> usize {
         let entities = self.state.borrow().entity_state.clone();
         entities.with(|entities| entities.scene_entities.len())
-    }
-
-    /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
-    pub fn with_dynamic_ui<R>(
-        &self,
-        f: impl FnOnce(
-            &BTreeMap<String, UiPanel>,
-            &BTreeMap<String, DynamicUiImage>,
-            &BTreeMap<String, UiGrid>,
-        ) -> R,
-    ) -> R {
-        let ui = self.state.borrow().ui_state.clone();
-        ui.with(|ui| f(ui.panels(), ui.images(), ui.grids()))
     }
 
     /// Gives the host a read view of the active particles.
@@ -1119,20 +1031,6 @@ impl LuaRuntime {
     /// 这是 ECS 能力单元，不引入新的领域依赖边；物理域自己的状态由组合根直接持有。
     pub fn entity_state_handle(&self) -> Handle<crate::script::domain::ecs::entity_state::EntityState> {
         self.state.borrow().entity_state.clone()
-    }
-
-    /// UI 动态层与导航栈的能力单元句柄（组合根接线用）。
-    ///
-    /// UI 绑定本身由组合根（`engine::host::script_packs`）经延迟安装器接到脚本层；宿主每帧
-    /// 也要读写同一份状态（文本/条/面板与焦点环），所以把句柄交出去共享，而不是在两边各造
-    /// 一份——那会让"脚本写的文字宿主读不到"。
-    pub fn ui_state_handle(&self) -> Handle<crate::script::domain::ui::ui_state::UiState> {
-        self.state.borrow().ui_state.clone()
-    }
-
-    /// UI 导航栈的能力单元句柄（组合根接线用，见 [`Self::ui_state_handle`]）。
-    pub fn nav_handle(&self) -> Handle<crate::script::domain::ui::lua_nav::NavState> {
-        self.state.borrow().nav.clone()
     }
 
     /// `prefab` 表的中立宿主端口（组合根接线用）。

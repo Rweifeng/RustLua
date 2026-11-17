@@ -1431,7 +1431,7 @@ fn sample_project_index_atlas_hides_menu_layers() {
         Some(true),
         "按下 A 后应画出 menu_atlas 面板"
     );
-    let hidden = runtime.script.scene_text_hidden();
+    let hidden = runtime.scene_text_hidden();
     for name in ["Title", "Subtitle", "Footer"] {
         assert!(
             hidden.contains(name),
@@ -1470,7 +1470,7 @@ fn sample_project_index_atlas_hides_menu_layers() {
         Some(false),
         "再按一次 A 应收起 menu_atlas 面板"
     );
-    let hidden = runtime.script.scene_text_hidden();
+    let hidden = runtime.scene_text_hidden();
     assert!(
         hidden.is_empty(),
         "收起能力图谱后场景文字应全部恢复，仍在隐藏集里的：{hidden:?}"

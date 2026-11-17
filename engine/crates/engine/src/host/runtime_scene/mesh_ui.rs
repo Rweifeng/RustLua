@@ -427,7 +427,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
-        let panels = self.script.with_dynamic_ui(|panels, _, _| panels.clone());
+        let panels = self.with_dynamic_ui(|panels, _, _| panels.clone());
         for panel in panels.values().filter(|panel| panel.visible) {
             let (origin, size) = resolve_ui_rect(
                 panel.position,
@@ -497,7 +497,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
-        let images = self.script.with_dynamic_ui(|_, images, _| images.clone());
+        let images = self.with_dynamic_ui(|_, images, _| images.clone());
         for image in images.values() {
             self.push_image_quad(vertices, draws, width, height, image, None)?;
         }
@@ -512,7 +512,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
-        let grids = self.script.with_dynamic_ui(|_, _, grids| grids.clone());
+        let grids = self.with_dynamic_ui(|_, _, grids| grids.clone());
         for grid in grids.values() {
             let (origin, total) = resolve_ui_rect(
                 grid.position,
@@ -600,7 +600,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
-        let bars = self.script.with_ui(|_, bars| bars.clone());
+        let bars = self.with_ui(|_, bars| bars.clone());
         for bar in bars.values() {
             let start = vertices.len() as u32;
             let background = [0.12, 0.12, 0.15, 0.75];
@@ -650,7 +650,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
-        let texts = self.script.with_ui(|texts, _| texts.clone());
+        let texts = self.with_ui(|texts, _| texts.clone());
         let visible: Vec<_> = texts
             .values()
             .filter(|text| text.visible)
@@ -880,7 +880,7 @@ impl RuntimeScene {
                 // `ui.scene_text_visible(name, false)` 按实体名隐藏场景文字：
                 // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
                 // P3-②：换成免克隆判定（旧实现每文字每帧 clone 整份隐藏集）。
-                let name_hidden = self.script.is_entity_scene_text_hidden(id);
+                let name_hidden = self.is_entity_scene_text_hidden(id);
                 if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask)
                     && !name_hidden
                 {

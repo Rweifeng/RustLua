@@ -673,7 +673,7 @@ impl RuntimeScene {
         // 这里刻意**不**走 `invalidate_frame_view_3d()`：那是"世界变更把定帧值作废"的账，
         // 帧边界不是世界变更（账本里两者分开记，混在一起就看不出"到底是谁作废的"）。
         self.frame_view_3d = None;
-        self.script.set_ui_viewport(width, height);
+        self.set_ui_viewport(width, height);
         // WP2：提取前先把局部变换传播成世界变换（开启空间继承时才有实际效果；关闭时这一步
         // 只会清掉遗留的世界变换组件，消费者读到的仍是局部值 = 旧行为）。
         self.propagate_spatial_now();

@@ -975,11 +975,11 @@ impl RuntimeScene {
         RenderView::overlay_2d(self.camera, viewport)
     }
 
-    /// 设置 Canvas 空间 UI 的参考分辨率（设计分辨率）。同步给 Lua 侧，
+    /// 设置 Canvas 空间 UI 的参考分辨率（设计分辨率）。同步给能力单元，
     /// 保证渲染与按钮命中测试（`process_ui_clicks`）用同一参考。
     pub fn set_ui_reference(&mut self, reference: [f32; 2]) {
         self.ui_reference = reference;
-        self.script.set_ui_reference(reference);
+        self.ui_state.with_mut(|ui| ui.set_reference(reference));
     }
 
     /// 是否渲染屏幕空间 UI 覆盖层。编辑器场景视图置 false（UI 由 egui 在

@@ -7,12 +7,11 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use mlua::{Lua, Result as LuaResult, Table};
+use mlua::{Lua, Result as LuaResult};
 
 use super::ScriptState;
 
 mod globals;
-mod interact_prompt;
 mod particles;
 mod render_tuning;
 mod ui_measure;
@@ -45,11 +44,6 @@ pub(super) fn register_all(
     {
         let world = state.borrow().world.clone();
         crate::script::domain::render::visibility_lua::install(lua, &world)?;
-    }
-    // interact 表的最后三个键留在本层（要写 UI 覆盖层文本），表由 ECS 那一步建好。
-    {
-        let interact: Table = lua.globals().get("interact")?;
-        interact_prompt::register(lua, interact, Rc::clone(&state))?;
     }
     // 可渲染组件的绑定已下沉到渲染域（P1 ⑤-10）：sprite / quad 两张基底表。
     {

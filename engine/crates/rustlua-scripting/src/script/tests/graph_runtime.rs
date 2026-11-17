@@ -71,8 +71,10 @@ fn behavior_graph(prefix: &str) -> String {
     .to_json()
 }
 
-fn text(runtime: &LuaRuntime, element: &str) -> Option<String> {
-    runtime.with_ui(|texts, _| texts.get(element).map(|text| text.text.clone()))
+fn text(runtime: &TestRuntime, element: &str) -> Option<String> {
+    runtime
+        .ui
+        .with(|ui| ui.texts().get(element).map(|text| text.text.clone()))
 }
 
 /// E03-3：`.vgraph` 直接挂到实体 `Script` 上，4 类事件走现有实体脚本钩子；

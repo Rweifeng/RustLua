@@ -50,6 +50,7 @@ mod scene;
 mod schedule;
 mod script;
 mod spatial;
+mod ui_driver;
 /// 本模块的测试集合（WP12 阶段 1 从本文件搬出，100 项）：作为 `runtime_scene` 的后代，
 /// 它们靠 `use super::*;` 的 glob 拿私有项，因此这里不需要为测试放宽任何可见性。
 #[cfg(test)]
@@ -137,6 +138,9 @@ pub struct RuntimeScene {
     /// 物理模拟的能力单元：两个世界、分阶段回写队列与调试请求。步进、回写与刚体同步的
     /// 驱动逻辑在 [`super::physics_driver`]（宿主侧），脚本层只保留绑定。
     pub(crate) physics_state: rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
+    /// UI 域的能力单元：动态文本/条/面板/图/网格/视口与隐藏集。宿主侧的读写视图在
+    /// [`super::ui_driver`]；脚本层对 UI 域零引用（组合根装绑定与装配器）。
+    pub(crate) ui_state: rustlua_lua_api::Handle<rustlua_ui::ui_state::UiState>,
     /// 自上次 `take_script_micros` 以来 Lua 回调的累计耗时（微秒）：所有固定步里的
     /// `update()` + 每个渲染帧一次的 `on_frame()`。宿主把它送进
     /// `PerformanceStats::lua_ms`，性能面板因此显示的是"Lua 花了多少"而不是恒为 0
