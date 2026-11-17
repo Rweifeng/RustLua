@@ -497,6 +497,8 @@ struct EditorApp {
     show_graph_panel: bool,
     /// M76-04 UI Studio 标签：默认隐藏，EditorApp 内由 View 菜单打开。
     show_ui_studio: bool,
+    /// M83 Shader Graph：面向非 shader 开发者的节点式特效面板。
+    show_shader_graph: bool,
     /// 打开 UI Studio（View 菜单/双击 `.ui.json`/证据步骤）后下一帧把「UI 工作室」
     /// 标签带到前台（它可能刚被补进树），并把「层级」「属性」标签一并带到前台——
     /// 内嵌的 UI 节点树/检查器分别画在这两块面板里，标签被挡住时它们是看不到的。
@@ -509,6 +511,9 @@ struct EditorApp {
     ui_studio_panel: crate::panels::ui_studio::UiStudioPanel,
     /// P3-E03-2 图文档与画布状态（只活在进程内，不反向写场景文档）。
     graph: crate::panels::graph::GraphPanelState,
+    shader_graph: crate::panels::shader_graph::ShaderGraphPanel,
+    /// M88：`[render] effect_overlay` 挂载后缓存的参数槽值（每帧写回渲染器）。
+    effect_overlay_slots: Option<Vec<[f32; 4]>>,
     /// P3-E01-3 时间线预览状态：播放头、最近事件与装配结果。
     /// 只活在进程内（布局文件不记播放头），也绝不反向写场景文档。
     timeline: crate::panels::timeline::TimelineState,
@@ -1265,10 +1270,13 @@ impl EditorApp {
             show_timeline_panel: true,
             show_graph_panel: false,
             show_ui_studio: false,
+            show_shader_graph: true,
             pending_ui_studio_focus: false,
             ui_studio_active: false,
             ui_studio_panel: crate::panels::ui_studio::UiStudioPanel::default(),
             graph: crate::panels::graph::GraphPanelState::default(),
+            shader_graph: crate::panels::shader_graph::ShaderGraphPanel::default(),
+            effect_overlay_slots: None,
             timeline: crate::panels::timeline::TimelineState::default(),
             material: crate::panels::material::MaterialState::default(),
             #[cfg(feature = "ai-bridge")]
@@ -2744,6 +2752,17 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        // M88：`[render] effect_overlay` 挂上的叠加层每帧推进时间与参数（关档时是空操作）。
+        let effect_time = context.input(|input| input.time) as f32;
+        let params = self.effect_overlay_slots.clone();
+        if let Some(renderer) = self.scene_renderer.as_mut() {
+            renderer.set_effect_time(effect_time);
+            if self.shader_graph.overlay_params().is_none()
+                && let Some(slots) = params.as_deref()
+            {
+                renderer.set_effect_params(slots);
+            }
+        }
         self.draw_frame(context);
     }
 

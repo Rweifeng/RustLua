@@ -152,9 +152,21 @@ pub struct GameApp {
     frame_profile: Option<FrameProfile>,
     /// 分档报告的落盘路径（与 `frame_profile` 同生同灭）。
     frame_profile_path: Option<PathBuf>,
+    /// 渲染满 N 个 Presented 帧后自动退出（`--exit-after-frames`；A/B 基准用）。
+    exit_after_frames: Option<u64>,
+    /// 已真正呈现的帧数（`RenderOutcome::Presented` 计数）。
+    presented_frames: u64,
     /// P3-R05-4：开发期 shader 覆盖目录（`--shader-dir`/`RUSTLUA_SHADER_DIR`）。
     /// `None` = 不监听，`Renderer` 只用编译期内嵌的源。
     shader_dir: Option<PathBuf>,
+    /// M88：`project.toml [render] effect_overlay` 指向的工程内 `.sgraph`。
+    effect_overlay: Option<String>,
+    /// 已挂载叠加层的参数槽值（每帧写回 uniform）与挂载时刻（推进 `time`）。
+    effect_overlay_slots: Option<Vec<[f32; 4]>>,
+    effect_clock_start: Option<Instant>,
+    /// M95：`.sgraph` 命名参数表与默认值（挂载叠加层时缓存，运行时场景建好后推给脚本层）。
+    effect_param_names: Option<Vec<(String, usize, usize)>>,
+    effect_param_defaults: Option<Vec<[f32; 4]>>,
     /// 下一次检查覆盖目录的时刻（`None` = 不检查）。每次检查都往后推一个去抖窗口。
     shader_reload_due: Option<Instant>,
     /// 已经打过的重载失败文本：同一条坏源每 150ms 重复报一次会把日志刷废。
@@ -264,7 +276,14 @@ impl GameApp {
                 profile
             }),
             frame_profile_path,
+            exit_after_frames: None,
+            presented_frames: 0,
             shader_dir: None,
+            effect_overlay: None,
+            effect_overlay_slots: None,
+            effect_clock_start: None,
+            effect_param_names: None,
+            effect_param_defaults: None,
             shader_reload_due: None,
             shader_error_shown: None,
             script_cadence: rustlua_infra::hot_reload::ReloadCadence::script_default(),
@@ -479,6 +498,13 @@ impl GameApp {
         self
     }
 
+    /// M88：`project.toml [render] effect_overlay` 的工程内 `.sgraph` 路径。
+    #[must_use]
+    pub fn with_effect_overlay(mut self, path: Option<String>) -> Self {
+        self.effect_overlay = path;
+        self
+    }
+
     /// P3-R243：启动期预热 GPU 粒子管线（`--prewarm-particles`，默认关）。
     #[must_use]
     pub fn with_prewarm_particles(mut self, prewarm: bool) -> Self {
@@ -616,6 +642,14 @@ impl GameApp {
                 return;
             }
         };
+        // M95：把 `.sgraph` 的命名参数表 + 默认值推给脚本层，`render.set_effect_param` 才有名字可查。
+        if let (Some(names), Some(defaults), Some(scene)) = (
+            self.effect_param_names.take(),
+            self.effect_param_defaults.take(),
+            self.runtime_scene.as_mut(),
+        ) {
+            scene.set_effect_param_names(names, defaults);
+        }
         if let (Some(root), Some(scene)) = (root, self.runtime_scene.as_mut()) {
             let settings_root =
                 rustlua_infra::user_dir::data_roots(root, self.packaged).settings_dir;
@@ -695,6 +729,13 @@ impl GameApp {
     /// 本次运行的失败原因；`None` 表示正常退出（含 Lua `app.quit()` 与用户关窗）。
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
+    }
+
+    /// M96：渲染满 N 个 Presented 帧后自动退出（A/B 基准用；默认关）。
+    #[must_use]
+    pub fn with_exit_after_frames(mut self, frames: Option<u64>) -> Self {
+        self.exit_after_frames = frames;
+        self
     }
 
     /// M74-02 P0：把本进程的帧调度分档写成 JSON，并打印单行摘要。
@@ -897,6 +938,55 @@ impl GameApp {
             && scene.quit_requested()
         {
             self.request_exit(event_loop);
+        }
+    }
+
+    /// M88：把 `[render] effect_overlay` 指向的 `.sgraph` 编译成叠加层挂到渲染器上。
+    ///
+    /// 失败只记日志、不阻止启动：坏资产应该表现为"没有特效"，而不是游戏起不来。
+    fn attach_effect_overlay(&mut self, renderer: &mut Renderer) {
+        let Some(relative) = self.effect_overlay.clone() else {
+            return;
+        };
+        let Some(root) = self.project_root.clone() else {
+            tracing::warn!(
+                target: "render",
+                effect = %relative,
+                "effect_overlay 需要工程根目录才能解析，已跳过"
+            );
+            return;
+        };
+        match rustlua_visual_script::shader_graph::ShaderGraph::load_runtime_overlay(
+            &root, &relative,
+        ) {
+            Ok((source, compiled)) => match renderer.set_effect_overlay(Some(&source)) {
+                Ok(()) => {
+                    renderer.set_effect_params(&compiled.slots);
+                    self.effect_overlay_slots = Some(compiled.slots.clone());
+                    self.effect_clock_start = Some(Instant::now());
+                    // M95：命名参数表缓存下来，等运行时场景建好再推给脚本层。
+                    self.effect_param_names = Some(
+                        compiled
+                            .named_params()
+                            .into_iter()
+                            .map(|param| (param.name, param.slot, param.component))
+                            .collect(),
+                    );
+                    self.effect_param_defaults = Some(compiled.slots.clone());
+                    tracing::info!(
+                        target: "render",
+                        effect = %relative,
+                        params = compiled.params.len(),
+                        "特效叠加层已挂载（参数走 uniform，运行时可逐帧调）"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(target: "render", effect = %relative, "特效叠加层编译失败：{error}");
+                }
+            },
+            Err(error) => {
+                tracing::error!(target: "render", "特效叠加层加载失败：{error}");
+            }
         }
     }
 
@@ -1431,6 +1521,31 @@ impl GameApp {
         }
         host_phases.extract = extract_started.elapsed();
         let submit_started = Instant::now();
+        // M88：叠加层的时间与参数每帧推进（关档时两个调用都是空操作）。
+        if self.effect_clock_start.is_some() {
+            if let Some(start) = self.effect_clock_start {
+                renderer.set_effect_time(start.elapsed().as_secs_f32());
+            }
+            if let Some(slots) = self.effect_overlay_slots.as_deref() {
+                renderer.set_effect_params(slots);
+            }
+        }
+        // M94：脚本逐帧覆盖时间与参数（`render.set_effect_time` / `render.set_effect_params`）。
+        // 优先级高于宿主默认值：脚本写了就听脚本的，没写就保持宿主时钟/模板默认参数。
+        if let Some(seconds) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_effect_time())
+        {
+            renderer.set_effect_time(seconds);
+        }
+        if let Some(slots) = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.render_effect_params())
+        {
+            renderer.set_effect_params(&slots);
+        }
         let outcome = renderer.render(&mesh, scene3d.as_ref());
         host_phases.submit = submit_started.elapsed();
         {
@@ -1570,7 +1685,19 @@ impl GameApp {
             }
         }
         match outcome {
-            RenderOutcome::Presented => {}
+            RenderOutcome::Presented => {
+                self.presented_frames = self.presented_frames.saturating_add(1);
+                if let Some(limit) = self.exit_after_frames
+                    && self.presented_frames >= limit
+                {
+                    tracing::info!(
+                        target: "game",
+                        frames = self.presented_frames,
+                        "到达 --exit-after-frames 上限，退出"
+                    );
+                    self.request_exit(event_loop);
+                }
+            }
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.fail(event_loop, "renderer reported a fatal outcome"),
         }
@@ -1776,6 +1903,8 @@ impl ApplicationHandler for GameApp {
                     "渲染品质档已应用"
                 );
                 self.attach_shader_override_dir(&mut renderer);
+                // M88：`[render] effect_overlay` 指向的 `.sgraph` 在这里挂上，参数每帧推进。
+                self.attach_effect_overlay(&mut renderer);
                 if let Some(filter) = self.skip_mesh.clone() {
                     tracing::info!(target: "game", filter = %filter, "skip-mesh 归因开关已启用（开发期 A/B）");
                     renderer.set_skip_mesh_filter(Some(filter));

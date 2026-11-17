@@ -24,7 +24,7 @@ use std::{
 };
 
 use super::RuntimeScene;
-use rustlua_input::input::{InputSnapshot, MouseButton};
+use rustlua_input::input::{InputSnapshot, KeyCode, MouseButton};
 use rustlua_scene::scene::Scene;
 use rustlua_scene::typed_scene::ComponentId;
 use rustlua_scripting::script::{LUA_API_PROBE, LuaRuntime};
@@ -190,6 +190,388 @@ fn registered_scenes(root: &Path) -> BTreeSet<String> {
 /// `map.goto(` 在 Lua 里**根本写不出来**（`goto` 是 5.2+ 保留字，真实调用只能写
 /// `map["goto"](`），而屏显文案/注释里写 `map.goto(` 却毫无成本；`input.actions()` 之类的
 /// 名字也常出现在提示文本里。去掉字符串后，只有真正的调用点才会命中。
+/// `scripts/demos.lua` 里登记的 场景 → 演示模块 映射（能力图谱门用它找 `M.steps`）。
+fn scene_modules(root: &Path) -> BTreeMap<String, String> {
+    let text = fs::read_to_string(root.join("scripts").join("demos.lua"))
+        .expect("读取 scripts/demos.lua 失败");
+    let mut modules = BTreeMap::new();
+    let mut scene = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("scene =")
+            && let Some(start) = rest.find('"')
+            && let Some(end) = rest[start + 1..].find('"')
+        {
+            scene = Some(rest[start + 1..start + 1 + end].to_owned());
+        } else if let Some(rest) = line.strip_prefix("module =")
+            && let Some(start) = rest.find('"')
+            && let Some(end) = rest[start + 1..].find('"')
+            && let Some(name) = scene.take()
+        {
+            modules.insert(name, rest[start + 1..start + 1 + end].to_owned());
+        }
+    }
+    assert!(
+        modules.len() >= 10,
+        "scripts/demos.lua 里只解析出 {} 条场景↔模块，清单可能被改坏了",
+        modules.len()
+    );
+    modules
+}
+
+/// 让测试用的 Lua VM 能按工程 `scripts/` 目录 `require` 演示模块。
+///
+/// 运行时的工程脚本走 `install_encoded_require_searcher`（发布包解码通道）；测试只需要
+/// 普通文件通道，所以直接给 `package.path` 加一条前缀，与编辑器域数据面板的引导同一口径。
+fn bootstrap_project_require(runtime: &mut LuaRuntime, root: &Path) {
+    let scripts = root
+        .join("scripts")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    runtime
+        .execute_console(&format!(
+            "package.path = [[{scripts}/?.lua;{scripts}/?/init.lua;]] .. package.path"
+        ))
+        .expect("安装工程 require 路径失败");
+}
+
+/// `scripts/capabilities.lua` 的 JSON 形态（能力图谱是演示工程 3.0 的单一真源）。
+fn capability_catalog(root: &Path) -> serde_json::Value {
+    let mut runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    bootstrap_project_require(&mut runtime, root);
+    runtime
+        .eval_json("require('capabilities')")
+        .unwrap_or_else(|error| panic!("读取 scripts/capabilities.lua 失败：{error}"))
+}
+
+/// 一个演示模块导出的步骤 id 集合（各 `demo_*.lua` 末尾的 `M.steps = steps`）。
+fn module_step_ids(runtime: &LuaRuntime, module: &str) -> BTreeSet<String> {
+    let script = format!(
+        "(function() local m = require('{module}'); local ids = {{}}; \
+         for _, step in ipairs(m.steps or {{}}) do ids[#ids + 1] = step.id end; return ids end)()"
+    );
+    let value = runtime
+        .eval_json(&script)
+        .unwrap_or_else(|error| panic!("读取 {module}.lua 的步骤清单失败：{error}"));
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("{module}.steps 不是数组：{value}"))
+        .iter()
+        .map(|id| id.as_str().expect("step id").to_owned())
+        .collect()
+}
+
+#[test]
+fn sample_project_capability_catalog_is_complete() {
+    let root = project_root();
+    let registered = registered_scenes(&root);
+    let modules = scene_modules(&root);
+    let catalog = capability_catalog(&root);
+    let mut runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    bootstrap_project_require(&mut runtime, &root);
+
+    let groups: BTreeSet<String> = catalog["groups"]
+        .as_array()
+        .expect("capabilities.groups")
+        .iter()
+        .map(|group| group["id"].as_str().expect("group id").to_owned())
+        .collect();
+    assert!(
+        groups.len() >= 5,
+        "能力分组太少（{}）：{groups:?}",
+        groups.len()
+    );
+
+    let capabilities = catalog["capabilities"]
+        .as_array()
+        .expect("capabilities.capabilities");
+    assert!(
+        capabilities.len() >= 40,
+        "能力图谱只有 {} 条，引擎能力面不可能这么小",
+        capabilities.len()
+    );
+
+    let mut ids = BTreeSet::new();
+    let mut scenes_with_capabilities = BTreeSet::new();
+    let mut step_cache: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for capability in capabilities {
+        let id = capability["id"].as_str().expect("capability id");
+        assert!(
+            ids.insert(id.to_owned()),
+            "能力 id 重复：{id}（能力图谱要能按 id 被文档与门引用）"
+        );
+        let group = capability["group"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id} 缺 group"));
+        assert!(
+            groups.contains(group),
+            "{id} 的 group={group} 不在 groups 里"
+        );
+        let kind = capability["kind"].as_str().unwrap_or("feature");
+        let Some(scene) = capability["scene"].as_str() else {
+            assert!(
+                kind == "platform",
+                "{id}：只有 platform 条目可以不带 scene（它不属于某一个演示场景）"
+            );
+            continue;
+        };
+        assert!(
+            registered.contains(scene),
+            "{id}：scene={scene} 没有登记在 scripts/demos.lua"
+        );
+        scenes_with_capabilities.insert(scene.to_owned());
+        match capability["step"].as_str() {
+            Some(step) => {
+                let module = modules
+                    .get(scene)
+                    .unwrap_or_else(|| panic!("{id}：场景 {scene} 没有演示模块"));
+                let steps = step_cache
+                    .entry(module.clone())
+                    .or_insert_with(|| module_step_ids(&runtime, module));
+                assert!(
+                    steps.contains(step),
+                    "{id}：场景 {scene} 的模块 {module}.lua 没有步骤 {step}（现有：{steps:?}）"
+                );
+            }
+            None => assert!(
+                matches!(kind, "golden" | "platform"),
+                "{id}：feature 条目必须写 step（否则读者不知道该看哪一步）"
+            ),
+        }
+    }
+
+    for scene in &registered {
+        assert!(
+            scenes_with_capabilities.contains(scene),
+            "演示场景 {scene} 在能力图谱里没有任何条目：读者说不清它演示了什么能力"
+        );
+    }
+
+    // `demos.lua` 的 `modules` 字段是"这个场景覆盖哪些 API 模块"的人读清单；
+    // 它的并集必须等于运行期 API 面，否则清单会悄悄过期（新增模块没人认领）。
+    #[cfg(feature = "3d")]
+    {
+        let mut listed = BTreeSet::new();
+        let demos_text = fs::read_to_string(root.join("scripts").join("demos.lua"))
+            .expect("读取 scripts/demos.lua 失败");
+        for line in demos_text.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("modules = {") else {
+                continue;
+            };
+            let rest = rest.trim().trim_end_matches(',').trim_end_matches('}');
+            for part in rest.split(',') {
+                let part = part.trim();
+                if let Some(name) = part.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                    listed.insert(name.to_owned());
+                }
+            }
+        }
+        let surface = runtime
+            .eval_json(LUA_API_PROBE)
+            .expect("导出运行时 API 面失败");
+        let live: BTreeSet<String> = surface["tables"]
+            .as_array()
+            .expect("tables")
+            .iter()
+            .map(|table| table["name"].as_str().expect("table name").to_owned())
+            .collect();
+        let missing: Vec<&String> = live.difference(&listed).collect();
+        let extra: Vec<&String> = listed.difference(&live).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "scripts/demos.lua 的 modules 清单与运行期 API 面不一致：缺 {missing:?}，多 {extra:?}"
+        );
+    }
+}
+
+/// 渲染能力的**单一真源是 `RenderSettings`**：新增/删除一个可开能力，这条门立刻要求
+/// 能力图谱补上对应条目；`[render]` 的项目级键与 `.sgraph` 资产也在这里真解析一遍。
+#[test]
+fn sample_project_render_capabilities_are_demonstrated() {
+    let root = project_root();
+    let catalog = capability_catalog(&root);
+    let capabilities = catalog["capabilities"].as_array().expect("capabilities");
+
+    // 从源码解析 `pub xxx: bool` / `pub xxx: ToggleMode`（RenderSettings 的全部开档）。
+    let settings_source = include_str!("../../../rustlua-render/src/render_settings.rs");
+    let mut live_settings = BTreeSet::new();
+    for line in settings_source.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub ") else {
+            continue;
+        };
+        let Some((name, ty)) = rest.split_once(':') else {
+            continue;
+        };
+        let ty = ty.trim().trim_end_matches(',');
+        if ty == "bool" || ty == "ToggleMode" {
+            live_settings.insert(name.trim().to_owned());
+        }
+    }
+    assert!(
+        live_settings.len() >= 10,
+        "render_settings.rs 里只解析出 {} 个布尔开档，解析规则可能失效：{live_settings:?}",
+        live_settings.len()
+    );
+
+    let mut claimed = BTreeSet::new();
+    for capability in capabilities {
+        if capability["group"].as_str() != Some("render") {
+            continue;
+        }
+        if let Some(setting) = capability["setting"].as_str() {
+            claimed.insert(setting.to_owned());
+        }
+    }
+    let missing: Vec<&String> = live_settings.difference(&claimed).collect();
+    assert!(
+        missing.is_empty(),
+        "这些渲染能力没有能力图谱条目（capability.setting）：{missing:?}"
+    );
+
+    // 项目级渲染键：`[render]` 段必须真的被解析出非默认值。
+    let project_text =
+        fs::read_to_string(root.join("project.toml")).expect("读取 project.toml 失败");
+    let config = rustlua_render::render_config::RenderConfig::from_toml(&project_text);
+    assert_eq!(
+        config.effect_overlay.as_deref(),
+        Some("assets/fx/showcase_outline.sgraph"),
+        "project.toml [render] effect_overlay 没有指向演示用的 .sgraph"
+    );
+    assert!(
+        config.particle_softness > 0.0,
+        "project.toml [render] particle_softness 应打开（0 = 硬边）"
+    );
+
+    // `.sgraph` 必须能被运行时同一条路径编译，并且演示脚本用到的命名参数真的存在。
+    let relative = config.effect_overlay.expect("effect_overlay");
+    let (source, compiled) =
+        rustlua_visual_script::shader_graph::ShaderGraph::load_runtime_overlay(&root, &relative)
+            .unwrap_or_else(|error| panic!("{relative} 无法编译成运行时叠加层：{error}"));
+    assert!(
+        source.contains("@binding(6)"),
+        "深度描边示例应当采样场景深度（binding 6），否则它和纯程序化模板没有区别"
+    );
+    let named_params = compiled.named_params();
+    let named: BTreeSet<&str> = named_params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    assert!(
+        named.contains("edge_width"),
+        "`.sgraph` 应暴露 edge_width 命名参数，现有：{named:?}"
+    );
+    assert!(
+        named.iter().any(|name| name.starts_with("color_")),
+        "`.sgraph` 应暴露描边颜色参数，现有：{named:?}"
+    );
+
+    let (sources, _raw) = demo_sources(&root);
+    for call in [
+        "render.set_effect_params(",
+        "render.set_effect_param(",
+        "render.set_effect_time(",
+    ] {
+        assert!(
+            sources.contains(call),
+            "演示脚本缺少对 {call}) 的真实调用（M94/M95 的运行时参数面没有演示）"
+        );
+    }
+}
+
+/// UI 能力的覆盖判据分两层：运行时**组件**（场景 UI）与 `ui.*` **控件/状态 API**。
+#[test]
+fn sample_project_ui_capabilities_are_demonstrated() {
+    let root = project_root();
+    let catalog = capability_catalog(&root);
+    let capabilities = catalog["capabilities"].as_array().expect("capabilities");
+
+    // 运行时 UI 组件（与 `ComponentId::ALL` 同源：组件删了这里会先报"已不存在"）。
+    let expected_components = [
+        "Text",
+        "Image",
+        "UiLayout",
+        "Container",
+        "LayoutItem",
+        "UiEvents",
+        "ButtonStates",
+        "Mask",
+        "CanvasGroup",
+        "Toggle",
+        "Slider",
+        "Progress",
+        "Scrollbar",
+        "ScrollView",
+        "UiVirtualList",
+    ];
+    let live_components: BTreeSet<&str> = ComponentId::ALL.iter().map(|id| id.as_str()).collect();
+
+    let mut claimed_components = BTreeSet::new();
+    let mut claimed_api = BTreeSet::new();
+    let mut ui_capabilities = 0usize;
+    for capability in capabilities {
+        let group = capability["group"].as_str().unwrap_or("");
+        if !group.starts_with("ui") {
+            continue;
+        }
+        ui_capabilities += 1;
+        if let Some(components) = capability["components"].as_array() {
+            for component in components {
+                claimed_components.insert(component.as_str().expect("component").to_owned());
+            }
+        }
+        if let Some(items) = capability["api"].as_array() {
+            for item in items {
+                claimed_api.insert(item.as_str().expect("api").to_owned());
+            }
+        }
+    }
+    assert!(
+        ui_capabilities >= 12,
+        "UI 能力条目只有 {ui_capabilities} 条，覆盖不了场景 UI + 运行期 UI 两层"
+    );
+    for component in expected_components {
+        assert!(
+            live_components.contains(component),
+            "能力图谱认领的组件 {component} 已不在 ComponentId::ALL 里"
+        );
+        assert!(
+            claimed_components.contains(component),
+            "运行时 UI 组件 {component} 没有被任何 UI 能力条目认领"
+        );
+    }
+    for api in [
+        "ui.panel",
+        "ui.text_at",
+        "ui.image",
+        "ui.measure_text",
+        "ui.grid",
+        "ui.drag_begin",
+        "ui.tooltip",
+        "ui.modal",
+        "ui.focus_open",
+        "ui.nav_stack",
+        "ui.scroll_by",
+        "ui.scrollbar",
+        "ui.virtual_list",
+        "ui.rich_text",
+        "ui.text_input",
+        "ui.view_model_set",
+        "ui.toggle",
+        "ui.slider",
+        "ui.progress",
+    ] {
+        assert!(
+            claimed_api.contains(api),
+            "UI 控件/状态 API {api} 没有被任何 UI 能力条目认领"
+        );
+    }
+}
+
 fn strip_lua_noise(source: &str) -> String {
     #[derive(PartialEq)]
     enum State {
@@ -1003,5 +1385,80 @@ fn sample_project_index_labels_fit_their_cards() {
     assert!(
         checked >= 39,
         "只量了 {checked} 行卡片文字（15 张卡 × 3 行 = 45），门没有实际意义"
+    );
+}
+
+/// 入口菜单按 `A` 打开能力图谱时，**菜单自己的场景文字必须全部让位**。
+///
+/// 场景 `Text` 永远画在动态 UI 之上（`push_scene_ui_text` 排在 `push_ui_text` 之后），
+/// 所以 A 覆盖层只能盖住场景 `Image`，盖不住卡片三行文字与页眉/页脚；不显式隐藏就会
+/// 出现"两层菜单文字叠在一起"（2026-11-17 实机踩到）。这条门把"打开时藏、收起时恢复"
+/// 变成可回归的断言。
+#[test]
+fn sample_project_index_atlas_hides_menu_layers() {
+    let root = project_root();
+    let scene = Scene::load(root.join("scenes").join("index.scene")).expect("加载入口场景");
+    let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("实例化入口场景");
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("入口场景首帧");
+
+    let mut press = InputSnapshot::default();
+    press.key_event(KeyCode::KeyA, true);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &press)
+        .expect("按下 A 打开能力图谱");
+    let atlas = runtime
+        .script
+        .eval_json("return ui.panel_get('menu_atlas') ~= nil")
+        .expect("读取能力图谱面板");
+    assert_eq!(
+        atlas.as_bool(),
+        Some(true),
+        "按下 A 后应画出 menu_atlas 面板"
+    );
+    let hidden = runtime.script.scene_text_hidden();
+    for name in ["Title", "Subtitle", "Footer"] {
+        assert!(
+            hidden.contains(name),
+            "能力图谱打开时场景文字 {name} 必须隐藏，否则会叠在覆盖层上（实际隐藏集：{hidden:?}）"
+        );
+    }
+    for card in registered_scenes(&root) {
+        for suffix in ["_title", "_detail", "_meta"] {
+            let name = format!("{card}{suffix}");
+            assert!(
+                hidden.contains(&name),
+                "能力图谱打开时卡片文字 {name} 必须隐藏（实际隐藏集：{hidden:?}）"
+            );
+        }
+    }
+
+    // 松开 A 后再按一次：覆盖层关闭，场景文字全部恢复。
+    let mut release = InputSnapshot::default();
+    release.key_event(KeyCode::KeyA, true);
+    release.finish_frame();
+    release.key_event(KeyCode::KeyA, false);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &release)
+        .expect("松开 A");
+    let mut close = InputSnapshot::default();
+    close.key_event(KeyCode::KeyA, true);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &close)
+        .expect("再按 A 收起能力图谱");
+    let atlas = runtime
+        .script
+        .eval_json("return ui.panel_get('menu_atlas') ~= nil")
+        .expect("读取能力图谱面板");
+    assert_eq!(
+        atlas.as_bool(),
+        Some(false),
+        "再按一次 A 应收起 menu_atlas 面板"
+    );
+    let hidden = runtime.script.scene_text_hidden();
+    assert!(
+        hidden.is_empty(),
+        "收起能力图谱后场景文字应全部恢复，仍在隐藏集里的：{hidden:?}"
     );
 }

@@ -280,3 +280,38 @@ entity	45	DragHandleLabel	44
 component	45	Text	text=drag event;font_size=14;color=0.900,0.900,1.000
 component	45	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	45	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,20.00,12.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ㉒ 文本排版（M80-03）：align / valign / overflow / voverflow / rich_text 都是 `Text` 的字段。
+#    左边面板里四行各演示一项；rich_text 默认开，`<b>` / `<color=#rrggbb>` / `<br/>` 由宿主排版。
+entity	46	TypographyPanel
+component	46	Image	texture=__white__;color=0.080,0.100,0.150
+component	46	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	46	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,532.00,700.00,648.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	47	TypographyLabel	46
+component	47	Text	text=Text layout（排版）: align / valign / overflow / rich_text;font_size=13;color=0.760,0.840,0.960
+component	47	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	47	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.00,12.00,16.00,12.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	48	TypographyCenter	46
+component	48	Text	text=align=center valign=middle;font_size=14;color=0.980,0.900,0.620;align=center;valign=middle;overflow=truncate
+component	48	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	48	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.00,34.00,268.00,70.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	49	TypographyEllipsis	46
+component	49	Text	text=overflow=ellipsis: this sentence is intentionally much longer than its box;font_size=14;color=0.860,0.900,0.960;overflow=ellipsis;voverflow=truncate
+component	49	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	49	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.00,78.00,268.00,104.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	50	TypographyRich	46
+component	50	Text	text=rich_text: <b>bold</b> <color=#ffcc44>gold</color> <color=#7fd4ff>cyan</color>;font_size=14;color=0.900,0.920,0.980;rich_text=true
+component	50	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	50	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.00,110.00,16.00,110.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ㉓ ButtonStates 的**运行时底色过渡**（M80-07）：`tint.<state>` + `transition=时长:曲线`。
+#    鼠标悬停/按下时底色用 0.15 s 的 smoothstep 逐步逼近目标色（不是瞬间切换）；
+#    纹理覆盖与本条互不影响。click 仍是抬起派发。
+entity	51	TransitionButton
+component	51	ButtonStates	normal=assets/textures/ui/button_green.png;hover=assets/textures/ui/button_green.png;pressed=__white__;tint.normal=0.180,0.300,0.480,1;tint.hover=0.260,0.560,0.880,1;tint.pressed=0.960,0.720,0.260,1;transition=0.15:smoothstep
+component	51	Image	texture=__white__;color=0.180,0.300,0.480
+component	51	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	51	UiEvents	event=click;function=on_click
+component	51	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,556.00,868.00,620.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	52	TransitionLabel	51
+component	52	Text	text=hover transition;font_size=13;color=0.980,0.980,1.000
+component	52	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	52	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=14.00,24.00,14.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

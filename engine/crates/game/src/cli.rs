@@ -139,6 +139,8 @@ pub struct Arguments {
     /// 帧调度分档（M74-02 P0 度量闸门）：退出时把每系统 p50/p99、每 stage 合计与
     /// "最慢 stage 占帧比"写成 JSON。`None` = 不开（零成本）。
     pub frame_profile: Option<PathBuf>,
+    /// 渲染满 N 个 Presented 帧后自动退出（A/B 基准用；默认 `None` = 手动关窗）。
+    pub exit_after_frames: Option<u64>,
     /// P3-R05-4：开发期 shader 源覆盖目录（`--shader-dir` 或 `RUSTLUA_SHADER_DIR`）。
     /// `None` = **不监听**、用内置源——这是发布默认形态，运行时不该有任何 shader 文件 IO。
     pub shader_dir: Option<PathBuf>,
@@ -457,6 +459,18 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                     values.next().ok_or("--frame-profile requires a path")?,
                 ));
             }
+            "--exit-after-frames" => {
+                let value = values
+                    .next()
+                    .ok_or("--exit-after-frames requires a count")?;
+                let frames: u64 = value
+                    .parse()
+                    .map_err(|_| "--exit-after-frames 需要一个正整数".to_owned())?;
+                if frames == 0 {
+                    return Err("--exit-after-frames 必须 >= 1".to_owned());
+                }
+                args.exit_after_frames = Some(frames);
+            }
             "--shader-dir" => {
                 args.shader_dir = Some(PathBuf::from(
                     values.next().ok_or("--shader-dir requires a path")?,
@@ -540,7 +554,8 @@ pub fn parse_arguments_from(values: impl IntoIterator<Item = String>) -> Result<
                      --quality <档>    画质预设：default（逐项开关）/ medium（planar 1/4 + 水面\n\
                                        廉价光照）/ low（medium + 点光 cube 阴影 512）\n\
                      --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON\n\
-                     --frame-profile <file> 退出时把帧调度分档（每系统 p50/p99、每 stage 合计、\n\
+                     --exit-after-frames <N> 渲染满 N 帧后自动退出（配合 --frame-profile 做 A/B）\n\
+            --frame-profile <file> 退出时把帧调度分档（每系统 p50/p99、每 stage 合计、\n\
                                        最慢 stage 占帧比）写成 JSON（M74-02 P0）\n\
                      --shader-dir <dir>    开发期 shader 源覆盖目录（同名 .wgsl 覆盖内置源，\n\
                                        运行中按 150ms 去抖热重载）；等价于环境变量 RUSTLUA_SHADER_DIR，\n\

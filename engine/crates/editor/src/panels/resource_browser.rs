@@ -18,6 +18,8 @@ struct ResourceOpenRequest {
     material: Option<String>,
     /// P3-E03-2：双击 `.vgraph` 打开可视化脚本画布。
     graph: Option<PathBuf>,
+    /// M85：双击 `.sgraph` 打开 Shader Graph 面板（带实时预览）。
+    shader_graph: Option<String>,
     /// M76-04：双击 `.ui.json` 打开 UI Studio。
     ui_studio: Option<String>,
     /// P1：双击贴图打开全尺寸预览窗（只读，见 `panels/texture_preview.rs`）。
@@ -105,6 +107,9 @@ impl EditorApp {
                 }
                 if let Some(path) = open.graph {
                     self.open_graph_resource(path);
+                }
+                if let Some(relative) = open.shader_graph {
+                    self.open_shader_graph_resource(&relative);
                 }
                 if let Some(document) = open.ui_studio {
                     self.open_ui_studio_resource(&document);
@@ -612,6 +617,9 @@ impl EditorApp {
                 if response.double_clicked() && is_vgraph(&entry.path) {
                     open.graph = Some(entry.path.clone());
                 }
+                if response.double_clicked() && is_sgraph(&entry.path) {
+                    open.shader_graph = Some(path_string.clone());
+                }
                 if response.double_clicked() && is_ui_json(&entry.path) {
                     open.ui_studio = Some(path_string.clone());
                 }
@@ -680,6 +688,9 @@ impl EditorApp {
                 }
                 if response.double_clicked() && is_vgraph(&entry.path) {
                     open.graph = Some(entry.path.clone());
+                }
+                if response.double_clicked() && is_sgraph(&entry.path) {
+                    open.shader_graph = Some(path_string.clone());
                 }
                 if response.double_clicked() && is_ui_json(&entry.path) {
                     open.ui_studio = Some(path_string.clone());
@@ -1223,6 +1234,13 @@ fn is_vgraph(path: &Path) -> bool {
 /// 判定与资源扫描共用 `resource_browser_state::is_ui_document`，避免两处漂移。
 fn is_ui_json(path: &Path) -> bool {
     editor::resource_browser_state::is_ui_document(path)
+}
+
+/// `.sgraph` 有专属导入器（`ResourceKind::ShaderGraph`），双击打开 Shader Graph 面板。
+fn is_sgraph(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("sgraph"))
 }
 
 #[cfg(test)]

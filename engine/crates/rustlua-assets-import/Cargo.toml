@@ -43,3 +43,4 @@ rustlua-infra = { path = "../rustlua-infra" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-ui = { path = "../rustlua-ui" }
+rustlua-visual-script = { path = "../rustlua-visual-script" }

@@ -1,24 +1,31 @@
-# game_api —— RustLua API 演示工程
+# game_api —— RustLua API 演示工程（3.0：能力图谱）
 
-这个示例工程的唯一目的：**让引擎当前的每一个 Lua API 都有一处可运行、可交互、可读的演示**。
+这个示例工程的唯一目的：**让引擎当前的每一个 Lua API 都有一处可运行、可交互、可读的演示**，
+并把引擎能力按"能力 → 场景/步骤"编成一张可被门核对的**能力图谱**。
 它不是玩法样本（玩法样本是 `examples/game_jhyt`），而是一份"活文档"。
 
 - 一个场景 = 一个分步 Lab：`scenes/api_*.scene` + `scripts/demo_*.lua`
-- 每个 Lab 由 3–12 个**步骤**组成；每步声明主张、真实调用、读数与自检断言
-- 入口菜单 `scenes/index.scene` 列出全部演示，点击卡片或按 Enter 进入，ESC 返回
+- 每个 Lab 由 3–17 个**步骤**组成；每步声明主张、真实调用、读数与自检断言
+- 入口菜单 `scenes/index.scene` 列出全部演示，点击卡片或按 Enter 进入，ESC 返回；
+  **按 `A` 打开能力图谱覆盖层**（64 条能力 / 8 个分组）
 - 演示清单的唯一真源是 `scripts/demos.lua`（场景名 ↔ 模块名 ↔ 菜单文案 ↔ 步骤数）
+- **能力图谱的唯一真源是 `scripts/capabilities.lua`**（能力 id ↔ 场景/步骤/组件/API/证据）
 - 工程入口 `scripts/main.lua` 只转发生命周期，真正的分发在 `scripts/router.lua`
+- 3.0 新增：渲染展廊（`api_3d` 四步）、Shader Graph 运行时叠加层（`[render] effect_overlay`）、
+  UI 排版与状态过渡（`ui_test` 第 6 步）。设计与门矩阵见 [docs/81](../docs/81-game_api-3.0-能力图谱.md)。
 
 ## 1. 目录约定
 
 ```text
 examples/game_api/
 ├── project.toml            # main_script=scripts/main.lua, startup_scene=scenes/index.scene
+│                           # 3.0：[render] effect_overlay / particle_softness（项目级渲染键）
 ├── scenes/
-│   ├── index.scene         # 入口菜单（3 列卡片 + UiEvents 点击）
+│   ├── index.scene         # 入口菜单（3 列卡片 + UiEvents 点击 + A 能力图谱覆盖层）
 │   ├── main.scene          # 2D 综合：Sprite/Quad/Animation/Particles/Tilemap/物理/文字
 │   ├── unified.scene       # 一份场景表达全部渲染类别（2D + 3D + UI + 粒子 + 世界文字）
-│   ├── api_*.scene         # 每个 API 模块组一个场景
+│   ├── api_*.scene         # 每个 API 模块组一个场景（api_3d = 渲染展廊 17 步）
+│   ├── ui_test.scene       # 场景 UI 组件 + 文本排版 + ButtonStates 过渡（6 步）
 │   ├── demo3d.scene        # 3D 渲染 fixture（被 wp0_3d_golden 逐项断言，**不要改内容**）
 │   └── mixed.scene         # 混合 2D/3D fixture（被 wp0_mixed_golden 逐项断言，**不要改内容**）
 ├── scripts/
@@ -26,8 +33,10 @@ examples/game_api/
 │   ├── router.lua          # 场景 → 演示模块分发 + ESC 返回 + 自检入口
 │   ├── lab.lua             # 2.0 框架：shell / 步骤引擎 / 读回卡片 / 断言
 │   ├── demos.lua           # 演示清单（真源）
-│   ├── demo_*.lua          # 每个场景一个演示模块
+│   ├── capabilities.lua    # 3.0 能力图谱（64 条能力，门与菜单共用的真源）
+│   ├── demo_*.lua          # 每个场景一个演示模块（末尾 M.steps = steps 供能力门核对）
 │   └── entity/*.lua        # 每实体 `Script` 组件的钩子演示（on_spawn / on_update）
+├── assets/fx/*.sgraph      # 3.0：Shader Graph 运行时叠加层（project [render] 挂载）
 ├── data/*.json             # `data.load` / `data.schema` 的演示数据
 └── assets/                 # 纹理 / 音频 / 模型 / 预制体 / 字体
 ```
@@ -121,6 +130,12 @@ return M
 5. **场景必须过 schema。** `editor --project examples/game_api --check` 要求
    `schema_errors=0`、`unknown_components=0`；组件串字段名/类型见第 3 节。
 6. **注释写明"看什么"**：演示的价值在于读代码的人知道该按哪个键、该看哪个数值。
+7. **每个演示模块导出 `M.steps = steps`。** 能力图谱门按它核对"能力条目指向的步骤真的存在"；
+   新增/重命名步骤时同步改 `scripts/capabilities.lua` 与 `scripts/demos.lua` 的 `steps` 计数，
+   否则 16 条工程门里的能力门会判红。
+8. **新能力要进图谱。** 引擎新增一类能力（新的渲染开关、UI 组件、平台出口）时，
+   在 `capabilities.lua` 里加一条并指向具体场景/步骤；渲染能力还要写 `setting=`，
+   UI 能力写 `components=` / `api=`。
 
 ### 保留交互键
 
@@ -210,13 +225,34 @@ cargo run -q -p engine --example lua_check -- ../examples/game_api (Get-ChildIte
 # ② 场景 schema / 组件漂移（要求 schema_errors=0 unknown_components=0）
 cargo run -q -p editor -- --project ../examples/game_api --check
 
-# ③ 全部工程门：逐场景 headless 实例化+步进、行为自检、脚本编译、API 覆盖率、
-#    组件覆盖率、入口菜单接线、卡片命中、共享取景框、字体缺字
+# ③ 全部工程门（16 条）：逐场景 headless 实例化+步进、行为自检、脚本编译、API 覆盖率、
+#    组件覆盖率、入口菜单接线、卡片命中、共享取景框、字体缺字、能力图谱/渲染能力/UI 能力
 cargo test -p engine --lib sample_project
 
-# ④ 改文案后重新子集化工程字体（缺字会让 ③ 里的字形门判红）
+# ③-1 只看能力图谱三类门缺什么
+cargo test -p engine --lib sample_project_capability_catalog_is_complete -- --nocapture
+cargo test -p engine --lib sample_project_render_capabilities_are_demonstrated -- --nocapture
+cargo test -p engine --lib sample_project_ui_capabilities_are_demonstrated -- --nocapture
+
+# ④ 改文案后重新子集化工程字体（缺字会让 ③ 里的字形门判红；新能力文案也会进子集）
 cargo run -q -p engine --example subset_project_font -- ../examples/game_api --source ../engine/crates/editor/fonts/NotoSansSC-VF.ttf
 ```
+
+## 6. 能力图谱（3.0）
+
+`scripts/capabilities.lua` 是"引擎全部能力"的单一真源：64 条能力 / 8 个分组，每条写
+`id / group / title / scene / step / setting / components / api / note`。
+入口菜单按 `A` 直接浏览它；`host::sample_project` 的四条 3.0 门逐条核对：
+
+| 门 | 钉住的漂移 |
+|---|---|
+| `sample_project_capability_catalog_is_complete` | 能力 id 重复、分组写错、指向的场景未登记、步骤不存在、某场景没有能力条目、`demos.lua` 的 `modules` 并集与运行期 API 面不一致 |
+| `sample_project_render_capabilities_are_demonstrated` | `RenderSettings` 新增开关没人认领、`[render]` 键没被解析、`.sgraph` 编译不过、3 个特效函数没有真实调用 |
+| `sample_project_ui_capabilities_are_demonstrated` | 运行时 UI 组件 / `ui.*` 控件状态 API 没有被能力条目认领 |
+| `sample_project_index_atlas_hides_menu_layers` | 按 A 打开图谱时菜单场景文字没让位（两层文字重叠）、收起后没恢复 |
+
+新增能力的最小改动：① 在 `capabilities.lua` 加条目；② 若指向新步骤，在对应 `demo_*.lua` 里加步骤
+（`demos.lua` 的 `steps` 数同步）；③ 跑 `cargo test -p engine --lib sample_project`。
 
 ## 5. 两个生成物（改完要重跑工具）
 

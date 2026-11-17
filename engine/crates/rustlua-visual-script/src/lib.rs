@@ -32,6 +32,7 @@ mod codegen;
 mod error;
 mod graph;
 mod registry;
+pub mod shader_graph;
 mod validate;
 
 pub use codegen::{compile, compile_traced};

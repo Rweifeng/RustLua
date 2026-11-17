@@ -47,6 +47,8 @@ pub(crate) enum DockTab {
     Timeline,
     /// P3-E03-2 可视化脚本画布：默认不在树里，双击 `.vgraph` 资源时由 `sync_visibility` 补入。
     Graph,
+    /// M83 面向非 shader 开发者的可视化特效节点面板。
+    ShaderGraph,
     /// M76-04 UI Studio：默认不在树里，View 菜单打开时补入中央标签组。
     UiStudio,
 }
@@ -63,6 +65,7 @@ impl DockTab {
             Self::Console => "控制台",
             Self::Timeline => "时间线",
             Self::Graph => "可视化脚本",
+            Self::ShaderGraph => "Shader Graph",
             Self::UiStudio => "UI 工作室",
         }
     }
@@ -78,6 +81,7 @@ impl DockTab {
             Self::Console => "console",
             Self::Timeline => "timeline",
             Self::Graph => "graph",
+            Self::ShaderGraph => "shader_graph",
             Self::UiStudio => "ui_studio",
         }
     }
@@ -382,6 +386,7 @@ pub(crate) fn sync_visibility(state: &mut DockState<DockTab>, editor: &EditorApp
     set_tab_present(state, DockTab::Console, editor.show_lua_console);
     set_tab_present(state, DockTab::Timeline, editor.show_timeline_panel);
     set_tab_present(state, DockTab::Graph, editor.show_graph_panel);
+    set_tab_present(state, DockTab::ShaderGraph, editor.show_shader_graph);
     set_tab_present(state, DockTab::UiStudio, editor.show_ui_studio);
 }
 
@@ -539,7 +544,7 @@ fn add_tab(state: &mut DockState<DockTab>, tab: DockTab) {
             SIZE_CONSOLE / NOMINAL_HEIGHT,
             Node::leaf(tab),
         ),
-        DockTab::Graph => {
+        DockTab::Graph | DockTab::ShaderGraph => {
             // 图与 Scene 并排（右侧），不抢中央标签组；Scene/Game 都不在时挂第一片叶子。
             match leaf_of(DockTab::Scene).or_else(|| leaf_of(DockTab::Game)) {
                 Some(node) => split_at(tree, node, Split::Right, 0.34, Node::leaf(tab)),
@@ -782,6 +787,7 @@ impl TabViewer for DockTabViewer<'_> {
             DockTab::Console => editor.draw_console_body(ui),
             DockTab::Timeline => editor.draw_timeline_panel(ui),
             DockTab::Graph => editor.draw_graph_panel(ui),
+            DockTab::ShaderGraph => editor.draw_shader_graph_panel(ui),
             DockTab::UiStudio => editor.draw_ui_studio_panel(ui),
         }
         editor

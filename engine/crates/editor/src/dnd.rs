@@ -453,6 +453,7 @@ fn kind_directory(kind: ResourceKind) -> &'static str {
         ResourceKind::Atlas => "atlases",
         ResourceKind::Material => "materials",
         ResourceKind::Environment => "env",
+        ResourceKind::ShaderGraph => "shaders",
         ResourceKind::Animation | ResourceKind::Other => "imports",
     }
 }

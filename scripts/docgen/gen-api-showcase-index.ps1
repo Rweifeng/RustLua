@@ -95,8 +95,15 @@ $out.Add('component	1	UiLayout	' + ($point -f '-592.00','-342.00'))
 
 # 计数从 demos.lua 现算：夹具（steps=0）不是 Lab，不能混进 "labs" 的说法里。
 $labs = ($entries | Where-Object { $_.steps -gt 0 }).Count
+# game_api 3.0：能力图谱条目数也从 `scripts/capabilities.lua` 现算（菜单副标题不再手写数字）。
+$capabilitiesLua = Join-Path $repoRoot 'examples/game_api/scripts/capabilities.lua'
+$capabilityCount = 0
+if (Test-Path $capabilitiesLua) {
+    $capabilityText = [System.IO.File]::ReadAllText($capabilitiesLua)
+    $capabilityCount = ([regex]::Matches($capabilityText, '(?m)^\s{12}id\s*=\s*"')).Count
+}
 $out.Add('entity	2	Subtitle	0')
-$out.Add("component`t2`tText`ttext=$($entries.Count) scenes - $labs labs with checked steps - ESC returns here;font_size=17.00;color=0.620,0.720,0.860")
+$out.Add("component`t2`tText`ttext=$($entries.Count) scenes - $labs labs with checked steps - $capabilityCount capabilities;font_size=17.00;color=0.620,0.720,0.860")
 $out.Add('component	2	Transform	' + $identity)
 $out.Add('component	2	UiLayout	' + ($point -f '-592.00','-302.00'))
 

@@ -43,6 +43,15 @@ pub(crate) fn is_shader_override_path(path: &Path) -> bool {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("wgsl"))
 }
 
+/// `.sgraph` is a source asset for the shader graph pipeline. It shares the
+/// watcher debounce window, while compilation/application remains owned by the
+/// graph editor integration.
+#[must_use]
+pub(crate) fn is_shader_graph_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("sgraph"))
+}
+
 /// 失败诊断的行首：成功重载时按它认出"Scene View 上那句是我写的"，只擦自己那句。
 const SHADER_FAILURE_PREFIX: &str = "着色器重载失败（旧管线保留）：";
 
@@ -162,11 +171,16 @@ impl EditorApp {
         if let Some(outcome) = outcome {
             self.record_shader_watch(&outcome);
         }
+        // M88：渲染器就绪后按 `project.toml [render] effect_overlay` 挂载特效叠加层。
+        self.apply_project_effect_overlay();
     }
 
     /// 文件事件里命中 `shaders/*.wgsl` → 把去抖窗口往后推（连续保存只重载一次）。
     pub(crate) fn note_shader_watch(&mut self, diff: &WatchDiff) {
-        if !diff.paths().any(|path| is_shader_override_path(path)) {
+        if !diff
+            .paths()
+            .any(|path| is_shader_override_path(path) || is_shader_graph_path(path))
+        {
             return;
         }
         self.profiler.bump("shader_watch_hits");
@@ -375,6 +389,11 @@ mod tests {
             "scripts/shaders/x.wgsl"
         )));
         assert!(!is_shader_override_path(Path::new("mesh3d.wgsl")));
+        assert!(is_shader_graph_path(Path::new(
+            "assets/shaders/fire.sgraph"
+        )));
+        assert!(is_shader_graph_path(Path::new("graphs/FIRE.SGRAPH")));
+        assert!(!is_shader_graph_path(Path::new("graphs/fire.json")));
     }
 
     #[test]

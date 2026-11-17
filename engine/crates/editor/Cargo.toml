@@ -23,6 +23,9 @@ wgpu = "27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing.workspace = true
+# Shader Graph 面板的离屏预览要同步等一次 GPU 回读（`device.poll(Wait)` 配 `block_on`），
+# 与测试用的是同一个微型执行器；它已经是 dev 依赖，提升为普通依赖。
+pollster = "0.4"
 
 rustlua-animation = { path = "../rustlua-animation" }
 rustlua-assets = { path = "../rustlua-assets" }
@@ -56,6 +59,5 @@ rustlua-visual-script = { path = "../rustlua-visual-script" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
-pollster = "0.4"
 # `m76_ui_matrix` 例子的读数实现与 wasm harness 共用（证据只能有一份判定）。
 rustlua-ui-host-evidence.workspace = true

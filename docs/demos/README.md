@@ -4,7 +4,7 @@
 
 | 工程 | 定位 | 入口 |
 |---|---|---|
-| `examples/game_api` | **API 演示工程**：每个 Lua API 都有一处可运行演示（51 个模块表 / 429 个函数 / 31 个运行时组件），每个场景是分步 Lab | `scenes/index.scene`（菜单）→ ESC 返回 |
+| `examples/game_api` | **API 演示工程 + 能力图谱**：每个 Lua API 都有一处可运行演示（51 个模块表 / 432 个函数 / 31 个运行时组件），另有 64 条能力 / 8 个分组的图谱（[docs/81](../81-game_api-3.0-能力图谱.md)），每个场景是分步 Lab | `scenes/index.scene`（菜单，按 `A` 打开能力图谱）→ ESC 返回 |
 | `examples/game_jhyt` | 玩法样板（生活模拟 / 生产向） | 见 [`examples/game_jhyt/docs/`](../../examples/game_jhyt/docs/) |
 
 启动后先进入 `scenes/index.scene`，每张卡片对应一个聚焦演示；按 `Escape`（或手柄 B）返回入口菜单。
@@ -37,11 +37,16 @@ cargo run --manifest-path engine/Cargo.toml -p game -- --project examples/game_a
 | `api_ui` | `ui` 全部 45 个（面板 / 网格 / tooltip / modal / 拖拽 / 焦点环 / 滚动 / 度量 / 读回） |
 | `ui_test` | 场景 UI 组件与 `UiEvents` 事件（含九宫格 `Image`、`Container` 五种 kind、`ButtonStates`） |
 | `api_camera` | `camera2d` / `camera3d` / 拾取链 |
-| `api_3d` | `transform3d` / `animation3d`（骨骼动画）/ `physics3d` |
+| `api_3d` | `transform3d` / `animation3d`（骨骼动画）/ `physics3d` / `terrain3d` / `water3d` / `cells3d` / `render`：PBR-IBL、地形/水面/体素展廊、运行期渲染管线、Shader Graph 叠加层 |
 | `api_tilemap` | `tilemap`（运行期创建、格子元数据、A* 寻路）/ `grid` |
 | `api_script` | 每实体 `Script` 组件的 `on_spawn` / `on_update` 与实体稳定 ID |
 | `api_prefab` | 预制体实例在运行期就是普通实体 |
 | `demo3d` / `mixed` | **渲染 golden 固定夹具**（不是演示，内容不能改） |
+
+3.0 的能力条目、渲染展廊四步（`render_landscape` / `render_pipeline` / `effect_overlay` /
+`voxel_cells`）与 UI 排版/状态过渡（`ui_test` 的 `typography_states`）见
+[docs/81](../81-game_api-3.0-能力图谱.md)；16 条工程门里 4 条是 3.0 新增（3 条能力门 + 1 条
+"按 A 打开图谱时菜单文字必须让位"的覆盖层回归门）。
 
 演示实现集中在 `examples/game_api/scripts/demo_*.lua`，清单真源是
 `examples/game_api/scripts/demos.lua`，`router.lua` 负责场景到模块的分发。

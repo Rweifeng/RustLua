@@ -10,6 +10,51 @@
 
 use super::*;
 
+/// M94：`render.set_effect_params/time` 写进脚本状态后，宿主 getter 必须看得到
+/// （编辑器 Play 与 game 主循环都靠这对 getter 把值喂给渲染器）。
+#[test]
+fn script_effect_params_and_time_reach_the_host() {
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
+    let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
+    // 形状与 runtime_scene 其它脚本用例一致：全局 `update()` 返回字符串。
+    let source = "function update()\n\
+        assert(render.set_effect_params(0, 0.25, 0.5, 0.75, 1.0))\n\
+        assert(render.set_effect_params(15, 1, 1, 1, 1))\n\
+        assert(render.set_effect_time(2.5))\n\
+        local nok, nreason = render.set_effect_param('strength', 0.7)\n\
+        assert(nok, nreason)\n\
+        assert(render.set_effect_param('nope', 1.0) == false, 'unknown name rejected')\n\
+        assert(render.set_effect_param('speed', 0/0) == false, 'non-finite value rejected')\n\
+        return 'ok' end";
+    let path =
+        std::env::temp_dir().join(format!("rustlua-effect-params-{}.lua", std::process::id()));
+    std::fs::write(&path, source).expect("write lua script");
+    // M95：先推命名参数表 + 默认值（真实宿主在运行时场景建好后做同一件事）。
+    let mut defaults = vec![[0.0_f32; 4]; 16];
+    defaults[0] = [0.02, 0.0, 0.0, 0.0];
+    defaults[1] = [0.6, 0.0, 0.0, 0.0];
+    runtime.set_effect_param_names(
+        vec![("strength".to_owned(), 0, 0), ("speed".to_owned(), 1, 0)],
+        defaults,
+    );
+    runtime
+        .with_script(|script| script.execute_project_script(&path))
+        .expect("execute script");
+    assert_eq!(
+        runtime
+            .with_script(|script| script.call_update())
+            .expect("lua update"),
+        "ok"
+    );
+    let _ = std::fs::remove_file(&path);
+    let slots = runtime.render_effect_params().expect("脚本写过参数槽");
+    assert_eq!(slots.len(), 16);
+    assert_eq!(slots[0][0], 0.7, "命名参数应写进对应槽");
+    assert_eq!(slots[1][0], 0.6, "其它槽应保留模板默认值，不被清零");
+    assert_eq!(slots[15], [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(runtime.render_effect_time(), Some(2.5));
+}
+
 #[test]
 fn example_project_runs_with_new_api() {
     let root = rustlua_infra::games_dir().join("examples").join("game_api");

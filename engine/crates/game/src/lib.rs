@@ -161,6 +161,7 @@ pub fn run_desktop() -> Result<(), Box<dyn std::error::Error>> {
         arguments.frame_profile.clone(),
     )
     .with_shader_dir(arguments.shader_dir.clone())
+    .with_exit_after_frames(arguments.exit_after_frames)
     .with_skip_mesh(arguments.skip_mesh.clone())
     .with_depth_sort(!arguments.no_depth_sort)
     .with_bake_cache(!arguments.no_bake_cache)
@@ -182,6 +183,7 @@ pub fn run_desktop() -> Result<(), Box<dyn std::error::Error>> {
     .with_shadow_cascades(render_config.shadow_cascades)
     .with_point_shadow_resolution(render_config.point_shadow_resolution)
     .with_point_shadow_lights(render_config.point_shadow_lights)
+    .with_effect_overlay(render_config.effect_overlay.clone())
     .with_shadow_caster_skip(arguments.shadow_caster_skip.clone())
     .with_point_shadow_caster_skip(arguments.point_shadow_caster_skip.clone())
     .with_prewarm_particles(arguments.prewarm_particles)
@@ -255,7 +257,8 @@ fn run_android(
         .with_shadow_resolution(render_config.shadow_resolution)
         .with_shadow_cascades(render_config.shadow_cascades)
         .with_point_shadow_resolution(render_config.point_shadow_resolution)
-        .with_point_shadow_lights(render_config.point_shadow_lights);
+        .with_point_shadow_lights(render_config.point_shadow_lights)
+        .with_effect_overlay(render_config.effect_overlay.clone());
     let mut builder = EventLoop::builder();
     builder.with_android_app(app);
     let event_loop = builder.build()?;

@@ -53,8 +53,8 @@ return {
         title = "3D Rendering",
         label = "PBR / IBL / Skinning / Body",
         summary = "材质球、环境光、骨骼剪辑、3D 物理查询与 XZ 平面导航",
-        modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera", "particles" },
-        steps = 13,
+        modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera", "particles", "terrain3d", "water3d", "cells3d", "render" },
+        steps = 17,
     },
     {
         scene = "api_gameplay",
@@ -83,7 +83,7 @@ return {
         title = "Audio",
         label = "Buses / SFX / BGM / Spatial",
         summary = "四路混音、播放控制、空间声源与设置往返",
-        modules = { "audio" },
+        modules = { "audio", "synth" },
         steps = 5,
     },
     {
@@ -104,7 +104,7 @@ return {
         label = "UiEvents / Buttons / Container",
         summary = "场景 UI 组件、九宫格图片与容器布局",
         modules = {},
-        steps = 5,
+        steps = 6,
     },
     {
         scene = "api_script",

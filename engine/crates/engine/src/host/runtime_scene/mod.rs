@@ -711,6 +711,27 @@ impl RuntimeScene {
         self.script.render_post_fx()
     }
 
+    /// M94：脚本逐帧写的特效叠加层参数槽（16 个 vec4）。
+    #[must_use]
+    pub fn render_effect_params(&self) -> Option<Vec<[f32; 4]>> {
+        self.script.render_effect_params()
+    }
+
+    /// M94：脚本指定的叠加层时间（秒）；`None` = 宿主时钟。
+    #[must_use]
+    pub fn render_effect_time(&self) -> Option<f32> {
+        self.script.render_effect_time()
+    }
+
+    /// M95：宿主推送 `.sgraph` 的命名参数表与默认值，供 Lua `render.set_effect_param` 解析。
+    pub fn set_effect_param_names(
+        &mut self,
+        names: Vec<(String, usize, usize)>,
+        defaults: Vec<[f32; 4]>,
+    ) {
+        self.script.set_effect_param_names(names, defaults);
+    }
+
     /// P3-R210：脚本设置的剖面封口深度（米，0 = 关）。
     pub fn render_clip_cap(&self) -> Option<f32> {
         self.script.render_clip_cap()

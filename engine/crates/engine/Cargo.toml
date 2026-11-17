@@ -58,6 +58,9 @@ rustlua-assets-import = { path = "../rustlua-assets-import" }
 rustlua-net = { path = "../rustlua-net" }
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 rustlua-gpu.workspace = true
+# game_api 3.0 的能力图谱门要**真解析** `project.toml [render] effect_overlay` 指向的 `.sgraph`
+# （`ShaderGraph::load_runtime_overlay`）；运行时宿主自己编译它，不在 engine 的 normal 依赖里。
+rustlua-visual-script = { path = "../rustlua-visual-script" }
 # M77-01：渲染器实现搬进 `rustlua-gpu` 后，engine 的 normal 依赖里没有 wgpu（这是本包的
 # 验收门：`cargo tree -p engine -e normal` 对 wgpu 零命中）。
 # M77-02 offscreen 合并（已执行）：22 个自建 adapter 的 `examples/wp0_*.rs` **全部**改走

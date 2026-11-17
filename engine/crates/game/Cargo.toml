@@ -18,6 +18,8 @@ default = ["3d"]
 [dependencies]
 # M81：feature 链上的边必须显式断默认，否则 feature 统一会把 3d 悄悄开回来。
 engine = { path = "../engine", default-features = false }
+# M88：`project.toml` 的 `[render] effect_overlay` 指向 `.sgraph`，运行时挂载自定义特效叠加层。
+rustlua-visual-script = { path = "../rustlua-visual-script" }
 winit = { version = "0.30", features = ["android-native-activity"] }
 tracing.workspace = true
 # 下列依赖仅被 examples/（独立 GPU demo）使用，主二进制通过 engine 间接使用。

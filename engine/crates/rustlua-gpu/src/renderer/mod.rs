@@ -28,6 +28,8 @@ use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 use rustlua_render::frame::{Scene3d, SceneMesh};
 use rustlua_render::instance_batch::{InstanceBatch3D, InstanceBatchLod3D};
 
+use effect_overlay::EffectOverlay;
+pub use effect_overlay::EffectOverlayError;
 pub use environment::EnvironmentMapError;
 
 mod arena;
@@ -35,6 +37,8 @@ mod batch_motion_gpu;
 mod capabilities;
 mod compute;
 mod construct;
+/// M86：自定义特效叠加 pass（Shader Graph 的运行时入口）。
+mod effect_overlay;
 mod environment;
 mod gpu_mesh;
 mod gpu_particles;
@@ -945,7 +949,9 @@ pub struct Renderer {
     /// P3-R243 的 [`Renderer::prewarm_gpu_particles`] 让宿主显式把这份钱挪到启动期。
     /// 目标格式取 `self.config.format`（LDR）/`Rgba16Float`（HDR），与后处理离屏纹理、
     /// 热重载重建 LDR 槽位读的是同一个来源。
-    gpu_particle_pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
+    /// M98：GPU 粒子软边宽度（深度单位，0 = 硬边）。
+    particle_softness: f32,
+    gpu_particle_pipelines: Vec<(u32, wgpu::TextureFormat, wgpu::RenderPipeline)>,
     pipeline: wgpu::RenderPipeline,
     /// P3-R04-3：按固定轴缓存的 3D 网格/阴影管线。`Arc` 让绘制侧只借用、不复制；
     /// 键与统计见 [`pipeline_cache`]。
@@ -1414,6 +1420,11 @@ pub struct Renderer {
     /// 镜像相机 uniform（与主相机同一布局，160B）与它的绑定组。
     planar_camera_buffer: wgpu::Buffer,
     planar_camera_bind_group: wgpu::BindGroup,
+    /// M91/M92：特效叠加层（场景色/深度输入；空 = 关档，渲染路径与旧版相同）。
+    effect_overlays: Vec<EffectOverlay>,
+    effect_scene_texture: Option<wgpu::Texture>,
+    effect_scene_view: Option<wgpu::TextureView>,
+    effect_scene_size: (u32, u32),
 }
 
 /// 光照 uniform 的浮点字数：方向光 12（direction / color_intensity / params）+ 点光 8×8。
@@ -1858,6 +1869,26 @@ impl Renderer {
     /// P3-R209：剖切口向内多深仍然画实体截面（米）。`0.0` = 关闭（默认，只有 P3-R54 的
     /// 0.08 m 薄带，像素逐字节不变）；非有限或负值归一为关闭。深度只在会话裁剪平面
     /// 生效时才有意义，水平面/反射那两条平面不吃这条档。
+    /// M98：GPU 粒子软边宽度（深度单位）。改它会重建粒子绘制管线（缓存随之失效）。
+    pub fn set_particle_softness(&mut self, softness: f32) {
+        let softness = if softness.is_finite() {
+            softness.clamp(0.0, 0.5)
+        } else {
+            0.02
+        };
+        if (self.particle_softness - softness).abs() <= f32::EPSILON {
+            return;
+        }
+        self.particle_softness = softness;
+        self.gpu_particle_pipelines.clear();
+    }
+
+    /// 当前 GPU 粒子软边宽度（诊断/验收用）。
+    #[must_use]
+    pub fn particle_softness(&self) -> f32 {
+        self.particle_softness
+    }
+
     pub fn set_clip_cap_depth(&mut self, depth: f32) {
         self.clip_cap_depth = if depth.is_finite() && depth > 0.0 {
             depth
@@ -1919,6 +1950,85 @@ impl Renderer {
         self.post_process
     }
 
+    /// M86：设置自定义特效叠加层 —— Shader Graph 生成 WGSL 的运行时入口。
+    ///
+    /// 契约见 [`effect_overlay`] 模块注释（`vs_main` / `fs_main` + `EffectParams` uniform）。
+    /// - `None` ⇒ 关闭，渲染路径与以前逐字节相同；
+    /// - `Some(source)` ⇒ 编译失败返回错误并**保留旧叠加层**（不会把画面整块弄黑）。
+    pub fn set_effect_overlay(&mut self, source: Option<&str>) -> Result<(), EffectOverlayError> {
+        match source {
+            None => {
+                self.effect_overlays.clear();
+                Ok(())
+            }
+            Some(source) => {
+                let overlay = effect_overlay::EffectOverlay::new(
+                    &self.device,
+                    &self.queue,
+                    self.config.format,
+                    source,
+                )?;
+                self.effect_overlays = vec![overlay];
+                Ok(())
+            }
+        }
+    }
+
+    /// 当前是否有自定义特效叠加层（诊断/验收用）。
+    #[must_use]
+    pub fn effect_overlay_active(&self) -> bool {
+        !self.effect_overlays.is_empty()
+    }
+
+    /// 任一叠加层依赖场景色/深度时才需要离屏渲染 + 回拷。
+    #[must_use]
+    pub fn effect_overlays_need_scene(&self) -> bool {
+        self.effect_overlays
+            .iter()
+            .any(|overlay| overlay.needs_scene())
+    }
+
+    /// 当前叠加层数量（诊断/验收用）。
+    #[must_use]
+    pub fn effect_overlay_count(&self) -> usize {
+        self.effect_overlays.len()
+    }
+
+    /// 追加一层特效叠加（不清掉已有的层）——同一帧多个 `.sgraph` 按 push 顺序叠加。
+    ///
+    /// 编译失败返回错误且**不改动现有层**，调用方可以安全地继续用旧画面。
+    pub fn push_effect_overlay(&mut self, source: &str) -> Result<usize, EffectOverlayError> {
+        let overlay = effect_overlay::EffectOverlay::new(
+            &self.device,
+            &self.queue,
+            self.config.format,
+            source,
+        )?;
+        self.effect_overlays.push(overlay);
+        Ok(self.effect_overlays.len())
+    }
+
+    /// 清空所有特效叠加层（等价于 `set_effect_overlay(None)`）。
+    pub fn clear_effect_overlays(&mut self) {
+        self.effect_overlays.clear();
+    }
+
+    pub fn set_effect_time(&mut self, time: f32) {
+        for overlay in &mut self.effect_overlays {
+            overlay.set_time(time);
+        }
+    }
+
+    /// 写入 Shader Graph 的参数槽（最多 16 个 `vec4`）。
+    ///
+    /// 关键收益：**改参数不重编管线**——面板拖动滑杆只是重写这块 uniform，
+    /// 运行时也可以逐帧调（将来接 Lua 时就是这一条路径）。
+    pub fn set_effect_params(&mut self, params: &[[f32; 4]]) {
+        for overlay in &mut self.effect_overlays {
+            overlay.set_params(params);
+        }
+    }
+
     /// P3-R01：设置工程/场景级渲染开关（HDR/PBR/IBL/变体）。
     ///
     /// 默认（不调用）是全关：纯 2D 与旧 3D 路径的像素逐字节不变。开关变化时把"只告警一次"
@@ -1952,6 +2062,7 @@ impl Renderer {
         self.set_submerged_view_gain(config.underwater_view);
         self.set_water_refract_steps(config.water_refract_steps);
         self.set_clip_cap_depth(config.clip_cap);
+        self.set_particle_softness(config.particle_softness);
         self.set_clip_cap_both_sides(config.clip_cap_both_sides);
     }
 

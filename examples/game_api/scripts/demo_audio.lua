@@ -745,4 +745,7 @@ function M.on_destroy()
     lab.stop()
 end
 
+-- 能力图谱门（sample_project_capability_catalog_is_complete）靠它核对步骤 id。
+M.steps = steps
+
 return M

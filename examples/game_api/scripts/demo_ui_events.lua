@@ -348,6 +348,46 @@ local steps = {
             t:eq(ui.panel_get(ID_HIGHLIGHT), nil, "clear removes the frame")
         end,
     },
+    {
+        id = "typography_states",
+        title = "Typography + states",
+        claim = "Text 的 align / valign / overflow / rich_text 与 ButtonStates 的 tint.<state> / transition 都是场景组件字段：四行排版与一个 0.15s 悬停过渡按钮完全由数据驱动，运行时不需要脚本",
+        api = { "ui.measure_text", "entity.find" },
+        code = "Text(text=…;align=center;valign=middle;overflow=ellipsis;rich_text=true); ButtonStates(tint.hover=…;transition=0.15:smoothstep)",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+        end,
+        run = function()
+            lab.note("左下四行：居中 / 省略 / 富文本；右下按钮悬停时底色 0.15s 过渡（抬起才 click）")
+        end,
+        read = function()
+            local measured = ui.measure_text("ui_test typography", 14)
+            return {
+                { label = "panel", value = tostring(entity.find("TypographyPanel") ~= nil) },
+                { label = "rich", value = tostring(entity.find("TypographyRich") ~= nil) },
+                { label = "transition", value = "0.15s smoothstep" },
+                { label = "measure", value = string.format("%.0fpx", measured.width) },
+            }
+        end,
+        check = function(t)
+            for _, name in ipairs({
+                "TypographyPanel",
+                "TypographyCenter",
+                "TypographyEllipsis",
+                "TypographyRich",
+                "TransitionButton",
+            }) do
+                t:ok(entity.find(name) ~= nil, name .. " exists")
+            end
+            local measured = ui.measure_text("ui_test typography", 14)
+            t:eq(measured.missing_count, 0, "the project font covers the typography sample")
+            t:ok(measured.width > 0, "measure_text returns a positive width")
+            -- 富文本标签里的文字也必须全部有字形（字体子集按工程用字生成）。
+            local tags = ui.measure_text("bold gold cyan", 14)
+            t:eq(tags.missing_count, 0, "rich-text span text has glyphs in the project font")
+        end,
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -429,5 +469,8 @@ function M.on_destroy()
     set_panel_visible(true)
     lab.stop()
 end
+
+-- 能力图谱门（sample_project_capability_catalog_is_complete）靠它核对步骤 id。
+M.steps = steps
 
 return M

@@ -66,6 +66,10 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("game_view.rs", 0),
     // P3-E03-2：画布只改 `GraphDocument`，不写场景文档。
     ("graph.rs", 0),
+    // M83/M85：Shader Graph 画布只改自己的 `.sgraph` 图（保存经 `editor_core::shader_graph_ops`），
+    // 撤销栈是面板内的整图快照（`undo_stack`），不是文档历史；预览模块只做 WGSL 换帧与像素回读测试。
+    ("shader_graph.rs", 0),
+    ("shader_graph_preview.rs", 0),
     ("header.rs", 0),
     // M79 包 2：`hierarchy.rs` 拆成目录（模型/导航/绘制/持久化/场景操作）。拆分**不缩小**
     // 覆盖面——每个生产文件单独登记；`hierarchy/tests/` 在"只下探一层"的扫描之外。

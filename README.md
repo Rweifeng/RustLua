@@ -21,7 +21,7 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
 | 目录 | 内容 |
 |---|---|
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
-| `examples/game_api` | 仓库唯一的样板工程（引擎 API 活文档）：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 12 条门守 |
+| `examples/game_api` | 仓库唯一的样板工程（引擎 API 活文档）：每个 Lua API 都有一处**可运行**演示，另有 64 条能力的能力图谱（[docs/81](docs/81-game_api-3.0-能力图谱.md)），覆盖度由 `host::sample_project` 的 16 条门守 |
 | `plugins/` | 平台模板：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由）、`android/`（NativeActivity 与 Gradle 模板） |
 | `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`metrics/`（覆盖率/cfg/趋势/编译/体积测量）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
@@ -101,6 +101,7 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
 - 全部文档索引与编号约定：[docs/README.md](docs/README.md)
 - 变更记录（能力增量与版本段）：[docs/changelog/](docs/changelog/README.md)——原根文件 `CHANGELOG.md` 已于 2026-10-25 迁入
 - Lua API 参考：[docs/18-lua-api.md](docs/18-lua-api.md)；编辑器指南：[docs/25-editor-guide.md](docs/25-editor-guide.md)
+- game_api 3.0 能力图谱与渲染/UI 展廊：[docs/81-game_api-3.0-能力图谱.md](docs/81-game_api-3.0-能力图谱.md)
 - 发布包与用户数据目录：[docs/50-发布包与用户数据目录.md](docs/50-发布包与用户数据目录.md)
 - 性能与测试度量（覆盖率/cfg/矩阵/趋势/编译/体积，schema 与命令）：[docs/70-性能与测试度量.md](docs/70-性能与测试度量.md)
 - 引擎改进台账：[docs/37-引擎与游戏工程复核及优化完善计划.md](docs/37-引擎与游戏工程复核及优化完善计划.md) 与
@@ -131,12 +132,16 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   权威读数是总门日志里的 `cases=… failed=0`）；
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
-- **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **51 个模块表 / 429 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
+- **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)、
+  [docs/74](docs/74-game_api演示工程2.0.md) → [docs/81](docs/81-game_api-3.0-能力图谱.md)）：
+  **51 个模块表 / 432 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
   `scripts/verify/check-doc-claims.mjs` 与覆盖率门自动守，不靠人记；1.3 版核对时把 README 里过期的
   40/270 改正，2026-10-27 又把 283 校正为 313，2026-10-28 随 `nav` 模块校正为 319，
   2026-10-29 随 `net.now()` 校正为 328）/ 31 个运行时组件全部有演示；引擎新增一个
   Lua 函数，示例工程不补演示就会被覆盖率门判红。
+  3.0（2026-11-17）在 2.0 的分步 Lab 上补**能力图谱**（`scripts/capabilities.lua`，64 条能力 /
+  8 个分组，按 A 在入口菜单打开）与**渲染/UI 展廊**（地形/水面/PBR/体素、Shader Graph
+  叠加层、文本排版与状态过渡），并新增 3 条能力门把"能力 → 场景/步骤"钉住。
 - **组件统一**（第 57 轮）：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
   （载荷 `position/rotation/scale`）与 `Camera`（判别字段 `projection=orthographic|perspective`）。
   旧名 `Transform3D`/`Camera2D`/`Camera3D` 与自动迁移逻辑都已删除。**外部老工程需要先跑一次

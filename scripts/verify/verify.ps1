@@ -27,6 +27,9 @@ param(
     # 快速读数（M66+）：只跑「零成本 + 数据级」的门，跳过编译重活与编辑器实机步骤。
     # 它与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 互斥（混用会让「跳过了什么」说不清），
     # 归一化与覆盖面见下面 `if ($Quick)` 那段长注释。
+    # M99：显式跑叠加层帧耗时 A/B（scripts/verify/bench_overlay_ab.ps1，真实窗口 + release game.exe，
+    # 约 1–2 分钟）。默认关：它不是"红/绿"判据，只在需要台账读数时开；缺产物时如实报错，不伪造通过。
+    [switch]$OverlayBench,
     [switch]$Quick,
     # P4-01：只跑覆盖率采集 + 棘轮门（重活，需 cargo-llvm-cov；缺工具退 3，不是通过）。
     [switch]$Coverage,
@@ -371,6 +374,21 @@ if (-not $Quick) {
     }
     if ($treeExit -ne 0) {
         throw "check-tree-quiet.ps1 failed (exit code $treeExit)"
+    }
+}
+
+# M99：叠加层帧耗时 A/B（显式开关）。只产出读数，不参与默认红绿判定。
+if ($OverlayBench) {
+    Write-Step "Overlay frame-time A/B"
+    $benchScript = Join-Path $projectRoot "scripts/verify/bench_overlay_ab.ps1"
+    if (-not (Test-Path -LiteralPath $benchScript)) {
+        throw "bench_overlay_ab.ps1 missing: $benchScript"
+    }
+    $benchOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $benchScript
+    $benchExit = $LASTEXITCODE
+    $benchOutput | ForEach-Object { Write-Host $_ }
+    if ($benchExit -ne 0) {
+        throw "bench_overlay_ab.ps1 failed (exit code $benchExit)"
     }
 }
 

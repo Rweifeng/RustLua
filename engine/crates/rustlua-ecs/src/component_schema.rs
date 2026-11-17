@@ -1284,6 +1284,15 @@ const BUTTON_STATES_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("disabled", FieldKind::Text, false),
     FieldSchema::new("focused", FieldKind::Text, false),
     FieldSchema::new("disabled_state", FieldKind::Bool, false),
+    // M80-07：状态底色覆盖（`tint.<state>=r,g,b,a`）与过渡（`transition=时长:曲线`）。
+    // 运行时由 `rustlua_ui::ui_states` 解析；这里逐个登记，否则编辑器审计会把
+    // 真实工程里的 ButtonStates 判成 `unknown field`。
+    FieldSchema::new("tint.normal", FieldKind::Text, false),
+    FieldSchema::new("tint.hover", FieldKind::Text, false),
+    FieldSchema::new("tint.pressed", FieldKind::Text, false),
+    FieldSchema::new("tint.disabled", FieldKind::Text, false),
+    FieldSchema::new("tint.focused", FieldKind::Text, false),
+    FieldSchema::new("transition", FieldKind::Text, false),
 ];
 
 /// M76-02：滚动容器的轴向。内容尺寸由布局树子节点包围盒算出，因此不在组件里。
@@ -2700,6 +2709,15 @@ mod tests {
             // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的 ButtonStates）。
             (
                 "normal=__white__;disabled=__white__;disabled_state=true".to_owned(),
+                true,
+            ),
+            // M80-07 的真实工程形态（`examples/game_api/scenes/ui_test.scene` 的
+            // `TransitionButton`）：状态底色 + 过渡曲线，只有运行时解析器与 schema 都认，
+            // 编辑器审计才不会把整份场景判红。
+            (
+                "normal=assets/textures/ui/button_green.png;tint.normal=0.18,0.30,0.48,1;\
+                 tint.hover=0.26,0.56,0.88,1;transition=0.15:smoothstep"
+                    .to_owned(),
                 true,
             ),
             ("normal=".to_owned(), true),

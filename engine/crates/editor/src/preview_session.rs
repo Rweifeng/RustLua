@@ -156,6 +156,10 @@ pub(crate) struct PreviewSession {
     crash_seen: u64,
     /// 本帧新抓到、还没被编辑器取走的现场（落盘已完成）。
     pending_crashes: Vec<CrashReport>,
+    /// M95：工程配置的叠加层参数默认值（Play 里的宿主档；脚本写值优先）。
+    effect_overlay_slots: Option<Vec<[f32; 4]>>,
+    /// M95：叠加层时间从会话开始累计（脚本写时间时优先用脚本值）。
+    effect_clock_start: std::time::Instant,
     /// 一键复现：命中断点时由 VM 回调填进来（`Rc` 让回调与宿主共享）。
     /// VM 回调里不能借编辑器状态，所以"停住 Play"由宿主在帧边界做。
     replay_hit: Rc<RefCell<Option<PauseSnapshot>>>,
@@ -323,9 +327,50 @@ impl PreviewSession {
             crash_seen: crash_seen_at_start,
             pending_crashes: Vec::new(),
             replay_hit: Rc::new(RefCell::new(None)),
+            effect_overlay_slots: None,
+            effect_clock_start: std::time::Instant::now(),
         };
         session.sync_native_texture(device);
+        // M95：Play 也按 `project.toml [render] effect_overlay` 挂载叠加层，并把命名参数表
+        // 推给运行时，`render.set_effect_param` 在编辑器 Play 里同样可用。
+        session.apply_project_effect_overlay();
         Ok(session)
+    }
+
+    /// M95：按工程配置把 `.sgraph` 挂到 Play 的渲染器上，并推送命名参数表 + 默认值。
+    fn apply_project_effect_overlay(&mut self) {
+        let Ok(Some(config)) =
+            rustlua_render::render_config::RenderConfig::load_from(&self.project_root)
+        else {
+            return;
+        };
+        let Some(relative) = config.effect_overlay else {
+            return;
+        };
+        match rustlua_visual_script::shader_graph::ShaderGraph::load_runtime_overlay(
+            &self.project_root,
+            &relative,
+        ) {
+            Ok((source, compiled)) => match self.renderer.set_effect_overlay(Some(&source)) {
+                Ok(()) => {
+                    self.renderer.set_effect_params(&compiled.slots);
+                    self.effect_overlay_slots = Some(compiled.slots.clone());
+                    let names = compiled
+                        .named_params()
+                        .into_iter()
+                        .map(|param| (param.name, param.slot, param.component))
+                        .collect();
+                    self.runtime
+                        .set_effect_param_names(names, compiled.slots.clone());
+                }
+                Err(error) => {
+                    self.diagnostic = Some(format!("特效叠加层编译失败：{error}"));
+                }
+            },
+            Err(error) => {
+                self.diagnostic = Some(format!("特效叠加层加载失败：{error}"));
+            }
+        }
     }
 
     /// 当前分辨率（宽×高）。
@@ -805,6 +850,22 @@ impl PreviewSession {
                 height: 1.0,
             });
         let scene3d = self.runtime.scene_3d(viewport);
+        // M94：编辑器 Play 也要吃脚本写的叠加层时间/参数（与 game 主循环同一优先级：
+        // 脚本写了就听脚本的，没写就保持宿主时钟/模板默认值）。
+        // 宿主档：时间从会话开始累计，参数先用模板默认值；下面脚本值再覆盖。
+        if self.effect_overlay_slots.is_some() {
+            self.renderer
+                .set_effect_time(self.effect_clock_start.elapsed().as_secs_f32());
+            if let Some(slots) = self.effect_overlay_slots.as_deref() {
+                self.renderer.set_effect_params(slots);
+            }
+        }
+        if let Some(seconds) = self.runtime.render_effect_time() {
+            self.renderer.set_effect_time(seconds);
+        }
+        if let Some(slots) = self.runtime.render_effect_params() {
+            self.renderer.set_effect_params(&slots);
+        }
         self.renderer.render_into_texture(
             &mesh,
             scene3d.as_ref(),
@@ -1683,5 +1744,59 @@ mod tests {
         );
         assert!(foreign.exists(), "非本函数写出的文件不得被删");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M95：工程配置 `[render] effect_overlay` 后，Play 会话必须真的挂上叠加层，
+    /// 并把命名参数表 + 默认值推给运行时（否则编辑器 Play 里 `render.set_effect_param` 不可用）。
+    #[test]
+    fn play_session_mounts_configured_effect_overlay_and_pushes_named_params() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root =
+            std::env::temp_dir().join(format!("rustlua-play-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("assets/fx")).expect("mkdir");
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"demo\"\n[render]\neffect_overlay = \"assets/fx/demo.sgraph\"\n",
+        )
+        .expect("write project.toml");
+        let graph = rustlua_visual_script::shader_graph::ShaderTemplate::Fire.graph();
+        std::fs::write(root.join("assets/fx/demo.sgraph"), graph.to_json()).expect("write sgraph");
+
+        let ctx = egui::Context::default();
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            &root,
+            &Scene::new("fx"),
+            (64, 64),
+            None,
+            FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
+            None,
+        )
+        .expect("create preview session");
+        assert!(
+            session.renderer.effect_overlay_active(),
+            "配置了 .sgraph 就必须在 Play 渲染器上挂叠加层"
+        );
+        let slots = session
+            .runtime
+            .render_effect_params()
+            .expect("命名参数默认值应推给运行时");
+        assert!(
+            slots
+                .iter()
+                .any(|slot| slot.iter().any(|value| *value != 0.0)),
+            "默认参数不应全零：{slots:?}"
+        );
+        // 真渲染一帧：管线能编译、叠加层能跑（坏 shader 会在这里暴露）。
+        session.force_tick();
+        session.update(&ctx, &rustlua_input::input::InputSnapshot::default());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

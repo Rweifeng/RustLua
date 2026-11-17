@@ -298,6 +298,74 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             })?,
         )?;
     }
+    // M95：按名字调参数——非程序员只面对"参数名"，不用记槽位号。
+    {
+        let named_state = state.clone();
+        table.set(
+            "set_effect_param",
+            lua.create_function(move |_, (name, value): (String, f32)| {
+                if !value.is_finite() {
+                    return Ok((false, "effect param value must be finite".to_owned()));
+                }
+                let mut state = named_state.borrow_mut();
+                let Some(names) = state.render_effect_param_names.clone() else {
+                    return Ok((
+                        false,
+                        "宿主还没有加载特效参数表（先给项目配置 effect_overlay）".to_owned(),
+                    ));
+                };
+                let Some((_, slot, component)) =
+                    names.iter().find(|(candidate, _, _)| candidate == &name)
+                else {
+                    let known: Vec<&str> = names.iter().map(|(n, _, _)| n.as_str()).collect();
+                    return Ok((
+                        false,
+                        format!("没有名为 {name} 的特效参数；可用参数：{}", known.join(", ")),
+                    ));
+                };
+                let slots = state
+                    .render_effect_params
+                    .get_or_insert_with(|| vec![[0.0; 4]; 16]);
+                slots[*slot][*component] = value;
+                Ok((true, String::new()))
+            })?,
+        )?;
+    }
+    // M94：逐帧调特效叠加层参数。参数是 16 个 vec4 槽位（编号见 .sgraph 的参数表），
+    // 用"槽号 + 四个分量"写入；越界/非有限一律拒绝，不静默夹紧。
+    {
+        let params_state = state.clone();
+        table.set(
+            "set_effect_params",
+            lua.create_function(move |_, (slot, x, y, z, w): (i64, f32, f32, f32, f32)| {
+                if !(0..16).contains(&slot) {
+                    return Ok((false, "effect slot must be an integer in 0..16".to_owned()));
+                }
+                if ![x, y, z, w].iter().all(|value| value.is_finite()) {
+                    return Ok((false, "effect params must be finite".to_owned()));
+                }
+                let mut state = params_state.borrow_mut();
+                let slots = state
+                    .render_effect_params
+                    .get_or_insert_with(|| vec![[0.0; 4]; 16]);
+                slots[slot as usize] = [x, y, z, w];
+                Ok((true, String::new()))
+            })?,
+        )?;
+    }
+    {
+        let time_state = state.clone();
+        table.set(
+            "set_effect_time",
+            lua.create_function(move |_, seconds: f32| {
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return Ok((false, "effect time must be finite and >= 0".to_owned()));
+                }
+                time_state.borrow_mut().render_effect_time = Some(seconds);
+                Ok((true, String::new()))
+            })?,
+        )?;
+    }
     let stats_state = state.clone();
     table.set(
         "stats",

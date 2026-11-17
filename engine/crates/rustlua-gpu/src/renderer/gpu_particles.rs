@@ -317,6 +317,19 @@ fn gpu_particle_grid_shader() -> &'static str {
 /// `group0`/`group1` 与世界 Sprite 管线逐字段相同，所以相机与白贴图那两条现成绑定组直接复用；
 /// 粒子自己的两份资源在 `group2`。顶点着色器读状态缓冲用的是 `storage, read`——WebGPU 允许
 /// 顶点阶段只读存储缓冲，而这条路径的前置条件本来就包含"设备有 compute"，WebGL2 到不了这里。
+const GPU_PARTICLE_DRAW_SOFTNESS_PLACEHOLDER: &str = "__SOFTNESS__";
+
+/// M98：按软边宽度生成粒子绘制 shader。
+///
+/// 软边比较的是**粒子自身片元深度**与场景深度（P3-R107），宽度原来是硬编码 0.02；
+/// 现在由 `Renderer::set_particle_softness` 决定，0 = 硬边（关）。
+fn gpu_particle_draw_shader(softness: f32) -> String {
+    GPU_PARTICLE_DRAW_SHADER.replace(
+        GPU_PARTICLE_DRAW_SOFTNESS_PLACEHOLDER,
+        &format!("{softness:.4}"),
+    )
+}
+
 const GPU_PARTICLE_DRAW_SHADER: &str = concat!(
     particle_common!(),
     r#"
@@ -410,7 +423,7 @@ const CORNERS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
         return vec4<f32>(0.0);
     }
     // 靠近遮挡面时软边淡出，烟/火/雨不再出现硬切边。
-    let soft = smoothstep(0.0, 0.02, delta);
+    let soft = smoothstep(0.0, __SOFTNESS__, delta);
     let texel = textureSample(tex, samp, in.uv) * in.color;
     return vec4<f32>(texel.rgb, texel.a * soft);
 }
@@ -1788,16 +1801,20 @@ impl Renderer {
         &mut self,
         format: wgpu::TextureFormat,
     ) -> &wgpu::RenderPipeline {
+        let softness = self.particle_softness;
+        let softness_bits = softness.to_bits();
         if !self
             .gpu_particle_pipelines
             .iter()
-            .any(|(cached, _)| *cached == format)
+            .any(|(cached_bits, cached_format, _)| {
+                *cached_bits == softness_bits && *cached_format == format
+            })
         {
             let module = self
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("rustlua-gpu-particles-draw-shader"),
-                    source: wgpu::ShaderSource::Wgsl(GPU_PARTICLE_DRAW_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(gpu_particle_draw_shader(softness).into()),
                 });
             let layout = self
                 .gpu_particle_pipeline_layout
@@ -1811,12 +1828,15 @@ impl Renderer {
                 format,
                 "rustlua-gpu-particles-pipeline",
             );
-            self.gpu_particle_pipelines.push((format, pipeline));
+            self.gpu_particle_pipelines
+                .push((softness_bits, format, pipeline));
         }
-        let (_, pipeline) = self
+        let (.., pipeline) = self
             .gpu_particle_pipelines
             .iter()
-            .find(|(cached, _)| *cached == format)
+            .find(|(cached_bits, cached_format, _)| {
+                *cached_bits == softness_bits && *cached_format == format
+            })
             .expect("上面的分支刚刚写入过管线");
         pipeline
     }
@@ -1840,11 +1860,14 @@ impl Renderer {
             formats.push(wgpu::TextureFormat::Rgba16Float);
         }
         let mut built = 0;
+        let softness_bits = self.particle_softness.to_bits();
         for format in formats {
-            let known = self
-                .gpu_particle_pipelines
-                .iter()
-                .any(|(cached, _)| *cached == format);
+            let known =
+                self.gpu_particle_pipelines
+                    .iter()
+                    .any(|(cached_bits, cached_format, _)| {
+                        *cached_bits == softness_bits && *cached_format == format
+                    });
             if !known {
                 self.ensure_gpu_particle_pipeline(format);
                 built += 1;
@@ -1980,11 +2003,14 @@ mod tests {
             "compute 段的 ParticleState/Params 声明不再来自公共段"
         );
         assert!(
-            GPU_PARTICLE_DRAW_SHADER.starts_with(common),
+            gpu_particle_draw_shader(0.02).starts_with(common),
             "draw 段的 ParticleState/Params 声明不再来自公共段"
         );
-        assert!(GPU_PARTICLE_DRAW_SHADER.contains("textureLoad(scene_depth"));
-        assert!(GPU_PARTICLE_DRAW_SHADER.contains("smoothstep(0.0, 0.02, delta)"));
+        assert!(gpu_particle_draw_shader(0.02).contains("textureLoad(scene_depth"));
+        assert!(gpu_particle_draw_shader(0.02).contains("smoothstep(0.0, 0.0200, delta)"));
+        // M98：软边宽度真的进 shader（可调档不是摆设）。
+        assert!(gpu_particle_draw_shader(0.08).contains("smoothstep(0.0, 0.0800, delta)"));
+        assert!(!gpu_particle_draw_shader(0.08).contains(GPU_PARTICLE_DRAW_SOFTNESS_PLACEHOLDER));
         assert_eq!(
             common.matches("struct ").count(),
             2,

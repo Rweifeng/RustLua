@@ -35,6 +35,8 @@ pub enum ResourceKind {
     /// （`AnimationClip::resource_key`，docs/54 §4.4）；`.anim` 文件同样归入本家族
     /// （P3-E01-4b），导入器用运行时同一台解析器校验。
     Animation,
+    /// Shader Graph source assets (`.sgraph`).
+    ShaderGraph,
     /// Anything the pipeline does not yet understand.
     Other,
 }
@@ -62,6 +64,7 @@ impl ResourceKind {
             "hdr" | "rlenv" => Self::Environment,
             "ttf" | "otf" => Self::Font,
             "anim" => Self::Animation,
+            "sgraph" => Self::ShaderGraph,
             _ => Self::Other,
         }
     }
@@ -80,6 +83,7 @@ impl ResourceKind {
             Self::Environment => "环境",
             Self::Font => "字体",
             Self::Animation => "动画",
+            Self::ShaderGraph => "Shader Graph",
             Self::Other => "其他",
         }
     }
@@ -98,6 +102,7 @@ impl ResourceKind {
             Self::Environment => "environment",
             Self::Font => "font",
             Self::Animation => "animation",
+            Self::ShaderGraph => "shader_graph",
             Self::Other => "other",
         }
     }
@@ -116,6 +121,7 @@ impl ResourceKind {
             "environment" => Self::Environment,
             "font" => Self::Font,
             "animation" => Self::Animation,
+            "shader_graph" => Self::ShaderGraph,
             "other" => Self::Other,
             _ => return None,
         })
@@ -157,6 +163,10 @@ mod tests {
             ResourceKind::from_path("assets/anim/spin.anim"),
             ResourceKind::Animation
         );
+        assert_eq!(
+            ResourceKind::from_path("assets/shaders/fire.sgraph"),
+            ResourceKind::ShaderGraph
+        );
     }
 
     #[test]
@@ -192,6 +202,7 @@ mod tests {
             ResourceKind::Environment,
             ResourceKind::Font,
             ResourceKind::Animation,
+            ResourceKind::ShaderGraph,
             ResourceKind::Other,
         ] {
             assert_eq!(ResourceKind::parse(kind.token()), Some(kind));
@@ -213,6 +224,7 @@ mod tests {
             ResourceKind::Environment,
             ResourceKind::Font,
             ResourceKind::Animation,
+            ResourceKind::ShaderGraph,
             ResourceKind::Other,
         ] {
             assert!(!kind.label().is_empty());

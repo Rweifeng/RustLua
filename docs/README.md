@@ -83,6 +83,7 @@
 - [AI 融合集成编辑器开发方案（M75）](71-AI融合集成编辑器开发方案.md)：市场引擎 AI 融合对标（Unity AI/Unreal/Godot/Unity-MCP）、MCP 先行的单一能力层架构、33 条 `EditorCommand` → 候选 tool 映射表与风险分层、`ai_tool_surface` 快照门与确定性回放门、P0–P5 路线图（M75-01/02/03 已交付）
 - [UI 编辑工具与 AI 全流程方案（M76）](75-UI编辑工具与AI全流程方案.md)：UGUI/UMG/Godot/FairyGUI 等三条技术路线对标与十条借鉴、`UiSpec`/`UiPatch`/`UiProposal`/`AssetProvenance` 四契约、设计-出图-切图-布局-修改-审查六段链路、令牌+类+状态样式、Provider 抽象与提案制权限、M0–M6 路线图与三宿主验收门
 - [UI 子系统五星期收口（M80）](76-UI子系统五星期收口.md)：交互路由默认开、`Mask`/`CanvasGroup`、文本排版、Toggle/Slider/Progress/Scrollbar、编辑器多选/对齐/锚点预设/吸附/预设导出；能力矩阵、Unity 对标、PC/Web/微信三宿主证据与残留缺口
+- [可视化 Shader 编程面板与特效模板](80-可视化Shader编程面板与特效模板.md)：`.sgraph` 图资产与端口类型、20 个按角色/技能/环境/UI 分类的中文特效模板（含 L1–L2 性能等级与调参提示）、模板间 WGSL 互异质量门、真实 GPU 管线验证与已知边界
 
 ## 七、平台与发布
 
@@ -97,7 +98,8 @@
 ## 八、示例工程
 
 - [示例工程 game_api 与 API 覆盖率门](59-示例工程game_api与API覆盖率门.md)：1.0 形态的历史记录（覆盖率门语义、fixture 与渲染顺序约束仍有效）
-- [game_api 演示工程 2.0](74-game_api演示工程2.0.md)：分步 Lab、行为自检与生成式目录；51 个模块表 / 429 个函数、五条标准、shell 版面、自检契约与新门
+- [game_api 演示工程 2.0](74-game_api演示工程2.0.md)：分步 Lab、行为自检与生成式目录；51 个模块表 / 432 个函数、五条标准、shell 版面、自检契约与新门
+- [game_api 3.0：能力图谱与渲染/UI 展廊](81-game_api-3.0-能力图谱.md)：64 条能力 / 8 个分组的能力图谱、渲染展廊（地形/水面/PBR/体素/Shader Graph 叠加层）、UI 排版与状态过渡、3 条能力门 + 1 条菜单覆盖层回归门（共 16 条工程门）
 - [Demos 总览](demos/README.md)：两个示例工程（game_api / game_jhyt）的定位、入口与 game_api 演示地图
 
 ## 九、复盘与优化

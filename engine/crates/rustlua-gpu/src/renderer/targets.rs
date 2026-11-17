@@ -163,6 +163,31 @@ impl Renderer {
         self.post_process_size = (width, height);
     }
 
+    /// M91：确保叠加层用的离屏场景色纹理（与目标同格式，可采样）。
+    pub(super) fn ensure_effect_scene_view(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.effect_scene_size == (width, height) && self.effect_scene_view.is_some() {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-effect-scene"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        self.effect_scene_view = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.effect_scene_texture = Some(texture);
+        self.effect_scene_size = (width, height);
+    }
     /// P3-R01：确保 HDR 场景颜色纹理（`Rgba16Float`，线性）与目标同尺寸。
     ///
     /// 只在**真正走 HDR 的帧**调用（纯 2D 帧不分配）。尺寸变化时旧纹理整体释放；`COPY_SRC`

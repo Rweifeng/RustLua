@@ -1,4 +1,4 @@
-//! 资源**导入层**：把源文件（png/wav/lua/gltf/atlas/ttf/scene/prefab/anim）校验并加工成运行时能
+//! 资源**导入层**：把源文件（png/wav/lua/gltf/atlas/ttf/scene/prefab/anim/sgraph）校验并加工成运行时能
 //! 直接读的产物。
 //!
 //! 这一层**只在构建工具与编辑器里编译**：`assetc`（打包/导入 CLI）、`editor`（资源面板），
@@ -71,7 +71,7 @@ mod tests {
     use rustlua_assets::resource_kind::ResourceKind;
     use std::path::Path;
 
-    /// 装配出来的注册表必须**十一种 kind 齐全**：九个核心 + Scene/Prefab。
+    /// 装配出来的注册表必须**十二种 kind 齐全**：十个核心 + Scene/Prefab。
     ///
     /// 这条测试原先住在 `rustlua_scene::asset_import`（装配点在那里）。搬家时说清了原因
     /// 才不留空洞：装配需要同时看见两侧的零件，而核心零件要 `image`/`rodio`，scene 不能依赖
@@ -95,6 +95,7 @@ mod tests {
             ResourceKind::Environment,
             ResourceKind::Material,
             ResourceKind::Animation,
+            ResourceKind::ShaderGraph,
         ] {
             let importer = registry.get(kind).expect("full importer exists");
             assert_eq!(importer.kind(), kind);

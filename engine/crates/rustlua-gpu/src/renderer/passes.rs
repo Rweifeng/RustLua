@@ -908,13 +908,23 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         mesh: &SceneMesh,
         scene3d: Option<&Scene3d>,
-        view: &wgpu::TextureView,
+        final_view: &wgpu::TextureView,
         target: (u32, u32),
         include_ui: bool,
     ) -> (RenderFrameMetrics, PassTimestampLayout) {
         // E06-3：查询集暂时移出字段，避免 `&mut self` 的借用与跨通道写入冲突；函数末尾归还。
         let timestamp_query_set = self.timestamp_query_set.take();
         let mut pass_timestamps = PassTimestamps::new(timestamp_query_set.as_ref());
+        // M91：有叠加层时整帧先渲到离屏场景色，再回拷目标、最后叠特效——
+        // 这样叠加层能采样"画面"（折射/扭曲/热浪），而默认无叠加层的路径逐字节不变。
+        let overlays_need_scene = self.effect_overlays_need_scene();
+        let effect_scene_view = if overlays_need_scene {
+            self.ensure_effect_scene_view(target.0, target.1);
+            self.effect_scene_view.take()
+        } else {
+            None
+        };
+        let view: &wgpu::TextureView = effect_scene_view.as_ref().unwrap_or(final_view);
         // P3-R286：pass 前准备段计时起点（函数入口）。
         let prep_started = Instant::now();
         // 清屏：宿主声明了主视图就按声明走（`ClearPolicy::None` = 不清，叠在已有内容上）；
@@ -2148,6 +2158,93 @@ impl Renderer {
             record_triangle_draw(&mut metrics, vertices as u32);
             executed.push(RenderPass::PostProcess);
         }
+        // M86/M91：自定义特效叠加层。有叠加层时画面已在离屏目标里：
+        // 先用恒等后处理把它回拷到最终目标（等价于逐像素复制），再叠特效并采样那份画面。
+        if let Some(scene) = effect_scene_view.as_ref() {
+            let vertices = self.draw_post_process(
+                encoder,
+                scene,
+                final_view,
+                rustlua_render::post_process::PostProcess::default(),
+                target,
+            );
+            record_set_pass(&mut metrics);
+            record_triangle_draw(&mut metrics, vertices as u32);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rustlua-effect-overlay-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: final_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            // 多层按 push 顺序叠加：后一层画在前一层之上。
+            for overlay in &mut self.effect_overlays {
+                overlay.prepare(
+                    &self.queue,
+                    target.0,
+                    target.1,
+                    Some((scene, &self.depth_view)),
+                );
+                overlay.draw(&mut pass);
+            }
+            drop(pass);
+            record_set_pass(&mut metrics);
+            record_triangle_draw(&mut metrics, 3 * self.effect_overlays.len() as u32);
+        }
+        // 快路径：叠加层不采样场景色/深度时直接叠在最终目标上，省掉离屏 + 回拷。
+        if !self.effect_overlays.is_empty() && !overlays_need_scene {
+            let depth_written = scene3d.is_some() || !mesh.draws.is_empty();
+            if !depth_written {
+                // 没有 3D 写入时深度是上一帧残留：先清成远平面，避免深度类模板串帧。
+                let clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("rustlua-effect-depth-clear"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                drop(clear);
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rustlua-effect-overlay-direct-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: final_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for overlay in &mut self.effect_overlays {
+                overlay.prepare(&self.queue, target.0, target.1, None);
+                overlay.draw(&mut pass);
+            }
+            drop(pass);
+            record_set_pass(&mut metrics);
+            record_triangle_draw(&mut metrics, 3 * self.effect_overlays.len() as u32);
+        }
+        // 离屏视图放回（纹理本体一直在 `self` 里，视图只是个句柄）。
+        self.effect_scene_view = effect_scene_view;
         // 把离屏视图放回（下一帧复用；纹理本体一直在 `self` 里，视图只是个句柄）。
         self.post_process_scene_view = scene_view;
         self.hdr_scene_view = hdr_view;

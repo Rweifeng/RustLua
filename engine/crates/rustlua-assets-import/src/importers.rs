@@ -1,10 +1,11 @@
-//! 九个内置导入器（assets 层）+ 注册表组装。
+//! 十个内置导入器（assets 层）+ 注册表组装。
 //!
 //! 每个 [`ResourceKind`] 恰好一个内置导入器：`Texture`（`image` 解码）、`Audio`（`rodio`
 //! 解码 + WAV 读头）、`LuaScript`（`mlua` 只编译不执行）、`Model`（`gltf`）、`Atlas`
 //! （纯文本）、`Font`（`ab_glyph`）、`Environment`（HDR 解码 / `.rlenv` 校验）、`Material`
 //! （`.material` 文本，用运行时同一台解析器 `rustlua_assets::mat_asset::MaterialAsset`）、
-//! `Animation`（`.anim` 文本，用 `rustlua_animation::anim_asset::AnimClip::from_text`）。
+//! `Animation`（`.anim` 文本，用 `rustlua_animation::anim_asset::AnimClip::from_text`）、
+//! `ShaderGraph`（`.sgraph` JSON，用 `rustlua_visual_script::shader_graph::ShaderGraph`）。
 //! Scene/Prefab 两个导入器在 `rustlua_scene::asset_import`
 //! 里（它们的校验要用 `Scene`/`Prefab` 类型），由本 crate 的
 //! [`crate::full_registry`] 装配成完整注册表。
@@ -22,6 +23,7 @@ use rustlua_assets::gltf_asset::GltfAsset;
 use rustlua_assets::importer::{Importer, ImporterRegistry, reject_bom, reject_empty};
 use rustlua_assets::mat_asset::MaterialAsset;
 use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_visual_script::shader_graph::ShaderGraph;
 
 struct TextureImporter;
 struct AudioImporter;
@@ -32,6 +34,7 @@ struct FontImporter;
 struct EnvironmentImporter;
 struct MaterialImporter;
 struct AnimImporter;
+struct ShaderGraphImporter;
 
 impl Importer for TextureImporter {
     fn version(&self) -> &'static str {
@@ -186,6 +189,31 @@ impl Importer for MaterialImporter {
     }
 }
 
+impl Importer for ShaderGraphImporter {
+    fn version(&self) -> &'static str {
+        "shader-graph-1"
+    }
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::ShaderGraph
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["sgraph"]
+    }
+    fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
+        reject_empty(source, bytes)?;
+        reject_bom(source, bytes, "Shader Graph 定义")?;
+        let text = std::str::from_utf8(bytes).map_err(|error| {
+            format!(
+                "{}: Shader Graph 编码非法（需 UTF-8）: {error}",
+                source.display()
+            )
+        })?;
+        ShaderGraph::from_json(text)
+            .map(|_| ())
+            .map_err(|error| format!("{}: Shader Graph 解析失败: {error}", source.display()))
+    }
+}
+
 impl Importer for AnimImporter {
     fn version(&self) -> &'static str {
         "anim-1"
@@ -242,7 +270,7 @@ pub fn builtin() -> &'static ImporterRegistry {
 
 /// 九个核心导入器，顺序固定（注册表按 kind 建索引，顺序只影响可读性）。
 #[must_use]
-pub fn core_importers() -> [&'static dyn Importer; 9] {
+pub fn core_importers() -> [&'static dyn Importer; 10] {
     [
         &TextureImporter,
         &AudioImporter,
@@ -253,6 +281,7 @@ pub fn core_importers() -> [&'static dyn Importer; 9] {
         &EnvironmentImporter,
         &MaterialImporter,
         &AnimImporter,
+        &ShaderGraphImporter,
     ]
 }
 
@@ -358,6 +387,7 @@ mod tests {
             ResourceKind::Environment,
             ResourceKind::Material,
             ResourceKind::Animation,
+            ResourceKind::ShaderGraph,
         ] {
             let importer = registry.get(kind).expect("builtin importer exists");
             assert_eq!(importer.kind(), kind);
@@ -367,6 +397,39 @@ mod tests {
         assert!(registry.get(ResourceKind::Scene).is_none());
         assert!(registry.get(ResourceKind::Prefab).is_none());
         assert!(registry.get(ResourceKind::Other).is_none());
+    }
+
+    #[test]
+    fn shader_graph_importer_validates_json_and_rejects_bom() {
+        let root = root("shader-graph");
+        let importer = builtin().get(ResourceKind::ShaderGraph).unwrap();
+        let graph = ShaderGraph {
+            version: rustlua_visual_script::shader_graph::SHADER_GRAPH_VERSION,
+            name: "smoke".into(),
+            nodes: vec![rustlua_visual_script::shader_graph::ShaderNode {
+                id: "out".into(),
+                kind: rustlua_visual_script::shader_graph::ShaderNodeKind::Output,
+                position: [0.0, 0.0],
+                params: Default::default(),
+            }],
+            edges: vec![],
+        };
+        let path = write_source(
+            &root,
+            "assets/shaders/smoke.sgraph",
+            graph.to_json().as_bytes(),
+        );
+        importer
+            .validate(&path, &fs::read(&path).unwrap())
+            .expect("valid sgraph");
+        let bad = write_source(&root, "assets/shaders/bad.sgraph", b"{\"version\":1}");
+        assert!(importer.validate(&bad, &fs::read(&bad).unwrap()).is_err());
+        let bom = write_source(&root, "assets/shaders/bom.sgraph", b"\xEF\xBB\xBF{}");
+        let error = importer
+            .validate(&bom, &fs::read(&bom).unwrap())
+            .expect_err("BOM");
+        assert!(error.contains("BOM"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// P3-R02 补漏：`.material` 以前只有 `ResourceKind`、没有导入器，于是示例项目里每一份

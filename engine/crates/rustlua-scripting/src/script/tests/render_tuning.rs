@@ -70,6 +70,15 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
          assert(render.set_shadow_caster_distance('20') == false, 'caster distance string rejected')\n\
          local cdok, cdreason = render.set_shadow_caster_distance(20)\n\
          assert(cdok, cdreason)\n\
+         assert(render.set_effect_params(16, 0, 0, 0, 0) == false, 'effect slot range')\n\
+         assert(render.set_effect_params(-1, 0, 0, 0, 0) == false, 'effect slot negative')\n\
+         assert(render.set_effect_params(0, 0/0, 0, 0, 0) == false, 'effect params finite')\n\
+         local epok, epreason = render.set_effect_params(0, 0.25, 0.5, 0.75, 1.0)\n\
+         assert(epok, epreason)\n\
+         assert(render.set_effect_time(-1) == false, 'effect time negative')\n\
+         assert(render.set_effect_time(0/0) == false, 'effect time finite')\n\
+         local etok, etreason = render.set_effect_time(1.5)\n\
+         assert(etok, etreason)\n\
          local stats = render.stats()\n\
          assert(stats.draw_calls == 0 and stats.vertices == 0 and stats.triangles == 0, 'stats defaults')\n\
          function update() end",

@@ -48,6 +48,10 @@ pub(crate) mod runtime_debug;
 pub(crate) mod scene_view;
 /// schema 驱动的通用组件字段编辑器（docs/55 阶段 2：新增组件不改巨型 match）。
 pub(crate) mod schema_inspector;
+/// 独立的 egui Shader Graph 原型面板；接入 DockTab 后由宿主持有状态并调用 `ui`。
+pub(crate) mod shader_graph;
+/// WGSL wrapper and headless pipeline validation for Shader Graph previews.
+pub(crate) mod shader_graph_preview;
 /// 帮助 ▸ 快捷键…：查看与改键（用户级，不碰文档与历史）。
 pub(crate) mod shortcut_settings;
 /// P1：贴图双击预览窗（全尺寸解码 + 逐像素开关，只读）。

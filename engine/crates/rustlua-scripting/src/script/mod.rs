@@ -271,6 +271,12 @@ pub(crate) struct ScriptState {
     render_ripple: Option<[f32; 2]>,
     /// P3-R140：暗角/颗粒（0..1）。
     render_post_fx: Option<[f32; 2]>,
+    /// M94：脚本逐帧调的特效叠加层参数槽（16 个 vec4）。`None` = 脚本没碰过。
+    render_effect_params: Option<Vec<[f32; 4]>>,
+    /// M94：脚本指定的特效叠加层时间（秒）。`None` = 宿主按自己的时钟推进。
+    render_effect_time: Option<f32>,
+    /// M95：宿主推来的命名参数表（名字 → 槽号 + 分量）；`None` = 宿主还没加载 .sgraph。
+    render_effect_param_names: Option<Vec<(String, usize, usize)>>,
     /// P3-R210：剖切口的实体封口深度（米，0 = 关）。
     render_clip_cap: Option<f32>,
     /// P3-R211：封口是否也吃到单面网格；`None` = 脚本没碰过，渲染器保持宿主启动档。
@@ -912,6 +918,28 @@ impl LuaRuntime {
     pub fn render_post_fx(&self) -> Option<[f32; 2]> {
         self.state.borrow().render_post_fx
     }
+    /// M94：脚本逐帧写的特效叠加层参数槽（16 个 vec4）。
+    pub fn render_effect_params(&self) -> Option<Vec<[f32; 4]>> {
+        self.state.borrow().render_effect_params.clone()
+    }
+    /// M94：脚本指定的叠加层时间（秒）；`None` = 宿主时钟。
+    pub fn render_effect_time(&self) -> Option<f32> {
+        self.state.borrow().render_effect_time
+    }
+
+    /// M95：宿主推送"名字 → 参数槽"映射与默认值（来自 `.sgraph` 的命名参数表）。
+    ///
+    /// 默认值必须一起播下来：脚本只改一个参数时，其余槽要保持模板默认，而不是被清零。
+    pub fn set_effect_param_names(
+        &self,
+        names: Vec<(String, usize, usize)>,
+        defaults: Vec<[f32; 4]>,
+    ) {
+        let mut state = self.state.borrow_mut();
+        state.render_effect_param_names = Some(names);
+        state.render_effect_params = Some(defaults);
+    }
+
     /// 脚本设置的剖面封口深度（米，0 = 关）；`None` = 渲染器默认。
     pub fn render_clip_cap(&self) -> Option<f32> {
         self.state.borrow().render_clip_cap

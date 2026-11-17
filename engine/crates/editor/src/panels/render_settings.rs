@@ -73,6 +73,8 @@ impl EditorApp {
         if let Some(renderer) = self.scene_renderer.as_mut() {
             renderer.apply_render_config(&config);
         }
+        // M88：`effect_overlay` 改了要重新挂（关掉也要真的撤掉）。
+        self.apply_project_effect_overlay();
         if rebuild {
             self.scene_renderer = None;
             self.scene_renderer_error = None;
@@ -119,6 +121,7 @@ impl EditorApp {
                         self.draw_reflection_group(ui);
                         ui.separator();
                         self.draw_geometry_group(ui);
+                        self.draw_effect_group(ui);
                     });
                 ui.separator();
                 if self.render_settings.config != self.render_settings.saved {
@@ -331,6 +334,28 @@ impl EditorApp {
                 ui.end_row();
             });
     }
+    /// M98：粒子软边。放在这里而不是 Shader Graph 面板：它改的是**粒子绘制管线**的
+    /// 全局宽度（`[render] particle_softness`），与叠加层模板无关。
+    fn draw_effect_group(&mut self, ui: &mut egui::Ui) {
+        let config = &mut self.render_settings.config;
+        ui.label("特效与粒子");
+        egui::Grid::new("render_settings_effect")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("粒子软边宽度（0=硬边）");
+                ui.add(
+                    egui::DragValue::new(&mut config.particle_softness)
+                        .range(0.0..=0.5)
+                        .speed(0.005)
+                        .max_decimals(3),
+                )
+                .on_hover_text(
+                    "GPU 粒子与场景深度交界处的淡出宽度；越大软边越宽，0 = 硬切边。默认为 0.02",
+                );
+                ui.end_row();
+            });
+    }
 }
 
 #[cfg(test)]
@@ -429,6 +454,7 @@ mod tests {
     fn preset_buttons_fill_only_the_preset_fields() {
         let mut config = RenderConfig {
             clip_cap: 2.0,
+            particle_softness: 0.3,
             ..RenderConfig::default()
         };
         config = config.with_quality(QualityPreset::Low);
@@ -436,5 +462,29 @@ mod tests {
         assert!(config.water_cheap);
         assert_eq!(config.point_shadow_resolution, 512);
         assert_eq!(config.clip_cap, 2.0, "预设不碰未包含字段");
+        assert_eq!(config.particle_softness, 0.3, "预设不碰粒子软边宽度");
+    }
+
+    /// M98：面板能无头画出「特效与粒子」组，且粒子软边宽度走同一条保存/套用路径。
+    #[test]
+    fn particle_softness_slider_is_drawn_and_saved() {
+        let root = temp_project("softness");
+        std::fs::write(root.join("project.toml"), "[project]\nname = \"demo\"\n").unwrap();
+        let mut app = app_for(&root);
+        app.open_render_settings();
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            app.draw_render_settings_panel(context);
+        });
+
+        app.render_settings.config.particle_softness = 0.25;
+        app.save_render_settings();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
+        assert!(text.contains("particle_softness = 0.25"), "{text}");
+
+        // 重新打开 = 磁盘值；默认档仍是 0.02。
+        app.open_render_settings();
+        assert!((app.render_settings.config.particle_softness - 0.25).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

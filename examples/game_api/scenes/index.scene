@@ -12,7 +12,7 @@ component	1	Text	text=RustLua API Showcase;font_size=36.00;color=0.950,0.820,0.4
 component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	1	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-592.00,-342.00,-592.00,-342.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	2	Subtitle	0
-component	2	Text	text=15 scenes - 13 labs with checked steps - ESC returns here;font_size=17.00;color=0.620,0.720,0.860
+component	2	Text	text=15 scenes - 13 labs with checked steps - 64 capabilities;font_size=17.00;color=0.620,0.720,0.860
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	2	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-592.00,-302.00,-592.00,-302.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	3	main	0
@@ -29,7 +29,7 @@ component	5	Text	text=Sprite / Quad / Anim / Physics;font_size=16.00;color=0.660
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	5	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-6.00,-128.00,-6.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	6	main_meta	3
-component	6	Text	text=2D / 9 steps;font_size=15.00;color=0.980,0.720,0.340
+component	6	Text	text=2D / 10 steps;font_size=15.00;color=0.980,0.720,0.340
 component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	6	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,20.00,-128.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	7	api_tilemap	0
@@ -97,7 +97,7 @@ component	21	Text	text=PBR / IBL / Skinning / Body;font_size=16.00;color=0.660,0
 component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	21	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-6.00,-128.00,-6.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	22	api_3d_meta	19
-component	22	Text	text=3D / 12 steps;font_size=15.00;color=0.980,0.720,0.340
+component	22	Text	text=3D / 17 steps;font_size=15.00;color=0.980,0.720,0.340
 component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	22	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,20.00,-128.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	23	api_gameplay	0
@@ -182,7 +182,7 @@ component	41	Text	text=UiEvents / Buttons / Container;font_size=16.00;color=0.66
 component	41	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	41	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-6.00,-128.00,-6.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	42	ui_test_meta	39
-component	42	Text	text=UI / 5 steps;font_size=15.00;color=0.980,0.720,0.340
+component	42	Text	text=UI / 6 steps;font_size=15.00;color=0.980,0.720,0.340
 component	42	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	42	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,20.00,-128.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	43	api_script	0

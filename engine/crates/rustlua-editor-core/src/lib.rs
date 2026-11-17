@@ -35,6 +35,7 @@ pub mod scene_tree_state;
 pub mod schema_audit;
 pub mod selection;
 pub mod services;
+pub mod shader_graph_ops;
 pub mod shortcuts;
 pub mod user_config;
 

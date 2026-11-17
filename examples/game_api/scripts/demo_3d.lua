@@ -30,6 +30,7 @@ local CAPSULE = "CapsuleSensor"
 local PROBE = "CcdProbe"
 local ENV = "StudioEnvironment"
 local SUN = "Sun"
+local CAMERA_NAME = "Camera3d"
 local ATTACH_NAME = "AttachProbe3d"
 
 -- 导航演示：一张 12x12 的 XZ 网格（世界范围 [-12,12]，格子 2.0），
@@ -200,6 +201,9 @@ local function load_clips()
     end
 end
 
+-- 前向声明：`reset_world` 会调用渲染调参复位，而实现放在展廊辅助函数区（后面才定义）。
+local reset_render_fields
+
 --- 场地复位：把本演示会改的 3D 状态全部写回确定值。
 --- 自检对每一步都先走 `enter`，因此这里必须覆盖"读者刚才按过的所有键"。
 local function reset_world()
@@ -228,6 +232,12 @@ local function reset_world()
     end
     -- 调试线框是"开一次即持续生效"的登记请求：复位时显式关掉，B 键才有确定起点。
     lab.try(physics3d.debug_draw, false)
+    -- 相机与渲染调参也是"上一步可能改过"的状态：一起回到开场档，按 R/F5 复位才完整。
+    local cam = live(CAMERA_NAME)
+    if cam then
+        camera.set(cam, 0.0, 2.5, 6.0, 0.0, 1.0, 0.0, 60.0)
+    end
+    reset_render_fields()
 end
 
 -- 程序化 primitive（M82-A）：六种参数化几何哨兵，串就是全部输入、零外部素材。
@@ -295,6 +305,156 @@ local function ensure_primitives()
     end
 end
 
+-- ===========================================================================
+-- 渲染展廊（game_api 3.0）：把引擎里**只有渲染管线才有**的能力放到同一块画布里。
+--
+-- 为什么用运行期实体而不是写进 `api_3d.scene`：
+--   * 地形/水面的 spec 串本身就是唯一状态（`__terrain__?…` / `__water__?…`），
+--     运行时 `mesh.set` 与 `terrain3d.*` / `water3d.*` 采样吃同一份串；
+--   * 展廊在场景外 (40,-1,40)，不改变 `Ground` 的物理射线/导航读数；
+--   * `enter` 可重复执行，读者按 R 复位不会累积实体。
+-- ===========================================================================
+local LAND_ORIGIN = { x = 40.0, z = 40.0 }
+local LAND_TERRAIN = "RenderTerrain"
+local LAND_WATER = "RenderWater"
+local LAND_TERRAIN_SPEC = "__terrain__?size=48&res=48&amp=0.8&seed=7&detail=64"
+local LAND_WATER_SPEC = "__water__?size=20&res=16&y=0.55&amp=0.02&seed=3"
+
+-- 五个 PBR 物体各走一条材质分支：金属/粗糙/emissive/alpha-blend。
+-- 它们都是参数化 primitive（零外部网格），材质来自工程里的 `.material`。
+local LAND_OBJECTS = {
+    { name = "RenderMetalSmooth", x = 37.0, y = 2.2, z = 40.0, spec = "__primitive__?kind=sphere&r=1&seg=32", material = "assets/materials/p3-r03-metal-smooth.material" },
+    { name = "RenderMetalRough", x = 40.0, y = 2.2, z = 37.0, spec = "__primitive__?kind=sphere&r=1&seg=32", material = "assets/materials/p3-e02-m1-r09.material" },
+    { name = "RenderEmissiveCone", x = 40.0, y = 1.0, z = 43.0, spec = "__primitive__?kind=cone&r=0.8&h=1.6&seg=16", material = "assets/materials/p3-r02-emissive.material" },
+    { name = "RenderBlendBox", x = 43.0, y = 1.6, z = 43.0, spec = "__primitive__?kind=box&w=1.4&h=1.4&d=1.4", material = "assets/materials/p3-r02-alpha-blend-a.material" },
+    { name = "RenderTorus", x = 43.0, y = 2.2, z = 40.0, spec = "__primitive__?kind=torus&R=0.9&r=0.3&seg=24&ring_seg=12", material = "assets/materials/p3-e02-m0-r09.material" },
+}
+
+local landscape_ids = {}
+local landscape_objects = {}
+local landscape_terrain = nil
+local landscape_water = nil
+
+--- 复用式 spawn：展廊实体只在模块活着时存在，重复 `enter` 不重复造。
+local function ensure_landscape_entity(name, x, y, z)
+    local id = landscape_ids[name]
+    if not (id and entity.is_alive(id)) then
+        id = entity.spawn(name)
+        landscape_ids[name] = id
+        if id then
+            transform3d.attach(id)
+        end
+    end
+    if id and entity.is_alive(id) then
+        transform3d.set(id, x, y, z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+    end
+    return id
+end
+
+--- 架起展廊：地形 + 水面 + 五个材质分支 + 相机移到俯视展廊的位置。
+local function ensure_landscape()
+    landscape_terrain = ensure_landscape_entity(LAND_TERRAIN, LAND_ORIGIN.x, -1.2, LAND_ORIGIN.z)
+    if landscape_terrain then
+        mesh.set(landscape_terrain, LAND_TERRAIN_SPEC)
+    end
+    landscape_water = ensure_landscape_entity(LAND_WATER, LAND_ORIGIN.x, 0.55, LAND_ORIGIN.z)
+    if landscape_water then
+        mesh.set(landscape_water, LAND_WATER_SPEC)
+    end
+    landscape_objects = {}
+    for _, row in ipairs(LAND_OBJECTS) do
+        local id = ensure_landscape_entity(row.name, row.x, row.y, row.z)
+        if id then
+            mesh.set(id, row.spec)
+            if row.material then
+                mesh.set_material(id, row.material)
+            end
+            landscape_objects[#landscape_objects + 1] = id
+        end
+    end
+    local cam = live(CAMERA_NAME)
+    if cam then
+        camera.set(cam, 52.0, 6.5, 52.0, LAND_ORIGIN.x, 1.5, LAND_ORIGIN.z, 55.0)
+    end
+    return landscape_terrain, landscape_water
+end
+
+--- 让展廊物体慢慢自转：材质高光/IBL 反射随转动变化，读者能看出 PBR 在动。
+local function spin_landscape(seconds)
+    for i, id in ipairs(landscape_objects) do
+        if entity.is_alive(id) then
+            local row = LAND_OBJECTS[i]
+            local angle = seconds * (0.6 + i * 0.12)
+            transform3d.set(
+                id,
+                row.x,
+                row.y,
+                row.z,
+                0.0,
+                math.sin(angle / 2),
+                0.0,
+                math.cos(angle / 2),
+                1.0,
+                1.0,
+                1.0
+            )
+        end
+    end
+end
+
+--- 把渲染调参复位到引擎默认档：否则上一步的雾/曝光/水色会带进下一步。
+reset_render_fields = function()
+    if not render.set_fog then
+        return
+    end
+    render.set_fog(0.0)
+    render.set_flash(0.0)
+    render.set_exposure(0.0)
+    render.set_ripple(0.0, 0.0)
+    render.set_surface_cover(0.0, 0.0)
+    render.set_post_fx(0.0, 0.0)
+    render.set_water_tint(1.0, 1.0, 1.0, 0.0)
+    render.set_cloud_coverage(0.4)
+    render.set_cloud_speed(0.3)
+    render.set_cloud_base(120.0)
+    render.set_cloud_shadow_strength(0.0)
+    render.set_water_refract_steps(0)
+    render.set_shadow_caster_distance(1000)
+    render.set_clip_cap(0.0)
+    render.set_clip_cap_both_sides(false)
+    render.set_quality(1)
+    render.set_effect_time(0.0)
+    render.set_effect_params(0, 0.0025, 0.0, 0.0, 0.0)
+    render.set_effect_params(1, 1.0, 0.82, 0.25, 0.0)
+end
+
+--- 逐格网格的可见形态：`cells3d.build` 的 spec 直接交给 `mesh.set`，
+--- 与 `cells3d.*` 采样吃同一份位图（挖掉中心那格 → 六个内壁面可见）。
+local VOXEL_NAME = "RenderVoxelCells"
+local voxel_entity = nil
+local voxel_spec = nil
+local voxel_dug = nil
+
+local function ensure_voxel_cells()
+    local solids = {}
+    for index = 0, 26 do
+        solids[index + 1] = index
+    end
+    voxel_spec = cells3d.build({ cell = 1.0, x = 0, y = 0, z = 0, w = 3, h = 3, d = 3, solids = solids })
+    voxel_dug = cells3d.dig(voxel_spec, 13)
+    if not (voxel_entity and entity.is_alive(voxel_entity)) then
+        voxel_entity = entity.spawn(VOXEL_NAME)
+        if voxel_entity then
+            transform3d.attach(voxel_entity)
+        end
+    end
+    if voxel_entity and entity.is_alive(voxel_entity) then
+        transform3d.set(voxel_entity, 34.0, 0.5, 46.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)
+        mesh.set(voxel_entity, voxel_dug)
+    end
+    return voxel_spec
+end
+
 local steps = {
     {
         id = "environment_ibl",
@@ -326,6 +486,205 @@ local steps = {
         end,
     },
     {
+        id = "render_landscape",
+        title = "Terrain / Water / PBR",
+        claim = "同一块画布上同时有参数化地形（高度场 + 四层 splat + 内嵌贴图）、连续水面（波法线/菲涅尔/天空反射）与五种材质分支的 PBR 物体；相机位置由运行期 camera.set 给出",
+        api = {
+            "entity.spawn",
+            "transform3d.attach",
+            "transform3d.set",
+            "mesh.set",
+            "mesh.set_material",
+            "mesh.get",
+            "camera.set",
+            "camera.get",
+            "terrain3d.height_at",
+            "water3d.level",
+        },
+        code = "mesh.set(e, '__terrain__?size=48&res=48&amp=0.8&seed=7&detail=64'); mesh.set(w, '__water__?size=20&res=16&y=0.55'); camera.set(cam, 52,6.5,52, 40,1.5,40, 55)",
+        enter = function()
+            reset_world()
+            ensure_landscape()
+        end,
+        run = function(dt)
+            elapsed = elapsed + dt
+            spin_landscape(elapsed)
+            lab.note("地形 48m / 水面 20m / 5 个 PBR 材质分支；物体缓慢自转，高光与 IBL 反射随之变化")
+        end,
+        read = function()
+            local cam = live(CAMERA_NAME)
+            local view = cam and lab.try(camera.get, cam) or nil
+            return {
+                { "terrain", landscape_terrain and mesh.get(landscape_terrain) or "-" },
+                { "water", landscape_water and mesh.get(landscape_water) or "-" },
+                { "objects", #landscape_objects },
+                { "cam x", view and string.format("%.1f", view.x) or "-" },
+                { "cam fov", view and string.format("%.1f", view.fov) or "-" },
+                { "terrain h", string.format("%.2f", terrain3d.height_at(LAND_TERRAIN_SPEC, 0, 0)) },
+                { "water y", string.format("%.2f", water3d.level(LAND_WATER_SPEC)) },
+            }
+        end,
+        check = function(t)
+            t:ok(landscape_terrain ~= nil and entity.is_alive(landscape_terrain), "terrain entity exists")
+            t:ok(landscape_water ~= nil and entity.is_alive(landscape_water), "water entity exists")
+            t:eq(mesh.get(landscape_terrain), LAND_TERRAIN_SPEC, "terrain mesh path round-trips")
+            t:eq(mesh.get(landscape_water), LAND_WATER_SPEC, "water mesh path round-trips")
+            t:eq(#landscape_objects, #LAND_OBJECTS, "every PBR object spawned")
+            local cam = live(CAMERA_NAME)
+            local view = cam and lab.try(camera.get, cam) or nil
+            t:ok(view ~= nil, "camera.get reads the active camera")
+            if view then
+                t:near(view.x, 52.0, 1e-3, "camera moved to the landscape")
+                t:near(view.fov, 55.0, 1e-3, "camera fov follows the call")
+            end
+        end,
+    },
+    {
+        id = "render_pipeline",
+        title = "Render pipeline",
+        claim = "雾/云/水色/曝光/闪光/积雪/后处理是同一个运行期管线里的逐项标量：合法值返回 true，越界返回 (false, 原因)，render.stats 读出上一帧的绘制量",
+        api = {
+            "render.set_fog",
+            "render.set_fog_color",
+            "render.set_cloud_coverage",
+            "render.set_cloud_speed",
+            "render.set_cloud_base",
+            "render.set_cloud_shadow_strength",
+            "render.set_water_tint",
+            "render.set_surface_cover",
+            "render.set_exposure",
+            "render.set_flash",
+            "render.set_ripple",
+            "render.set_post_fx",
+            "render.set_water_refract_steps",
+            "render.set_shadow_caster_distance",
+            "render.set_quality",
+            "render.stats",
+        },
+        code = "render.set_fog(0.004); render.set_cloud_coverage(0.55); render.set_exposure(0.4); render.set_quality(2); s = render.stats()",
+        enter = function()
+            reset_world()
+            ensure_landscape()
+        end,
+        run = function(dt)
+            elapsed = elapsed + dt
+            spin_landscape(elapsed)
+            -- 雾/云随时间缓慢变化：读者能确认这些不是一次性开关。
+            render.set_fog(0.003 + 0.0015 * (0.5 + 0.5 * math.sin(elapsed * 0.4)))
+            render.set_cloud_coverage(0.45 + 0.1 * (0.5 + 0.5 * math.sin(elapsed * 0.3)))
+            lab.note("雾 + 云 + 水色 + 曝光 + 积雪 + 后处理同框；右侧读数是 render.stats()")
+        end,
+        read = function()
+            local stats = render.stats() or {}
+            return {
+                { "draws", stats.draw_calls },
+                { "vertices", stats.vertices },
+                { "triangles", stats.triangles },
+                { "set passes", stats.set_pass_calls },
+                { "quality", 2 },
+                { "fog", string.format("%.4f", 0.0045) },
+            }
+        end,
+        check = function(t)
+            -- 有效值：每一项都返回 (true, "")，这里只断言第一个返回值。
+            local valid = {
+                { render.set_fog, { 0.004 } },
+                { render.set_fog_color, { 0.55, 0.62, 0.72 } },
+                { render.set_cloud_coverage, { 0.55 } },
+                { render.set_cloud_speed, { 0.6 } },
+                { render.set_cloud_base, { 140.0 } },
+                { render.set_cloud_shadow_strength, { 0.24 } },
+                { render.set_water_tint, { 0.42, 0.55, 0.62, 0.2 } },
+                { render.set_surface_cover, { 0.0, 0.35 } },
+                { render.set_exposure, { 0.4 } },
+                { render.set_flash, { 0.08 } },
+                { render.set_ripple, { 0.5, 0.5 } },
+                { render.set_post_fx, { 0.25, 0.08 } },
+                { render.set_water_refract_steps, { 8 } },
+                { render.set_shadow_caster_distance, { 80 } },
+            }
+            for _, row in ipairs(valid) do
+                t:ok(row[1](table.unpack(row[2])), "pipeline accepts a valid value")
+            end
+            -- 反面对照：越界/非有限一律拒绝，且带原因（不是静默夹取）。
+            local rejects = {
+                { render.set_fog, { 2.0 } },
+                { render.set_exposure, { 9.0 } },
+                { render.set_water_refract_steps, { 33 } },
+                { render.set_shadow_caster_distance, { 1001 } },
+            }
+            for _, row in ipairs(rejects) do
+                local ok, reason = row[1](table.unpack(row[2]))
+                t:ok(not ok and type(reason) == "string" and #reason > 0,
+                    "pipeline rejects an out-of-range value with a reason")
+            end
+            local ok = render.set_quality(2)
+            local bad_ok = render.set_quality(4)
+            t:ok(ok, "quality preset 2 is accepted")
+            t:ok(not bad_ok, "quality preset 4 is rejected")
+            render.set_quality(1)
+            local stats = render.stats()
+            t:ok(type(stats) == "table", "render.stats returns a table")
+            t:ok((stats.draw_calls or -1) >= 0, "draw_calls is a non-negative count")
+            t:ok((stats.triangles or -1) >= 0, "triangles is a non-negative count")
+            -- 本步会持续生效的项回到中性值，保证同一次自检里后面的步骤不受影响。
+            reset_render_fields()
+        end,
+    },
+    {
+        id = "effect_overlay",
+        title = "Effect overlay",
+        claim = "project.toml [render] 的 .sgraph 叠加层在运行时可用：按名字或槽位改参数、改时间，非法槽位/非有限值/负时间一律拒绝（headless 下没有宿主挂载时，按名字改参数会如实返回原因）",
+        api = {
+            "render.set_effect_params",
+            "render.set_effect_param",
+            "render.set_effect_time",
+        },
+        code = "render.set_effect_params(0, 0.0035, 0, 0, 0); render.set_effect_param('edge_width', 0.0035); render.set_effect_time(1.25)",
+        enter = function()
+            reset_world()
+            ensure_landscape()
+        end,
+        run = function(dt)
+            elapsed = elapsed + dt
+            spin_landscape(elapsed)
+            -- 槽位 0.x = 深度描边宽度，槽位 1.xyz = 描边颜色（.sgraph 里的节点参数）。
+            render.set_effect_params(0, 0.0025 + 0.0015 * (0.5 + 0.5 * math.sin(elapsed)), 0.0, 0.0, 0.0)
+            render.set_effect_time(elapsed)
+            lab.note("金色深度描边由 .sgraph 叠加层画出；改槽位改宽度，改时间是宿主时钟之外的覆盖")
+        end,
+        read = function()
+            return {
+                { "overlay", "showcase_outline.sgraph" },
+                { "slot 0.x", string.format("%.4f", 0.003) },
+                { "time", string.format("%.2f", elapsed) },
+                { "param", "edge_width" },
+            }
+        end,
+        check = function(t)
+            -- 槽位路径总是可用（只校验 0..16 的槽号与有限值）。
+            t:ok(render.set_effect_params(0, 0.003, 0.0, 0.0, 0.0), "slots accept a valid vec4")
+            local bad_slot = render.set_effect_params(16, 0.0, 0.0, 0.0, 0.0)
+            t:ok(not bad_slot, "slot out of 0..16 is rejected")
+            local bad_value = render.set_effect_params(0, 0.0 / 0.0, 0.0, 0.0, 0.0)
+            t:ok(not bad_value, "non-finite slot value is rejected")
+            t:ok(render.set_effect_time(1.25), "effect time accepts a finite non-negative value")
+            local bad_time = render.set_effect_time(-1.0)
+            t:ok(not bad_time, "negative effect time is rejected")
+            -- 按名字改参数需要宿主先挂载 .sgraph 并把名字表推给脚本层。
+            -- headless 自检没有宿主，函数如实返回 (false, reason) —— 这本身是契约的一部分。
+            local named_ok, named_reason = render.set_effect_param("edge_width", 0.003)
+            if named_ok then
+                t:ok(true, "named parameter accepted (host mounted the overlay)")
+            else
+                t:ok(type(named_reason) == "string" and #named_reason > 0,
+                    "named parameter reports why it is unavailable")
+            end
+            t:ok(not render.set_effect_param("missing_param", 0.0), "unknown named parameter is rejected")
+            reset_render_fields()
+        end,
+    },
+    {
         id = "render_tuning",
         title = "Render tuning",
         claim = "雾/云/水/曝光/后处理是运行期标量：合法值回 (true, '')，越界回 (false, reason)",
@@ -346,8 +705,11 @@ local steps = {
             "render.set_clip_cap_both_sides",
             "render.set_water_refract_steps",
             "render.set_shadow_caster_distance",
+            "render.set_effect_params",
+            "render.set_effect_time",
+            "render.set_effect_param",
         },
-        code = "ok, why = render.set_fog(0.01); render.set_exposure(1); render.set_post_fx(0.2, 0.1); render.set_water_refract_steps(8); render.set_shadow_caster_distance(80)",
+        code = "ok, why = render.set_fog(0.01); render.set_exposure(1); render.set_post_fx(0.2, 0.1); render.set_water_refract_steps(8); render.set_shadow_caster_distance(80); render.set_effect_params(0, 0.5, 0, 0, 0); render.set_effect_time(1.5); render.set_effect_param('strength', 0.6)",
         enter = function()
             reset_world()
         end,
@@ -397,6 +759,8 @@ local steps = {
                 { "set_clip_cap_both_sides", render.set_clip_cap_both_sides, { true }, { 1 } },
                 { "set_water_refract_steps", render.set_water_refract_steps, { 8 }, { 33 } },
                 { "set_shadow_caster_distance", render.set_shadow_caster_distance, { 80 }, { 1001 } },
+                { "set_effect_params", render.set_effect_params, { 0, 0.0, 0.0, 0.0, 0.0 }, { 16, 0.0, 0.0, 0.0, 0.0 } },
+                { "set_effect_time", render.set_effect_time, { 0.5 }, { -1.0 } },
             }
             for _, row in ipairs(checks) do
                 local name, fn, good, bad = row[1], row[2], row[3], row[4]
@@ -405,6 +769,10 @@ local steps = {
                 t:ok(not ok and type(reason) == "string" and #reason > 0,
                     name .. " rejects out-of-range with a reason")
             end
+            -- 按名字改参数：宿主挂载 .sgraph 时成功，headless 下如实返回原因（两条都算契约通过）。
+            local named_ok, named_reason = render.set_effect_param("edge_width", 0.0029)
+            t:ok(named_ok or (type(named_reason) == "string" and #named_reason > 0),
+                "set_effect_param succeeds or explains why it cannot")
             -- 会持续生效的项回到中性值：雾/闪光/曝光/涟漪/覆盖/后处理/剖面封口关，云留在演示值。
             -- 阴影投射距离复位到上限 1000 米（= 不限制）；写 0 是"关阴影"，不是中性值，
             -- 会让本场景的 PBR 阴影消失。
@@ -418,6 +786,9 @@ local steps = {
             render.set_clip_cap_both_sides(false)
             render.set_water_refract_steps(0)
             render.set_shadow_caster_distance(1000)
+            render.set_effect_time(0.0)
+            render.set_effect_params(0, 0.0025, 0.0, 0.0, 0.0)
+            reset_render_fields()
         end,
     },
     {
@@ -1188,6 +1559,55 @@ local steps = {
         end,
     },
     {
+        id = "voxel_cells",
+        title = "Voxel cells",
+        claim = "cells3d.build 的 spec 串既是采样输入也是渲染网格：3×3×3 满格 27 格/54 面，挖掉中心多出六个内壁面（60 面），fill 逐字节还原",
+        api = {
+            "cells3d.build",
+            "cells3d.count",
+            "cells3d.dig",
+            "cells3d.fill",
+            "cells3d.solid_at",
+            "cells3d.index",
+            "cells3d.bounds",
+            "mesh.set",
+            "mesh.get",
+            "entity.spawn",
+            "transform3d.attach",
+            "transform3d.set",
+        },
+        code = "cells3d.build({cell=1,w=3,h=3,d=3,solids=...}); cells3d.dig(spec, 13); mesh.set(e, spec)",
+        enter = function()
+            reset_world()
+            ensure_voxel_cells()
+        end,
+        run = function()
+            lab.note("3×3×3 体素（中心已挖空）渲染在展廊角落；面数随表面积走，不是体积")
+        end,
+        read = function()
+            local solid, faces = cells3d.count(voxel_dug or voxel_spec)
+            return {
+                { "solid", solid },
+                { "faces", faces },
+                { "mesh", voxel_entity and mesh.get(voxel_entity) or "-" },
+                { "center", tostring(cells3d.solid_at(voxel_dug or voxel_spec, 1, 1, 1)) },
+            }
+        end,
+        check = function(t)
+            local solid, faces = cells3d.count(voxel_spec)
+            t:eq(solid, 27, "a full 3x3x3 field answers 27 cells")
+            t:eq(faces, 54, "a full 3x3x3 field exposes 54 faces")
+            local dug_solid, dug_faces = cells3d.count(voxel_dug)
+            t:eq(dug_solid, 26, "digging one cell leaves 26 solids")
+            t:eq(dug_faces, 60, "digging the centre opens six inner faces")
+            t:eq(cells3d.fill(voxel_dug, 13), voxel_spec, "fill restores the original spec")
+            t:eq(cells3d.solid_at(voxel_dug, 1, 1, 1), false, "the dug cell is not solid")
+            t:eq(cells3d.index(voxel_spec, 1, 1, 1), 13, "index maps cell coords to the flat index")
+            t:ok(voxel_entity ~= nil and entity.is_alive(voxel_entity), "voxel entity exists")
+            t:eq(mesh.get(voxel_entity), voxel_dug, "mesh.set consumes the cells spec path")
+        end,
+    },
+    {
         id = "procedural_primitives",
         title = "Procedural primitives",
         claim = "六种参数化几何哨兵（box/sphere/cylinder/cone/torus/plane）由 mesh.set 消费、mesh.get 逐字节读回；mesh.set_batch 复用同一条路径做实例化；非法 kind/越界参数/缺 ? 当场被拒",
@@ -1385,8 +1805,25 @@ function M.on_destroy()
         entity.destroy(primitive_batch_id)
         primitive_batch_id = nil
     end
+    -- 渲染展廊实体（地形/水面/五个 PBR 物体）也要收干净：它们只在 3.0 的三步里存在。
+    for _, id in pairs(landscape_ids) do
+        if id and entity.is_alive(id) then
+            entity.destroy(id)
+        end
+    end
+    landscape_ids = {}
+    landscape_objects = {}
+    landscape_terrain = nil
+    landscape_water = nil
+    if voxel_entity and entity.is_alive(voxel_entity) then
+        entity.destroy(voxel_entity)
+    end
+    voxel_entity = nil
     reset_world()
     lab.stop()
 end
+
+-- 能力图谱门（`sample_project_capability_catalog_is_complete`）靠它核对步骤 id。
+M.steps = steps
 
 return M

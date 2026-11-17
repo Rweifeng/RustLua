@@ -1512,7 +1512,7 @@ function quad.get(id) end
 ---@return any
 function quad.set(id, component) end
 
---- render：运行期 API 面基线里的 18 个函数
+--- render：运行期 API 面基线里的 21 个函数
 render = {}
 
 ---@param depth number
@@ -1542,6 +1542,23 @@ function render.set_cloud_shadow_strength(strength) end
 ---@param speed number
 ---@return any
 function render.set_cloud_speed(speed) end
+
+---@param name string
+---@param value number
+---@return any
+function render.set_effect_param(name, value) end
+
+---@param slot integer
+---@param x number
+---@param y number
+---@param z number
+---@param w number
+---@return any
+function render.set_effect_params(slot, x, y, z, w) end
+
+---@param seconds number
+---@return any
+function render.set_effect_time(seconds) end
 
 --- 设置曝光偏移（EV，-4..4），叠加在 Tonemap 的 `exposure_ev` 上；用于雨天压暗、
 ---@param ev number

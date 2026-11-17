@@ -1,6 +1,6 @@
 # Lua 模块 `render`
 
-> 运行期 API 面基线里本模块有 18 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 21 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -72,6 +72,39 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 返回：`(ok, reason)`。
 - 失败：非有限或越界。
 - 示例：`render.set_cloud_speed(1.8)`（大风）。
+
+## `render.set_effect_param(name: String, value: f32)`
+
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:304`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
+
+- 参数：
+- 返回：
+- 失败：
+- 示例：
+
+## `render.set_effect_params(slot: i64, x: f32, y: f32, z: f32, w: f32)`
+
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:338`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
+
+- 参数：
+- 返回：
+- 失败：
+- 示例：
+
+## `render.set_effect_time(seconds: f32)`
+
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:358`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
+
+- 参数：
+- 返回：
+- 失败：
+- 示例：
 
 ## `render.set_exposure(ev: f32)`
 

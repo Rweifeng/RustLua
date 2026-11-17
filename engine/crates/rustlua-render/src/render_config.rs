@@ -88,7 +88,14 @@ pub struct RenderConfig {
     pub clip_cap: f32,
     /// 封口是否也吃到单面网格。
     pub clip_cap_both_sides: bool,
+    /// 自定义特效叠加层：工程内 `.sgraph` 路径（`None` = 关闭，像素与旧版相同）。
+    pub effect_overlay: Option<String>,
+    /// M98：GPU 粒子软边宽度（深度单位）。默认 0.02 = 旧行为；0 = 关（硬边）；越大软边越宽。
+    pub particle_softness: f32,
 }
+
+/// M98：GPU 粒子软边默认宽度（= P3-R107 的旧硬编码值，像素不变）。
+pub const DEFAULT_PARTICLE_SOFTNESS: f32 = 0.02;
 
 impl Default for RenderConfig {
     fn default() -> Self {
@@ -109,6 +116,8 @@ impl Default for RenderConfig {
             water_refract_steps: 0,
             clip_cap: 0.0,
             clip_cap_both_sides: false,
+            effect_overlay: None,
+            particle_softness: DEFAULT_PARTICLE_SOFTNESS,
         }
     }
 }
@@ -152,6 +161,12 @@ impl RenderConfig {
             .draw_distance_filter
             .map(|filter| filter.trim().to_owned())
             .filter(|filter| !filter.is_empty());
+        self.effect_overlay = self
+            .effect_overlay
+            .map(|path| path.trim().to_owned())
+            .filter(|path| !path.is_empty());
+        // 0 = 硬边（关）；上限 0.5 防止把整颗粒子吃掉。
+        self.particle_softness = finite_non_negative(self.particle_softness).min(0.5);
         self
     }
 
@@ -297,6 +312,12 @@ impl RenderConfig {
         if let Some(value) = value_for(text, "clip_cap_both_sides") {
             config.clip_cap_both_sides = parse_bool(value).unwrap_or(false);
         }
+        if let Some(value) = value_for(text, "effect_overlay") {
+            config.effect_overlay = Some(value.to_owned());
+        }
+        if let Some(value) = value_for(text, "particle_softness") {
+            config.particle_softness = value.parse().unwrap_or(DEFAULT_PARTICLE_SOFTNESS);
+        }
         config.normalized()
     }
 
@@ -336,6 +357,11 @@ impl RenderConfig {
             ("water_refract_steps", self.water_refract_steps.to_string()),
             ("clip_cap", fmt_float(self.clip_cap)),
             ("clip_cap_both_sides", self.clip_cap_both_sides.to_string()),
+            (
+                "effect_overlay",
+                self.effect_overlay.clone().unwrap_or_default(),
+            ),
+            ("particle_softness", fmt_float(self.particle_softness)),
         ]
     }
 
@@ -389,7 +415,6 @@ impl RenderConfig {
         )
     }
 }
-
 /// 逐项覆盖：`None` = 该项未被显式指定（保留项目文件/默认值）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderOverrides {
@@ -549,6 +574,30 @@ mod tests {
     }
 
     #[test]
+    fn effect_overlay_path_round_trips_and_defaults_off() {
+        assert_eq!(RenderConfig::default().effect_overlay, None);
+        let text = RenderConfig::default().upsert_section("");
+        assert!(
+            text.contains("effect_overlay = "),
+            "写出的 [render] 段应含该项：{text}"
+        );
+        let configured = RenderConfig {
+            effect_overlay: Some("assets/fx/fire.sgraph".to_owned()),
+            ..RenderConfig::default()
+        };
+        let written = configured.upsert_section("");
+        let parsed = RenderConfig::from_toml(&written);
+        assert_eq!(
+            parsed.effect_overlay.as_deref(),
+            Some("assets/fx/fire.sgraph"),
+            "应解析出 .sgraph 路径：{written}"
+        );
+        // 空白值等价于关闭（不写空字符串进渲染器）。
+        let empty = RenderConfig::from_toml("[render]\neffect_overlay = \"  \"\n");
+        assert_eq!(empty.effect_overlay, None);
+    }
+
+    #[test]
     fn quality_presets_only_touch_their_own_fields() {
         let medium = RenderConfig::default().with_quality(QualityPreset::Medium);
         assert_eq!(medium.planar_divisor, 4);
@@ -657,9 +706,38 @@ mod tests {
         let twice = config.upsert_section(&once);
         assert_eq!(once, twice);
         assert!(once.contains("[render]\nplanar_divisor = 4"), "{once}");
-        assert!(once.ends_with("clip_cap_both_sides = false\n"), "{once}");
+        // 末尾键随字段追加而移动：这里只钉"最后确实是 [render] 的键"，不钉具体是哪一列。
+        let last_line = once.lines().last().expect("non-empty");
+        assert!(
+            last_line.starts_with("effect_overlay = ")
+                || last_line.starts_with("particle_softness = ")
+                || last_line.starts_with("sprite_softness = "),
+            "{once}"
+        );
         assert_eq!(once.matches("[render]").count(), 1, "{once}");
         assert_eq!(once.matches("planar_divisor =").count(), 1, "{once}");
+    }
+
+    /// M98：粒子软边宽度可读写、默认值不变、越界被夹紧。
+    #[test]
+    fn particle_softness_round_trips_and_clamps() {
+        let default = RenderConfig::default();
+        assert!((default.particle_softness - 0.02).abs() < 1e-6);
+
+        let text = RenderConfig {
+            particle_softness: 0.08,
+            ..RenderConfig::default()
+        }
+        .upsert_section("");
+        assert!(text.contains("particle_softness = 0.08"), "{text}");
+        let parsed = RenderConfig::from_toml(&text);
+        assert!((parsed.particle_softness - 0.08).abs() < 1e-6);
+
+        // 越界/非有限：夹紧到 [0, 0.5]，不是静默保留 NaN。
+        let clamped = RenderConfig::from_toml("[render]\nparticle_softness = 9.0\n");
+        assert!((clamped.particle_softness - 0.5).abs() < 1e-6);
+        let disabled = RenderConfig::from_toml("[render]\nparticle_softness = 0\n");
+        assert_eq!(disabled.particle_softness, 0.0);
     }
 
     #[test]
