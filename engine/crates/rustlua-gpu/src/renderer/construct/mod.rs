@@ -23,8 +23,8 @@
 //! | 4 | 帧环 / 白图 / 阴影纹理（309 行、16 处） | 待拆 |
 //! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
 //! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
-//! | 7 | 世界 Sprite（86 行、6 处） | 待拆 |
-//! | 8 | GPU 粒子布局（68 行、3 处） | 待拆 |
+//! | 7 | 世界 Sprite → [`world_sprite::world_sprite_resources`]（86 行、6 处） | ✅ 已拆 |
+//! | 8 | GPU 粒子布局 → [`gpu_particles::gpu_particle_layouts`]（67 行、3 处） | ✅ 已拆 |
 //! | 9 | 后处理（795 行、31 处） | 待拆 |
 //!
 //! 批次 1 刻意选**唯一不含资源创建**的段落：它是验证拆分手法本身的最低风险样板。
@@ -39,6 +39,14 @@
 //!
 //! 代价是这一批只搬了 51 行。**批次划分的价值在于每批都能独立验证，不在于每批够大。**
 //!
+//! 批次 7/8 **跳过了行号顺序**（本该等批次 3）。原因：`camera_bind_group_layout`（243–343）
+//! 挡住批次 3，而世界 Sprite 与 GPU 粒子布局不经过它——它们只依赖 `device` / `format` /
+//! `capabilities` / `texture_bind_group_layout`，所以能先拆。先做能做的，
+//! 让 `new_async` 尽早缩下来，也更快积累"拆完还能验证"的信心。
+//!
+//! 批次 8 必须在批次 7 之后：它的 `pipeline_layout` 引用了世界 Sprite 的相机布局
+//! （group0/group1 与 Sprite 管线共用同一个布局对象，所以粒子不需要自己的相机 uniform）。
+//!
 //! `Renderer` 结构体与全部字段仍留在 `renderer/mod.rs`（§3.1.2）；本模块是它的后代，
 //! 结构体字面量按私有字段构造**不需要**放宽任何可见性——子模块用 `pub(super)` 取用
 //! 父模块的私有项，这条在批次 2 起会真正用到。
@@ -46,7 +54,7 @@
 use crate::{
     shader::{
         MESH3D, MESH3D_PBR, POST_PROCESS_SHADER, SHADOW, ShaderSource, TEXTURED_SHADER,
-        TONEMAP_SHADER, VECTOR_TEXT_SHADER, WORLD_SPRITE_SHADER,
+        TONEMAP_SHADER, VECTOR_TEXT_SHADER,
     },
     shader_preprocess::{PreprocessError, PreprocessOptions, PreprocessedShader, preprocess},
 };
@@ -67,7 +75,9 @@ use super::pipeline_cache::{
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod device;
+pub(super) mod gpu_particles;
 pub(super) mod texture;
+pub(super) mod world_sprite;
 
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
@@ -1274,159 +1284,33 @@ impl Renderer {
             })
         });
         let timestamp_period_ns = queue.get_timestamp_period();
-        // WP6 世界 Sprite 通道：独立的一套资源（2D 相机 uniform + 顶点缓冲 + 深度附件）。
-        // 与 overlay 路径互不影响：宿主不喂世界顶点时它一次也不会被用到。
-        let world_sprite_camera_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-world-sprite-camera-layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-        let world_sprite_camera_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-world-sprite-camera"),
-                contents: bytemuck::bytes_of(&[0.0_f32; 20]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        let world_sprite_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rustlua-world-sprite-camera-bind-group"),
-            layout: &world_sprite_camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: world_sprite_camera_buffer.as_entire_binding(),
-            }],
-        });
-        let world_sprite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-world-sprite-shader"),
-            source: wgpu::ShaderSource::Wgsl(WORLD_SPRITE_SHADER.into()),
-        });
-        let world_sprite_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-world-sprite-pipeline-layout"),
-                bind_group_layouts: &[&world_sprite_camera_layout, &texture_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        // 世界 Sprite 的两条管线只差深度策略：不透明写深度（可与网格互相遮挡），半透明
-        // 测深度不写深度（画家顺序叠加）。除 `DepthPass` 外必须逐字段相同，否则"同一份几何
-        // 换一个策略"就会变成两条不同的渲染路径。P3-R01 起目标格式也是参数：HDR 变体只换格式。
-        let create_world_sprite_pipeline = |label: &str, pass: DepthPass, target_format| {
-            build_world_sprite_pipeline(
-                &device,
-                &world_sprite_pipeline_layout,
-                &world_sprite_shader,
-                pass,
-                target_format,
-                label,
-            )
-        };
-        let world_sprite_pipeline = create_world_sprite_pipeline(
-            "rustlua-world-sprite-pipeline",
-            DepthPass::WorldSprite,
+        // 世界 Sprite 通道：拆分批 7 搬到 `construct/world_sprite.rs`。
+        // 相对独立（只吃 device/format/capabilities/texture_bind_group_layout），
+        // 但不在按行号的批次计划里——它比批次 3 更早可拆，所以先做了。
+        let ws = super::construct::world_sprite::world_sprite_resources(
+            &device,
             format,
+            &capabilities,
+            &texture_bind_group_layout,
         );
-        let world_sprite_opaque_pipeline = create_world_sprite_pipeline(
-            "rustlua-world-sprite-opaque-pipeline",
-            DepthPass::WorldSpriteOpaque,
-            format,
-        );
-        let (hdr_world_sprite_pipeline, hdr_world_sprite_opaque_pipeline) =
-            if capabilities.hdr_usable() {
-                (
-                    Some(create_world_sprite_pipeline(
-                        "rustlua-world-sprite-hdr-pipeline",
-                        DepthPass::WorldSprite,
-                        wgpu::TextureFormat::Rgba16Float,
-                    )),
-                    Some(create_world_sprite_pipeline(
-                        "rustlua-world-sprite-opaque-hdr-pipeline",
-                        DepthPass::WorldSpriteOpaque,
-                        wgpu::TextureFormat::Rgba16Float,
-                    )),
-                )
-            } else {
-                (None, None)
-            };
-        let world_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-world-sprite-buffer"),
-            size: WORLD_SPRITE_BUFFER_BYTES,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // P3-R07-3：GPU 粒子 instanced 管线的**布局**（group2 = 参数 uniform + 状态只读存储）。
-        // 这里只建两条布局，不建管线：管线要按目标格式（LDR/HDR）延迟编译，理由与 R02 的 PBR
-        // 变体一样——启动预算（`compile_ms`）里没有理由为一条"没配 GPU 粒子就永远用不到"的
-        // 管线付钱。布局必须留在渲染器上：延迟编译与（未来的）热重载都要按同一份描述符重建。
-        // 无存储缓冲的设备（WebGL2 即如此）不建这两条布局：binding 1 是只读存储，
-        // `create_bind_group_layout` 会直接报校验错误，而 wasm 上的未捕获校验错误是 abort。
-        // GPU 粒子在这些设备上本来就走 CPU，`configure_gpu_particles` 会返回 Unsupported。
+        let world_sprite_camera_layout = ws.camera_layout;
+        let world_sprite_pipeline_layout = ws.pipeline_layout;
+        let world_sprite_camera_buffer = ws.camera_buffer;
+        let world_sprite_camera_bind_group = ws.camera_bind_group;
+        let world_sprite_pipeline = ws.pipeline;
+        let world_sprite_opaque_pipeline = ws.opaque_pipeline;
+        let hdr_world_sprite_pipeline = ws.hdr_pipeline;
+        let hdr_world_sprite_opaque_pipeline = ws.hdr_opaque_pipeline;
+        let world_sprite_buffer = ws.vertex_buffer;
+        // GPU 粒子布局：拆分批 8 搬到 `construct/gpu_particles.rs`。
+        // 它引用批次 7 的 world_sprite_camera_layout，所以只能在批次 7 之后做。
         let (gpu_particle_draw_layout, gpu_particle_pipeline_layout, gpu_particle_depth_layout) =
-            if storage_capable {
-                let draw_layout =
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some("rustlua-gpu-particles-draw-layout"),
-                        entries: &[
-                            wgpu::BindGroupLayoutEntry {
-                                binding: 0,
-                                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                                ty: wgpu::BindingType::Buffer {
-                                    ty: wgpu::BufferBindingType::Uniform,
-                                    has_dynamic_offset: false,
-                                    min_binding_size: None,
-                                },
-                                count: None,
-                            },
-                            wgpu::BindGroupLayoutEntry {
-                                binding: 1,
-                                visibility: wgpu::ShaderStages::VERTEX,
-                                ty: wgpu::BindingType::Buffer {
-                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                    has_dynamic_offset: false,
-                                    min_binding_size: None,
-                                },
-                                count: None,
-                            },
-                        ],
-                    });
-                // P3-R107：group3 = 场景深度，粒子片元自己做深度测试 + 软边。
-                let depth_layout =
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some("rustlua-gpu-particles-depth-layout"),
-                        entries: &[wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Depth,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        }],
-                    });
-                // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
-                // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
-                let pipeline_layout =
-                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("rustlua-gpu-particles-pipeline-layout"),
-                        bind_group_layouts: &[
-                            &world_sprite_camera_layout,
-                            &texture_bind_group_layout,
-                            &draw_layout,
-                            &depth_layout,
-                        ],
-                        push_constant_ranges: &[],
-                    });
-                (Some(draw_layout), Some(pipeline_layout), Some(depth_layout))
-            } else {
-                (None, None, None)
-            };
+            super::construct::gpu_particles::gpu_particle_layouts(
+                &device,
+                storage_capable,
+                &world_sprite_camera_layout,
+                &texture_bind_group_layout,
+            );
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
         // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
         // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。

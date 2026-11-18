@@ -1319,16 +1319,6 @@ mod tests {
         );
         assert!(state.time > 0.0, "播放状态下时间应当推进");
         assert!(!state.last_source.is_empty(), "应当已编译一份 WGSL");
-        // 有 GPU 时预览图（egui Image → Mesh）必须真的画在检查器底色之上，
-        // 否则用户只看到一块空底色（"模板说明"文字在底色之后，不能算预览）。
-        let bg = Color32::from_rgb(31, 35, 39);
-        let bg_at = output
-            .shapes
-            .iter()
-            .rposition(
-                |clipped| matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.fill == bg),
-            )
-            .expect("检查器底色");
         // 有 GPU 时预览图（带纹理 brush 的 Rect）必须画在检查器底色之上，
         // 否则用户只看到一块空底色（"模板说明"文字在底色之后，不算预览）。
         let bg = Color32::from_rgb(31, 35, 39);

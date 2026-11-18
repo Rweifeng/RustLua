@@ -54,8 +54,12 @@ Shader Graph 资产使用 `.sgraph` 扩展名。资源导入器校验 UTF-8、BO
 - 每帧：`ShaderGraph → WGSL → 与上一份比对（变了才 `set_shader`）→ 推进 time → 渲染 →
   回读像素 → 上传成 egui 纹理`。播放时按 30fps 约帧（`request_repaint_after(33ms)`），
   不播放时不重绘，编辑器不会空转。
-- 参数是**编译期常量**（例如正弦频率直接写进 WGSL），所以改参数会重编一次管线；
-  这也意味着预览里看到的就是将来运行时的同一段代码。
+- 参数是 **uniform**（每个槽一个 `vec4<f32>`），拖 Inspector 参数只改这块 buffer，
+  **不重编管线**；预览里看到的就是将来运行时同一段代码、同一套参数槽。
+- 面板铺绘制指令的顺序是「检查器底色 → 实时预览图 → 模板说明」。底色必须在预览之前画：
+  两者共用同一个 painter，若让检查器在预览之后再铺满底色，预览就会被整块盖住，
+  表现为"模板说明上方一片空白"。`inspector_background_is_painted_before_live_preview`
+  用无头帧守住这个顺序（GPU/无 GPU 两条路径各有断言）。
 - 没有 GPU 设备（无窗口/远程）时面板显示「实时预览需要 GPU 设备」，不假装通过。
 
 ## 内置模板（47 个）
@@ -198,7 +202,8 @@ CRT 扫描线与冲刺速度线。
 | `animated_templates_change_with_time` | 扫描线/火焰/速度线在 `time=0` 与 `time=0.5` 输出不同（时间 uniform 真接进 shader） |
 | `texture_sampling_reads_the_bound_texture` | 棋盘纹理输入下输出至少两种颜色（纹理绑定真的被采样） |
 | `invalid_shader_is_reported_instead_of_panicking` | 坏 WGSL 返回中文错误、渲染请求被拒，编辑器不 panic |
-| `live_preview_uploads_a_texture_and_advances_time` | 面板画一帧就建出预览器、上传纹理、推进时间（实时预览真的在跑） |
+| `live_preview_uploads_a_texture_and_advances_time` | 面板画一帧就建出预览器、上传纹理、推进时间，且带纹理的预览图画在检查器底色之上（实时预览真的在跑） |
+| `inspector_background_is_painted_before_live_preview` | 无 GPU 时检查器底色之后还能看到预览占位块（防止整块底色盖掉预览，截图回归） |
 | `panel_draws_headless_without_gpu_and_keeps_the_graph` | 无 GPU 时面板仍能画一帧且不改动图，也不会建预览器 |
 | `open_relative_loads_a_saved_graph` | 双击入口按相对路径载入磁盘上的图，且打开即"干净" |
 | `generated_overlay_source_changes_real_renderer_pixels` | 面板生成的叠加层交给真实 `Renderer`：能改变像素、关档回到基线（端到端契约） |
