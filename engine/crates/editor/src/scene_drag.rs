@@ -27,6 +27,7 @@ impl EditorApp {
         if self.is_playing() {
             self.scene_state.preview.clear();
             self.scene_state.preview_ui.clear();
+            self.begin_drag_preview();
             return;
         }
         // 刚打开的场景可能还没有运行时：先用拖动起点的文档建好，再推进第一帧预览。
@@ -34,25 +35,55 @@ impl EditorApp {
         if self.scene_runtime.is_none()
             || (self.scene_state.preview.is_empty() && self.scene_state.preview_ui.is_empty())
         {
+            // 拖动已结束（preview 清空）：下一次拖动应当能重新报错，清掉去重记录。
+            self.begin_drag_preview();
             return;
         }
         let preview_ui = self.scene_state.preview_ui.clone();
         // docs/54 §8-⑦：预览值是世界变换，但运行时存的是**局部**变换——换算后再推进去，
         // 否则父链下的实体在拖动中会跳到错误的位置（拖完再"弹一下"）。
         let locals = self.scene_drag_locals();
+        // 本帧写失败的实体（返回 `false` = 映射表里没它，或它没有 `Transform` 组件）。
+        // 只收集、先不改 `self`：下面还要借 `self.scene_runtime`。
+        let mut failed: Vec<SceneEntityId> = Vec::new();
         if let Some(runtime) = self.scene_runtime.as_mut() {
             for (id, local) in &locals {
-                runtime.set_scene_entity_transform_preview(
+                let applied = runtime.set_scene_entity_transform_preview(
                     *id,
                     Vec2::new(local.translation.x, local.translation.y),
                     2.0 * local.rotation.z.atan2(local.rotation.w),
                     Vec2::new(local.scale.x, local.scale.y),
                 );
+                if !applied {
+                    failed.push(*id);
+                }
             }
             for (id, offsets) in preview_ui {
-                runtime.set_scene_entity_ui_layout_preview(id, offsets);
+                if !runtime.set_scene_entity_ui_layout_preview(id, offsets) {
+                    failed.push(id);
+                }
             }
         }
+        // 失败必须让用户看见：否则表现是"拖了没反应"，而日志里一个字都没有。
+        // 这条路径每帧都跑，所以按实体去重（`preview_failures_reported`），
+        // 一次拖动最多每个实体报一条。
+        for id in failed {
+            if self.scene_state.preview_failures_reported.insert(id) {
+                self.push_console_notice(format!(
+                    "拖动预览未能写入 {id:?}：运行时的这个实体已不存在或没有 Transform 组件\
+                     （拖完松手时文档仍会按拖动结果提交）"
+                ));
+            }
+        }
+    }
+
+    /// 开始一次新的拖动预览：清空"已报过失败"的记录。
+    ///
+    /// 用户重新拖一次时，如果上一次的失败原因已经变了（例如运行时重建过），应当再报一次。
+    /// 由 `apply_drag_preview_to_runtime` 在"上一帧没有预览、这一帧有了"时调用——
+    /// 那正是拖动的第一帧，不需要 panel 侧再记一个状态。
+    pub(crate) fn begin_drag_preview(&mut self) {
+        self.scene_state.preview_failures_reported.clear();
     }
 
     /// E08：拖动松手后把最新 preview 写入编辑文档并 mark_dirty。首次调用时若尚未处于事务中，
@@ -426,5 +457,97 @@ mod tests {
         // 全被锁定 → 不给拖拽集合（调用方据此提前返回，不制造空 Undo）。
         let none = GizmoDragTargets::new(first, [(second, initial)], &locked);
         assert!(none.is_none());
+    }
+    /// 正常拖动：预览写成功，**不该**产生任何提示。
+    ///
+    /// 这是这次改动的反向守卫——上报逻辑一加上，最容易犯的错是"条件写反"，
+    /// 于是每次拖动都刷一条"预览失败"，比不报还糟。
+    #[test]
+    fn a_successful_drag_preview_reports_nothing() {
+        let mut app = app_with_two_entities();
+        let id = SceneEntityId(1);
+        // 先把运行时建出来（拖动第一帧会 ensure，这里显式做一次让状态确定）。
+        app.ensure_scene_runtime();
+        assert!(app.scene_runtime.is_some(), "测试前提：运行时应当能建起来");
+
+        app.scene_state
+            .preview
+            .insert(id, crate::TransformFields::default());
+        app.apply_drag_preview_to_runtime();
+
+        assert!(
+            app.console_notices.is_empty(),
+            "正常拖动不该产生提示，实际：{:?}",
+            app.console_notices
+        );
+    }
+
+    /// 失效实体：预览写失败必须**上报一次**，且连续帧不重复。
+    ///
+    /// 两条要求缺一不可：
+    /// - 不报 → 表现是"拖了没反应"，日志里一个字都没有（改这条之前的现状）；
+    /// - 每帧都报 → 拖动一次刷几百条，日志反而不可读。
+    ///
+    /// 怎么造"预览写失败"：文档里有这个实体（`scene_drag_locals` 会把它算进去），
+    /// 但把运行时 `scene_entities` 映射表清空——这正是"运行时已失效但文档还在"的真实形态
+    /// （例如场景重载之后、或实体刚被脚本 destroy）。
+    #[test]
+    fn a_failed_drag_preview_is_reported_once_not_every_frame() {
+        let mut app = app_with_two_entities();
+        app.ensure_scene_runtime();
+        let id = SceneEntityId(1);
+        let Some(runtime) = app.scene_runtime.as_mut() else {
+            panic!("测试前提：运行时应当能建起来");
+        };
+        // 清空 id → 句柄映射：`set_scene_entity_transform_preview` 从此对这个 id 返回 false。
+        runtime.with_script(|script| {
+            let entities = script.entity_state_handle();
+            entities.with_mut(|state| state.scene_entities.clear());
+        });
+
+        app.scene_state
+            .preview
+            .insert(id, crate::TransformFields::default());
+
+        app.apply_drag_preview_to_runtime();
+        let after_first = app.console_notices.len();
+        assert_eq!(
+            after_first, 1,
+            "失效实体的预览失败必须报一条，实际 {} 条：{:?}",
+            after_first, app.console_notices
+        );
+        assert!(
+            app.console_notices[0].contains("1"),
+            "提示里应当点出是哪个实体，实际：{}",
+            app.console_notices[0]
+        );
+
+        // 模拟后续帧：同一个失效实体，一次都不该再报。
+        for frame in 1..=5 {
+            // 每帧都要重新插入 preview——真实拖动里它一直在（被 pointer move 覆盖写）。
+            app.scene_state
+                .preview
+                .insert(id, crate::TransformFields::default());
+            app.apply_drag_preview_to_runtime();
+            assert_eq!(
+                app.console_notices.len(),
+                after_first,
+                "第 {frame} 帧又报了一次——拖动会刷屏（去重没生效）"
+            );
+        }
+
+        // 拖动结束后重新开始：应当能再报一次（用户换了情况要能看到）。
+        app.scene_state.preview.clear();
+        app.apply_drag_preview_to_runtime(); // preview 空 → 清掉去重记录
+        app.scene_state
+            .preview
+            .insert(id, crate::TransformFields::default());
+        app.apply_drag_preview_to_runtime();
+        assert_eq!(
+            app.console_notices.len(),
+            after_first + 1,
+            "新一次拖动应当能重新报错，实际仍是 {} 条",
+            app.console_notices.len()
+        );
     }
 }

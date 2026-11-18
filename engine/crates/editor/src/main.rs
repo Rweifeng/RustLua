@@ -1075,6 +1075,12 @@ struct SceneEditorState {
     /// M19-03 矩形工具拖拽起点/当前格（TilePaint 的矩形填充与区域复制共用）。
     tile_rect_anchor: Option<(usize, usize)>,
     tile_rect_current: Option<(usize, usize)>,
+    /// 已经报过"预览写入失败"的实体。
+    ///
+    /// `apply_drag_preview_to_runtime` 是**每帧鼠标移动**都走的路径：没有这一栏，
+    /// 拖动一个已失效的实体会瞬间刷满控制台。同一实体只报一次，下一次拖动开始时清空
+    /// （见 `SceneEditorState::begin_drag_preview`），这样用户改了情况还能再看到一次。
+    preview_failures_reported: std::collections::BTreeSet<SceneEntityId>,
 }
 
 struct SceneDrag {
