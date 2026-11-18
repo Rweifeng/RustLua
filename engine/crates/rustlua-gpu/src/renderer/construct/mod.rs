@@ -77,7 +77,7 @@ use wgpu::{Device, Queue};
 use winit::window::Window;
 
 use super::pipeline_cache::{
-    ColorTarget, InstanceMode, PipelineCache, PipelineFamily, ShaderVariantKey, Shading, SkinMode,
+    ColorTarget, InstanceMode, PipelineFamily, ShaderVariantKey, Shading, SkinMode,
     VARIANT_COMPILE_BUDGET_MS,
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
@@ -88,11 +88,13 @@ pub(super) mod environment_group;
 pub(super) mod frame_arena;
 pub(super) mod gpu_particles;
 pub(super) mod material_layout;
+pub(super) mod pipeline_layouts;
 pub(super) mod post_process;
 pub(super) mod shadow_bindings;
 pub(super) mod shadow_textures;
 pub(super) mod text_pipeline;
 pub(super) mod texture;
+pub(super) mod variant_compile;
 pub(super) mod world_sprite;
 
 use super::{
@@ -645,114 +647,35 @@ impl Renderer {
         let environment_sampler = env.sampler;
         let environment_view = env.view;
         let environment_bind_group = env.bind_group;
-        let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-mesh3d-pipeline-layout"),
-            bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        // 回滚档（Legacy）保持两组布局：多一组会让旧着色器绑定不上，也会让 `pbr=off`
-        // 的像素门失去"逐字节不变"的前提。
-        let pbr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-mesh3d-pbr-pipeline-layout"),
-            bind_group_layouts: &[
-                &camera_bind_group_layout,
-                &material_bind_group_layout,
-                &environment_bind_group_layout,
-            ],
-            push_constant_ranges: &[],
-        });
-        let shadow_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-shadow-pipeline-layout"),
-                bind_group_layouts: &[&shadow_bind_group_layout, &material_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        // 三条管线布局：拆分批 K 搬到 `construct/pipeline_layouts.rs`。
+        // 四个输入布局分别来自 A / C / J / I，所以这一批只是拼装。
+        let pl = super::construct::pipeline_layouts::pipeline_layouts(
+            &device,
+            &camera_bind_group_layout,
+            &material_bind_group_layout,
+            &environment_bind_group_layout,
+            &shadow_bind_group_layout,
+        );
+        let mesh_pipeline_layout = pl.mesh;
+        let pbr_pipeline_layout = pl.pbr;
+        let shadow_pipeline_layout = pl.shadow;
         // P3-R04-3：按固定轴预编译变体。LDR 目标格式来自表面配置；HDR 变体只在能力允许时
         // 存在（与 R01 的门控一致）。实例矩阵的取法由设备能力决定（storage 数组 / 64 字节
         // uniform）——两条路都编译**真管线**：WebGL2 没有存储缓冲，但画的是同一批网格/阴影。
-        let instance_mode = InstanceMode::from_storage_capable(storage_capable);
-        let mut pipelines: PipelineCache<Arc<wgpu::RenderPipeline>> = PipelineCache::new();
-        let hdr_format = capabilities
-            .hdr_usable()
-            .then_some(wgpu::TextureFormat::Rgba16Float);
-        for skin in [SkinMode::Off, SkinMode::On] {
-            let shader = variant_shader_module(
-                &device,
-                &MESH3D,
-                skin,
-                IblMode::Off,
-                instance_mode,
-                &format!("rustlua-mesh3d-{}-shader", skin_tag(skin)),
-            );
-            let targets = if let Some(hdr) = hdr_format {
-                vec![(ColorTarget::Ldr, format), (ColorTarget::Hdr, hdr)]
-            } else {
-                vec![(ColorTarget::Ldr, format)]
-            };
-            for (target, target_format) in targets {
-                let key = ShaderVariantKey::mesh(Shading::Legacy, skin, target);
-                let label = format!("rustlua-{}-pipeline", key.label());
-                pipelines
-                    .get_or_create(key, || {
-                        Ok::<_, std::convert::Infallible>(Arc::new(create_mesh_pipeline(
-                            &device,
-                            &mesh_pipeline_layout,
-                            &shader,
-                            target_format,
-                            &label,
-                            false,
-                            rustlua_render::mesh3d::MaterialAlphaMode::Opaque,
-                            false,
-                        )))
-                    })
-                    .expect("3D 网格变体数远低于 family/全局上限");
-            }
-        }
-        for skin in [SkinMode::Off, SkinMode::On] {
-            let shader = variant_shader_module(
-                &device,
-                &SHADOW,
-                skin,
-                IblMode::Off,
-                instance_mode,
-                &format!("rustlua-shadow-{}-shader", skin_tag(skin)),
-            );
-            let key = ShaderVariantKey::shadow(skin);
-            let label = format!("rustlua-{}-pipeline", key.label());
-            pipelines
-                .get_or_create(key, || {
-                    Ok::<_, std::convert::Infallible>(Arc::new(create_shadow_pipeline(
-                        &device,
-                        &shadow_pipeline_layout,
-                        &shader,
-                        &label,
-                        false,
-                    )))
-                })
-                .expect("阴影变体数远低于 family/全局上限");
-        }
-        // P3-R04-4：预编译发生在启动期（构造 `Renderer` 时），统计随资源快照暴露给 Profiler。
-        // 超预算只告警一次：此刻管线已经建好，取消它们只会把同样的卡顿挪到首帧。
-        let variant_stats = pipelines.stats();
-        if variant_stats.within_budget() {
-            tracing::info!(
-                target: "game",
-                "[render] shader variants: count={} compile_ms={:.2} hits={} misses={} budget_ms={:.0}",
-                variant_stats.variants,
-                variant_stats.compile_ms(),
-                variant_stats.hits,
-                variant_stats.misses,
-                VARIANT_COMPILE_BUDGET_MS
-            );
-        } else {
-            tracing::warn!(
-                target: "render",
-                "[runtime] shader 变体预编译超出预算：count={} compile_ms={:.2} budget_ms={:.0}；请缩减预编译清单，不要每帧补编译",
-                variant_stats.variants,
-                variant_stats.compile_ms(),
-                VARIANT_COMPILE_BUDGET_MS
-            );
-        }
+        // 变体预编译：拆分批 L 搬到 `construct/variant_compile.rs`。
+        // 管线都在 PipelineCache 的闭包里建，所以这段没有直接的 device.create_*。
+        let v = super::construct::variant_compile::compile_variants(
+            &device,
+            format,
+            &capabilities,
+            storage_capable,
+            &mesh_pipeline_layout,
+            &shadow_pipeline_layout,
+        );
+        let _instance_mode = v.instance_mode;
+        let pipelines = v.pipelines;
+        let _hdr_format = v.hdr_format;
+        let _variant_stats = v.stats;
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
         let depth_init = (config.width, config.height);
         let timestamp_enabled = device.features().contains(
