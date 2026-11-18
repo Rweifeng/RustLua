@@ -115,6 +115,8 @@ pub(crate) enum MenuRow {
     WorkspaceTabs,
     /// 窗口 ▸ 面板：六个工作台面板逐项开关（复选框，状态来自 `show_*`）。
     PanelToggles,
+    /// 编辑 ▸ 工具栏：可勾选的工具栏项（复选框，状态来自 `toolbar_visibility`）。
+    ToolbarToggles,
     /// 窗口 ▸ 视图模式：2D / 3D / Prefab（互斥选择）。
     ViewModes,
     /// 窗口 ▸ 布局与面板宽度提示（只读信息行）。
@@ -166,6 +168,7 @@ pub(crate) fn palette_items() -> Vec<PaletteItem> {
                 | MenuRow::ComponentRegistry
                 | MenuRow::WorkspaceTabs
                 | MenuRow::PanelToggles
+                | MenuRow::ToolbarToggles
                 | MenuRow::ViewModes
                 | MenuRow::LayoutInfo => {}
             }
@@ -395,6 +398,9 @@ const EDIT_MENU: &[MenuRow] = &[
         MenuItem::new("暂停 / 继续", MenuAction::PlayTogglePause).gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Item(MenuItem::new("单帧步进", MenuAction::PlayStep).gate(MenuGate::ProjectLoaded)),
+    // 精简后的工具栏把次要控件收在这里：像「窗口 ▸ 面板」一样逐项勾选。
+    MenuRow::Separator,
+    MenuRow::ToolbarToggles,
 ];
 
 const ASSETS_MENU: &[MenuRow] = &[
@@ -677,6 +683,19 @@ impl EditorApp {
                             self.run_menu_action(action);
                         }
                     }
+                }
+                MenuRow::ToolbarToggles => {
+                    use crate::panels::toolbar::ToolbarItem;
+                    ui.label("工具栏（播放/停止、3D 常驻）");
+                    // 与「窗口 ▸ 面板」同构：勾选只读自 `toolbar_visibility`，
+                    // 写入只走 `set_toolbar_item_visible`，点完不关菜单，可一次勾多项。
+                    for item in ToolbarItem::ALL {
+                        let mut shown = self.toolbar_item_visible(item);
+                        if ui.checkbox(&mut shown, item.label()).clicked() {
+                            self.set_toolbar_item_visible(item, shown);
+                        }
+                    }
+                    ui.weak("默认只开：暂停/继续 · 设计分辨率 · 场景缩放");
                 }
                 MenuRow::ViewModes => {
                     ui.label("视图模式");

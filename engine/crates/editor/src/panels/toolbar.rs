@@ -1,6 +1,7 @@
 //! 中央 Scene/Game 工作区工具栏（Unity 式分层）：
-//! 常驻 = Play 控制、设计分辨率、3D/UI、吸附+步长、缩放；
-//! 次要功能收进下拉 = 工具（对齐/等间距）、排序（Sprite）、覆盖层（辅助线等开关）。
+//! 常驻 = Play/Stop、3D/2D 切换；其余按`编辑 ▸ 工具栏`里的勾选按需出现。
+//! 默认只开「暂停/继续 + 设计分辨率 + 场景缩放」三项，窄面板也能一行放下；
+//! 需要设备模拟/吸附/工具/排序/覆盖层的人自己勾出来，不再为所有人常驻一排。
 //! Undo/Redo 通过快捷键 Ctrl+Z / Ctrl+Y 触发（见 main.rs）。
 //! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 panels/scene_view/）。
 //! Scene/Game 切换由 dock 页签与"窗口"菜单承担，工具栏不再重复放按钮。
@@ -10,9 +11,154 @@ use crate::panels::scene_view::{SCENE_ZOOM_MAX, SCENE_ZOOM_MIN};
 use crate::util::{icon_button, icon_toggle, pause_resume_icon, pause_resume_icon_button};
 use crate::{AlignMode, SceneViewMode};
 use eframe::egui;
+use std::collections::BTreeMap;
 
 /// 缩放滑条的轨道宽度：egui 默认 100pt 在工具栏里太占位，收窄到能稳定拖动即可。
 const ZOOM_SLIDER_WIDTH: f32 = 60.0;
+/// 可勾选项的数量（可见性位图的长度）。
+const TOOLBAR_ITEM_COUNT: usize = 11;
+
+/// 工具栏里**可以勾选**的项目。Play/Stop 与 3D 切换是核心入口，恒常驻、不列在这里。
+///
+/// 标签同时用作「编辑 ▸ 工具栏」的复选框文案，`key` 是 `layout.json` 的持久化键
+/// （与 `panel_visible` 同一套 BTreeMap 机制，未知键原样保留）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolbarItem {
+    PauseResume,
+    /// 单帧步进 + 重新开始运行。
+    PlaybackExtras,
+    ApplyPlayEdits,
+    Resolution,
+    DevicePreset,
+    GameViewZoom,
+    /// 吸附开关 + 步长下拉。
+    Snap,
+    Tools,
+    Sort,
+    Overlays,
+    SceneZoom,
+}
+
+impl ToolbarItem {
+    pub(crate) const ALL: [Self; TOOLBAR_ITEM_COUNT] = [
+        Self::PauseResume,
+        Self::PlaybackExtras,
+        Self::ApplyPlayEdits,
+        Self::Resolution,
+        Self::DevicePreset,
+        Self::GameViewZoom,
+        Self::Snap,
+        Self::Tools,
+        Self::Sort,
+        Self::Overlays,
+        Self::SceneZoom,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::PauseResume => 0,
+            Self::PlaybackExtras => 1,
+            Self::ApplyPlayEdits => 2,
+            Self::Resolution => 3,
+            Self::DevicePreset => 4,
+            Self::GameViewZoom => 5,
+            Self::Snap => 6,
+            Self::Tools => 7,
+            Self::Sort => 8,
+            Self::Overlays => 9,
+            Self::SceneZoom => 10,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::PauseResume => "暂停 / 继续",
+            Self::PlaybackExtras => "单帧 / 重启",
+            Self::ApplyPlayEdits => "应用到场景",
+            Self::Resolution => "设计分辨率",
+            Self::DevicePreset => "设备模拟",
+            Self::GameViewZoom => "Game 视图缩放",
+            Self::Snap => "吸附与步长",
+            Self::Tools => "工具菜单",
+            Self::Sort => "排序菜单",
+            Self::Overlays => "覆盖层菜单",
+            Self::SceneZoom => "场景缩放",
+        }
+    }
+
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::PauseResume => "pause_resume",
+            Self::PlaybackExtras => "playback_extras",
+            Self::ApplyPlayEdits => "apply_play_edits",
+            Self::Resolution => "resolution",
+            Self::DevicePreset => "device_preset",
+            Self::GameViewZoom => "game_view_zoom",
+            Self::Snap => "snap",
+            Self::Tools => "tools",
+            Self::Sort => "sort",
+            Self::Overlays => "overlays",
+            Self::SceneZoom => "scene_zoom",
+        }
+    }
+
+    /// 默认精简集：播放暂停 + 设计分辨率 + 场景缩放。其余项都在编辑菜单里按需打开。
+    const fn default_visible(self) -> bool {
+        matches!(self, Self::PauseResume | Self::Resolution | Self::SceneZoom)
+    }
+}
+
+/// 工具栏项的可见性。运行时只认这一份状态，`layout.json` 只是它的持久化镜像。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ToolbarVisibility {
+    flags: [bool; TOOLBAR_ITEM_COUNT],
+}
+
+impl Default for ToolbarVisibility {
+    fn default() -> Self {
+        let mut flags = [false; TOOLBAR_ITEM_COUNT];
+        for (index, item) in ToolbarItem::ALL.iter().enumerate() {
+            flags[index] = item.default_visible();
+        }
+        Self { flags }
+    }
+}
+
+impl ToolbarVisibility {
+    pub(crate) fn visible(self, item: ToolbarItem) -> bool {
+        self.flags[item.index()]
+    }
+
+    pub(crate) fn set(&mut self, item: ToolbarItem, visible: bool) {
+        self.flags[item.index()] = visible;
+    }
+
+    /// 写进 `EditorLayout::toolbar_visible`（全量写，缺项即回落默认）。
+    pub(crate) fn to_layout(&self) -> BTreeMap<String, bool> {
+        ToolbarItem::ALL
+            .iter()
+            .map(|item| (item.key().to_owned(), self.visible(*item)))
+            .collect()
+    }
+
+    /// 从布局读回；未知键忽略，缺键保留默认精简集。
+    pub(crate) fn from_layout(map: &BTreeMap<String, bool>) -> Self {
+        let mut visibility = Self::default();
+        for item in ToolbarItem::ALL {
+            if let Some(visible) = map.get(item.key()) {
+                visibility.set(item, *visible);
+            }
+        }
+        visibility
+    }
+}
+
+/// 只有前面已经画过控件才插分隔线，避免默认精简集里出现一串空 `|`。
+fn separator_if_drawn(ui: &mut egui::Ui, drawn: &mut bool) {
+    if *drawn {
+        ui.separator();
+    }
+}
 
 /// E18：比例快捷组（顺序即工具栏顺序），比例为宽/高。
 pub(crate) const PREVIEW_ASPECTS: [(&str, f32); 5] = [
@@ -52,12 +198,23 @@ pub(crate) fn aspect_label_for(size: (u32, u32)) -> Option<&'static str> {
 }
 
 impl EditorApp {
+    /// 工具栏项当前是否显示（菜单与绘制共用同一份运行时状态）。
+    pub(crate) fn toolbar_item_visible(&self, item: ToolbarItem) -> bool {
+        self.toolbar_visibility.visible(item)
+    }
+
+    /// 「编辑 ▸ 工具栏」复选框写入口：这里是可见性的唯一写入点。
+    pub(crate) fn set_toolbar_item_visible(&mut self, item: ToolbarItem, visible: bool) {
+        self.toolbar_visibility.set(item, visible);
+    }
+
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
-        // 工具栏保持单行；窄面板通过横向滚动访问末尾控件，避免换行挤压 Scene 画布。
+        // 默认精简集一行放得下；只有用户把「编辑 ▸ 工具栏」全勾上时才需要横向滚动。
         egui::ScrollArea::horizontal()
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let mut drawn = false;
                     // Play/Stop：场景与游戏运行控制，同一按钮切换，不显示 Play 字样。
                     let playing = self.is_playing();
                     let (icon, tooltip) = if playing {
@@ -74,6 +231,7 @@ impl EditorApp {
                             editor::EditorCommand::StartPlay
                         });
                     }
+                    drawn = true;
                     // ER-10：暂停/继续 + 单帧步进 + 重启（仅运行/暂停时可用）。
                     // 按钮只发 typed 命令，真正的状态迁移在 `PlayController` 内完成。
                     let play_state = self.play_state();
@@ -84,44 +242,51 @@ impl EditorApp {
                         play_state,
                         editor::PlayState::Playing | editor::PlayState::Paused
                     );
-                    // 暂停/继续：图标由画笔绘制（`pause_resume_icon_button`），
-                    // 不再用 U+275A 双竖杠这类字形——字体缺字形时会渲染成"豆腐块"。
-                    let pause_tooltip = if paused {
-                        "继续运行"
-                    } else {
-                        "暂停运行（逻辑时间冻结）"
-                    };
-                    if pause_resume_icon_button(
-                        ui,
-                        pause_resume_icon(paused),
-                        pausable,
-                        pause_tooltip,
-                    )
-                    .clicked()
-                    {
-                        self.dispatch(if paused {
-                            editor::EditorCommand::ResumePlay
+                    if self.toolbar_item_visible(ToolbarItem::PauseResume) {
+                        separator_if_drawn(ui, &mut drawn);
+                        // 暂停/继续：图标由画笔绘制（`pause_resume_icon_button`），
+                        // 不再用 U+275A 双竖杠这类字形——字体缺字形时会渲染成"豆腐块"。
+                        let pause_tooltip = if paused {
+                            "继续运行"
                         } else {
-                            editor::EditorCommand::PausePlay
-                        });
-                    }
-                    if ui
-                        .add_enabled(in_play, egui::Button::new("⏭").small())
-                        .on_hover_text("单帧步进（推进一个逻辑帧后保持暂停）")
+                            "暂停运行（逻辑时间冻结）"
+                        };
+                        if pause_resume_icon_button(
+                            ui,
+                            pause_resume_icon(paused),
+                            pausable,
+                            pause_tooltip,
+                        )
                         .clicked()
-                    {
-                        self.dispatch(editor::EditorCommand::StepPlay { frames: 1 });
+                        {
+                            self.dispatch(if paused {
+                                editor::EditorCommand::ResumePlay
+                            } else {
+                                editor::EditorCommand::PausePlay
+                            });
+                        }
                     }
-                    if ui
-                        .add_enabled(in_play, egui::Button::new("⟲").small())
-                        .on_hover_text("重新开始运行（丢弃运行态后按编辑器快照重启）")
-                        .clicked()
-                    {
-                        self.dispatch(editor::EditorCommand::RestartPlay);
+                    if self.toolbar_item_visible(ToolbarItem::PlaybackExtras) {
+                        separator_if_drawn(ui, &mut drawn);
+                        if ui
+                            .add_enabled(in_play, egui::Button::new("⏭").small())
+                            .on_hover_text("单帧步进（推进一个逻辑帧后保持暂停）")
+                            .clicked()
+                        {
+                            self.dispatch(editor::EditorCommand::StepPlay { frames: 1 });
+                        }
+                        if ui
+                            .add_enabled(in_play, egui::Button::new("⟲").small())
+                            .on_hover_text("重新开始运行（丢弃运行态后按编辑器快照重启）")
+                            .clicked()
+                        {
+                            self.dispatch(editor::EditorCommand::RestartPlay);
+                        }
                     }
                     // P1：Play 期调参的出口。按钮只在运行中出现，角标是"记下来几个字段值"；
                     // 不点它、直接 Stop 就是 Unity 的默认语义（回滚到编辑快照）。
-                    if in_play {
+                    if self.toolbar_item_visible(ToolbarItem::ApplyPlayEdits) && in_play {
+                        separator_if_drawn(ui, &mut drawn);
                         let pending = self.pending_play_edit_count();
                         let label = if pending == 0 {
                             "应用到场景".to_owned()
@@ -138,145 +303,153 @@ impl EditorApp {
                             self.dispatch(editor::EditorCommand::ApplyPlayEdits);
                         }
                     }
-                    // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
-                    // 比例快捷组收进同一菜单，选中文本带上当前比例，顶上不再常驻一排按钮。
-                    let resolutions = self.preview_resolutions.clone();
-                    let resolution_text = match aspect_label_for(self.preview_resolution) {
-                        Some(label) => format!(
-                            "{}×{} · {label}",
-                            self.preview_resolution.0, self.preview_resolution.1
-                        ),
-                        None => format!(
-                            "{}×{}",
-                            self.preview_resolution.0, self.preview_resolution.1
-                        ),
-                    };
-                    egui::ComboBox::from_id_salt("preview_resolution")
-                        .selected_text(resolution_text)
-                        .show_ui(ui, |ui| {
-                            for (w, h) in &resolutions {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.preview_resolution,
-                                        (*w, *h),
-                                        format!("{w}×{h}"),
-                                    )
-                                    .changed()
-                                {
-                                    // 手动选择 = 退出机型模拟，再按竖屏锁定收敛方向。
-                                    self.set_custom_resolution((*w, *h));
-                                    self.adding_preview_resolution = false;
-                                    self.scene_view_fit_pending = true;
-                                }
-                            }
-
-                            ui.separator();
-                            ui.label(egui::RichText::new("按比例切换（保持长边）").weak().size(11.0));
-                            ui.horizontal(|ui| {
-                                for (label, ratio) in PREVIEW_ASPECTS {
-                                    let selected =
-                                        resolution_matches_aspect(self.preview_resolution, ratio);
+                    if self.toolbar_item_visible(ToolbarItem::Resolution) {
+                        separator_if_drawn(ui, &mut drawn);
+                        // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
+                        // 比例快捷组收进同一菜单，选中文本带上当前比例，顶上不再常驻一排按钮。
+                        let resolutions = self.preview_resolutions.clone();
+                        let resolution_text = match aspect_label_for(self.preview_resolution) {
+                            Some(label) => format!(
+                                "{}×{} · {label}",
+                                self.preview_resolution.0, self.preview_resolution.1
+                            ),
+                            None => format!(
+                                "{}×{}",
+                                self.preview_resolution.0, self.preview_resolution.1
+                            ),
+                        };
+                        egui::ComboBox::from_id_salt("preview_resolution")
+                            .selected_text(resolution_text)
+                            .show_ui(ui, |ui| {
+                                for (w, h) in &resolutions {
                                     if ui
-                                        .selectable_label(selected, label)
-                                        .on_hover_text(format!(
-                                            "切换为 {label} 比例（保持当前长边）"
-                                        ))
+                                        .selectable_value(
+                                            &mut self.preview_resolution,
+                                            (*w, *h),
+                                            format!("{w}×{h}"),
+                                        )
+                                        .changed()
+                                    {
+                                        // 手动选择 = 退出机型模拟，再按竖屏锁定收敛方向。
+                                        self.set_custom_resolution((*w, *h));
+                                        self.adding_preview_resolution = false;
+                                        self.scene_view_fit_pending = true;
+                                    }
+                                }
+
+                                ui.separator();
+                                ui.label(egui::RichText::new("按比例切换（保持长边）").weak().size(11.0));
+                                ui.horizontal(|ui| {
+                                    for (label, ratio) in PREVIEW_ASPECTS {
+                                        let selected =
+                                            resolution_matches_aspect(self.preview_resolution, ratio);
+                                        if ui
+                                            .selectable_label(selected, label)
+                                            .on_hover_text(format!(
+                                                "切换为 {label} 比例（保持当前长边）"
+                                            ))
+                                            .clicked()
+                                        {
+                                            let size =
+                                                resolution_for_aspect(self.preview_resolution, ratio);
+                                            if size != self.preview_resolution {
+                                                self.set_custom_resolution(size);
+                                                self.adding_preview_resolution = false;
+                                                self.scene_view_fit_pending = true;
+                                            }
+                                            ui.close();
+                                        }
+                                    }
+                                });
+
+                                ui.separator();
+                                if ui.button("＋ 自定义…").clicked() {
+                                    self.custom_preview_resolution = self.preview_resolution;
+                                    self.adding_preview_resolution = true;
+                                    ui.close();
+                                }
+                            });
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::DevicePreset) {
+                        separator_if_drawn(ui, &mut drawn);
+                        // 设备模拟：按机型预设一次性给设计分辨率 + 显示缩放档(DPI) + 安全区
+                        // （刘海/底部条）+ 竖屏锁定。三端（PC/Web/微信）验收多分辨率不再靠
+                        // 人肉改窗口再截图：切预设 = 切真机。
+                        let device_text = match self.device_sim.active() {
+                            Some(preset) => format!(
+                                "{} · {}×{}",
+                                preset.name, preset.resolution.0, preset.resolution.1
+                            ),
+                            None => "自定义".to_owned(),
+                        };
+                        egui::ComboBox::from_id_salt("device_preset")
+                            .selected_text(device_text)
+                            .width(170.0)
+                            .show_ui(ui, |ui| {
+                                for (index, preset) in crate::device_sim::DEVICE_PRESETS
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    if ui
+                                        .selectable_label(
+                                            self.device_sim.preset == Some(index),
+                                            format!(
+                                                "{}（{}×{}）",
+                                                preset.name, preset.resolution.0, preset.resolution.1
+                                            ),
+                                        )
                                         .clicked()
                                     {
-                                        let size =
-                                            resolution_for_aspect(self.preview_resolution, ratio);
-                                        if size != self.preview_resolution {
-                                            self.set_custom_resolution(size);
-                                            self.adding_preview_resolution = false;
-                                            self.scene_view_fit_pending = true;
-                                        }
+                                        self.apply_device_preset(Some(index));
+                                        self.scene_view_fit_pending = true;
                                         ui.close();
                                     }
                                 }
-                            });
-
-                            ui.separator();
-                            if ui.button("＋ 自定义…").clicked() {
-                                self.custom_preview_resolution = self.preview_resolution;
-                                self.adding_preview_resolution = true;
-                                ui.close();
-                            }
-                        });
-                    ui.separator();
-                    // 设备模拟：按机型预设一次性给设计分辨率 + 显示缩放档(DPI) + 安全区
-                    // （刘海/底部条）+ 竖屏锁定。三端（PC/Web/微信）验收多分辨率不再靠
-                    // 人肉改窗口再截图：切预设 = 切真机。
-                    let device_text = match self.device_sim.active() {
-                        Some(preset) => format!(
-                            "{} · {}×{}",
-                            preset.name, preset.resolution.0, preset.resolution.1
-                        ),
-                        None => "自定义".to_owned(),
-                    };
-                    egui::ComboBox::from_id_salt("device_preset")
-                        .selected_text(device_text)
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for (index, preset) in crate::device_sim::DEVICE_PRESETS
-                                .iter()
-                                .enumerate()
-                            {
+                                ui.separator();
                                 if ui
                                     .selectable_label(
-                                        self.device_sim.preset == Some(index),
-                                        format!(
-                                            "{}（{}×{}）",
-                                            preset.name, preset.resolution.0, preset.resolution.1
-                                        ),
+                                        self.device_sim.preset.is_none(),
+                                        "自定义（不模拟）",
                                     )
                                     .clicked()
                                 {
-                                    self.apply_device_preset(Some(index));
+                                    self.apply_device_preset(None);
                                     self.scene_view_fit_pending = true;
                                     ui.close();
                                 }
-                            }
-                            ui.separator();
-                            if ui
-                                .selectable_label(
-                                    self.device_sim.preset.is_none(),
-                                    "自定义（不模拟）",
-                                )
-                                .clicked()
-                            {
-                                self.apply_device_preset(None);
-                                self.scene_view_fit_pending = true;
-                                ui.close();
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "设备模拟：机型设计分辨率 / 显示缩放档(DPI) / 安全区（刘海·底部条）/ 竖屏锁定",
-                        );
-                    ui.separator();
-                    // 想看字就切 `1:1`（1 设计像素 = 1 物理像素，超出部分裁剪 + 中键拖动）。
+                            })
+                            .response
+                            .on_hover_text(
+                                "设备模拟：机型设计分辨率 / 显示缩放档(DPI) / 安全区（刘海·底部条）/ 竖屏锁定",
+                            );
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::GameViewZoom) {
+                        separator_if_drawn(ui, &mut drawn);
+                        // 想看字就切 `1:1`（1 设计像素 = 1 物理像素，超出部分裁剪 + 中键拖动）。
                     egui::ComboBox::from_id_salt("game_view_zoom")
                         .selected_text(self.game_view_zoom.label())
-                        .width(66.0)
-                        .show_ui(ui, |ui| {
-                            for zoom in crate::panels::game_view::GameViewZoom::ALL {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.game_view_zoom,
-                                        zoom,
-                                        zoom.label(),
-                                    )
-                                    .changed()
-                                {
-                                    self.game_view_pan = egui::Vec2::ZERO;
+                            .width(66.0)
+                            .show_ui(ui, |ui| {
+                                for zoom in crate::panels::game_view::GameViewZoom::ALL {
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.game_view_zoom,
+                                            zoom,
+                                            zoom.label(),
+                                        )
+                                        .changed()
+                                    {
+                                        self.game_view_pan = egui::Vec2::ZERO;
+                                    }
                                 }
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "Game 视图缩放：适应窗口 / 1:1（1 设计像素 = 1 物理像素，可中键拖动）",
-                        );
-                    ui.separator();
+                            })
+                            .response
+                            .on_hover_text(
+                                "Game 视图缩放：适应窗口 / 1:1（1 设计像素 = 1 物理像素，可中键拖动）",
+                            );
+                    }
+                    // 3D/2D 是核心入口，恒常驻。
+                    separator_if_drawn(ui, &mut drawn);
                     // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
                     if icon_toggle(
                         ui,
@@ -299,115 +472,128 @@ impl EditorApp {
                             self.scene_view_fit_pending = true;
                         }
                     }
-                    ui.separator();
-                    // Unity 式分层：常驻只留高频项（吸附开关），步长收进「▾」弹层（Unity Snap Settings 同构）。
-                    ui.checkbox(&mut self.snap_enabled, "吸附");
-                    // 三角是画笔画的，不是 `▾` 字形（字体缺它，会渲染成豆腐块）。
-                    let snap_steps_button = crate::util::chevron_down_button(
-                        ui,
-                        "吸附步长：位移（世界单位）/ 旋转（度），共用左侧开关",
-                    );
-                    egui::Popup::menu(&snap_steps_button).show(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("位移步长");
-                            ui.add(
-                                egui::DragValue::new(&mut self.snap_step)
-                                    .range(0.05..=10.0)
-                                    .speed(0.05),
-                            );
-                            ui.label("世界单位");
+                    if self.toolbar_item_visible(ToolbarItem::Snap) {
+                        separator_if_drawn(ui, &mut drawn);
+                        // Unity 式分层：吸附开关 + 步长收进「▾」弹层（Unity Snap Settings 同构）。
+                            ui.checkbox(&mut self.snap_enabled, "吸附");
+                        // 三角是画笔画的，不是 `▾` 字形（字体缺它，会渲染成豆腐块）。
+                        let snap_steps_button = crate::util::chevron_down_button(
+                            ui,
+                            "吸附步长：位移（世界单位）/ 旋转（度），共用左侧开关",
+                        );
+                        egui::Popup::menu(&snap_steps_button).show(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("位移步长");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.snap_step)
+                                        .range(0.05..=10.0)
+                                        .speed(0.05),
+                                );
+                                ui.label("世界单位");
+                            });
+                            // M27-02：旋转**角度**吸附。与位移吸附共用同一个开关，但单位必须是度数——
+                            // 拿 0.5 的位移步长当角度用（0.5°）不叫吸附，叫抖。
+                            ui.horizontal(|ui| {
+                                ui.label("旋转步长");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.snap_angle_step)
+                                        .range(1.0..=90.0)
+                                        .speed(1.0)
+                                        .suffix("°"),
+                                );
+                            });
                         });
-                        // M27-02：旋转**角度**吸附。与位移吸附共用同一个开关，但单位必须是度数——
-                        // 拿 0.5 的位移步长当角度用（0.5°）不叫吸附，叫抖。
-                        ui.horizontal(|ui| {
-                            ui.label("旋转步长");
-                            ui.add(
-                                egui::DragValue::new(&mut self.snap_angle_step)
-                                    .range(1.0..=90.0)
-                                    .speed(1.0)
-                                    .suffix("°"),
-                            );
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::Tools) {
+                        separator_if_drawn(ui, &mut drawn);
+                            ui.menu_button("工具", |ui| {
+                            if ui.button("对齐到网格").clicked() {
+                                self.align_selected(AlignMode::Grid);
+                                ui.close();
+                            }
+                            if ui.button("水平对齐").clicked() {
+                                self.align_selected(AlignMode::H);
+                                ui.close();
+                            }
+                            if ui.button("垂直对齐").clicked() {
+                                self.align_selected(AlignMode::V);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("水平等间距").clicked() {
+                                self.distribute_selected(true);
+                                ui.close();
+                            }
+                            if ui.button("垂直等间距").clicked() {
+                                self.distribute_selected(false);
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("程序化素材…").clicked() {
+                                self.procedural.show = true;
+                                ui.close();
+                            }
                         });
-                    });
-                    ui.menu_button("工具", |ui| {
-                        if ui.button("对齐到网格").clicked() {
-                            self.align_selected(AlignMode::Grid);
-                            ui.close();
-                        }
-                        if ui.button("水平对齐").clicked() {
-                            self.align_selected(AlignMode::H);
-                            ui.close();
-                        }
-                        if ui.button("垂直对齐").clicked() {
-                            self.align_selected(AlignMode::V);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("水平等间距").clicked() {
-                            self.distribute_selected(true);
-                            ui.close();
-                        }
-                        if ui.button("垂直等间距").clicked() {
-                            self.distribute_selected(false);
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("程序化素材…").clicked() {
-                            self.procedural.show = true;
-                            ui.close();
-                        }
-                    });
-                    // Sprite 排序是 2D 精灵专属。
-                    ui.menu_button("排序", |ui| {
-                        if ui.button("精灵排序层级 -1").clicked() {
-                            self.nudge_selected_sprite_order(-1);
-                            ui.close();
-                        }
-                        if ui.button("精灵排序层级 +1").clicked() {
-                            self.nudge_selected_sprite_order(1);
-                            ui.close();
-                        }
-                        if ui.button("按 Y 重排精灵排序").clicked() {
-                            self.sort_selected_sprites_by_y(true);
-                            ui.close();
-                        }
-                    });
-                    ui.menu_button("覆盖层", |ui| {
-                        ui.checkbox(&mut self.show_scene_guides, "辅助线");
-                        ui.checkbox(&mut self.show_safe_area, "安全区");
-                        ui.checkbox(&mut self.show_pixel_grid, "像素网格");
-                        ui.checkbox(&mut self.show_entity_labels, "标记与名字")
-                            .on_hover_text(
-                                "3D 场景视图里每个实体的菱形标记与名称；关闭后场景不再被文字遮挡（点选与 Gizmo 照常可用）",
-                            );
-                        ui.checkbox(&mut self.show_collision_overlay, "碰撞区域")
-                    .on_hover_text(
-                        "画出场景里所有碰撞区域：瓦片地图碰撞格 + 实体碰撞体轮廓（调试用）",
-                    );
-                        ui.checkbox(&mut self.show_performance_panel, "性能")
-                            .on_hover_text(
-                                "性能分析面板（独立弹窗：播放运行时帧率 / 绘制调用 / 设置通道 / 顶点面数 / CPU/GPU / 内存 / 资源缓存，以及编辑器各面板耗时）",
-                            );
-                        // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
-                        ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
-                        ui.checkbox(&mut self.show_domain_data_panel, "领域数据面板")
-                            .on_hover_text("Lua 校验 / 持久化 ID / 出口地点");
-                    });
-                    ui.separator();
-                    let zoom_before_slider = self.scene_zoom;
-                    // spacing 改动只在 scope 内生效，否则会连带改窄本面板其它滑条。
-                    ui.scope(|ui| {
-                        ui.spacing_mut().slider_width = ZOOM_SLIDER_WIDTH;
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.scene_zoom,
-                                SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX,
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::Sort) {
+                        separator_if_drawn(ui, &mut drawn);
+                            // Sprite 排序是 2D 精灵专属。
+                            ui.menu_button("排序", |ui| {
+                            if ui.button("精灵排序层级 -1").clicked() {
+                                self.nudge_selected_sprite_order(-1);
+                                ui.close();
+                            }
+                            if ui.button("精灵排序层级 +1").clicked() {
+                                self.nudge_selected_sprite_order(1);
+                                ui.close();
+                            }
+                            if ui.button("按 Y 重排精灵排序").clicked() {
+                                self.sort_selected_sprites_by_y(true);
+                                ui.close();
+                            }
+                        });
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::Overlays) {
+                        separator_if_drawn(ui, &mut drawn);
+                            ui.menu_button("覆盖层", |ui| {
+                            ui.checkbox(&mut self.show_scene_guides, "辅助线");
+                            ui.checkbox(&mut self.show_safe_area, "安全区");
+                            ui.checkbox(&mut self.show_pixel_grid, "像素网格");
+                            ui.checkbox(&mut self.show_entity_labels, "标记与名字")
+                                .on_hover_text(
+                                    "3D 场景视图里每个实体的菱形标记与名称；关闭后场景不再被文字遮挡（点选与 Gizmo 照常可用）",
+                                );
+                            ui.checkbox(&mut self.show_collision_overlay, "碰撞区域")
+                        .on_hover_text(
+                            "画出场景里所有碰撞区域：瓦片地图碰撞格 + 实体碰撞体轮廓（调试用）",
+                        );
+                            ui.checkbox(&mut self.show_performance_panel, "性能")
+                                .on_hover_text(
+                                    "性能分析面板（独立弹窗：播放运行时帧率 / 绘制调用 / 设置通道 / 顶点面数 / CPU/GPU / 内存 / 资源缓存，以及编辑器各面板耗时）",
+                                );
+                            // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
+                            ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
+                            ui.checkbox(&mut self.show_domain_data_panel, "领域数据面板")
+                                .on_hover_text("Lua 校验 / 持久化 ID / 出口地点");
+                        });
+                    }
+                    if self.toolbar_item_visible(ToolbarItem::SceneZoom) {
+                        separator_if_drawn(ui, &mut drawn);
+                            let zoom_before_slider = self.scene_zoom;
+                        // spacing 改动只在 scope 内生效，否则会连带改窄本面板其它滑条。
+                        ui.scope(|ui| {
+                            ui.spacing_mut().slider_width = ZOOM_SLIDER_WIDTH;
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.scene_zoom,
+                                    SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX,
+                                )
+                                .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
                             )
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                        )
-                        .on_hover_text("场景缩放");
-                    });
+                            .on_hover_text("场景缩放");
+                        });
                     self.set_scene_zoom_centered(zoom_before_slider, self.scene_zoom);
+                    }
                 });
             });
         // 自定义分辨率输入行。

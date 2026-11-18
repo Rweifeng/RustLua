@@ -43,6 +43,7 @@ pub(crate) use cli::{
 
 use crate::panels::progress::ProgressPanel;
 use crate::panels::scene_view::SceneViewTexture;
+use crate::panels::toolbar::ToolbarVisibility;
 use crate::preview_session::PreviewSession;
 // E11：场景工具枚举只有**一处**定义（交互词汇表里），main.rs 不再自带一份。
 use crate::scene_interaction::SceneTool;
@@ -357,6 +358,8 @@ struct EditorApp {
     import_path: String,
     workspace_tab: WorkspaceTab,
     scene_zoom: f32,
+    /// 工具栏可勾选项的运行时状态（`编辑 ▸ 工具栏` 是唯一写入口）。
+    toolbar_visibility: ToolbarVisibility,
     /// Scene View 交互状态机（E11）：**工具与交互阶段的唯一事实源**。
     ///
     /// 以前这里是裸的 `scene_tool: SceneTool` 字段 + `scene_state` 里的
@@ -1217,6 +1220,7 @@ impl EditorApp {
             import_path: String::new(),
             workspace_tab: WorkspaceTab::Scene,
             scene_zoom: 1.0,
+            toolbar_visibility: ToolbarVisibility::default(),
             interaction: crate::scene_interaction::ToolStateMachine::new(),
             gizmo_space: crate::scene_interaction::GizmoSpace::default(),
             gizmo_pivot: crate::scene_interaction::GizmoPivot::default(),

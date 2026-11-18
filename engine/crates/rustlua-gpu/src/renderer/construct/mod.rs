@@ -23,6 +23,7 @@
 //! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
 //! | 4 | 白图 / 阴影纹理 → [`shadow_textures::shadow_textures`]（115 行、5 处） | ✅ 已拆 |
 //! | E | 帧环与 albedo 采样器 → [`frame_arena::frame_arena`]（24 行、3 处） | ✅ 已拆 |
+//! | I | 阴影绑定 → [`shadow_bindings::shadow_bindings`]（35 行、3 处） | ✅ 已拆 |
 //! | J | 环境光照 group → [`environment_group::environment_group`]（21 行、1 处） | ✅ 已拆 |
 //! | 5 | 平面反射（96 行、3 处） | 待拆（D 已拆，现在应可做） |
 //! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
@@ -87,6 +88,7 @@ pub(super) mod environment_group;
 pub(super) mod frame_arena;
 pub(super) mod gpu_particles;
 pub(super) mod post_process;
+pub(super) mod shadow_bindings;
 pub(super) mod shadow_textures;
 pub(super) mod text_pipeline;
 pub(super) mod texture;
@@ -729,41 +731,16 @@ impl Renderer {
         let planar_reflection_view =
             planar_reflection_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let planar_reflection_depth = Self::create_depth_view(&device, 1, 1);
-        let shadow_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-shadow-bind-group-layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(64),
-                    },
-                    count: None,
-                }],
-            });
-        let shadow_pass_bind_groups = [0, 1, 2, 3].map(|cascade| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("rustlua-shadow-pass-bind-group"),
-                layout: &shadow_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: shadow_pass_camera_buffers[cascade].as_entire_binding(),
-                }],
-            })
-        });
-        let point_shadow_bind_groups: [wgpu::BindGroup; super::POINT_SHADOW_LAYERS] =
-            std::array::from_fn(|layer| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("rustlua-point-shadow-pass-bind-group"),
-                    layout: &shadow_bind_group_layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: point_shadow_camera_buffers[layer].as_entire_binding(),
-                    }],
-                })
-            });
+        // 阴影绑定：拆分批 I 搬到 `construct/shadow_bindings.rs`。
+        // 方向光级联与点光立方体面共用一个 64B uniform 的 layout。
+        let sb = super::construct::shadow_bindings::shadow_bindings(
+            &device,
+            &shadow_pass_camera_buffers,
+            &point_shadow_camera_buffers,
+        );
+        let shadow_bind_group_layout = sb.layout;
+        let shadow_pass_bind_groups = sb.cascade_bind_groups;
+        let point_shadow_bind_groups = sb.point_bind_groups;
         // 环境光照 group：拆分批 J 搬到 `construct/environment_group.rs`。
         let env =
             super::construct::environment_group::environment_group(&device, &queue, &capabilities);

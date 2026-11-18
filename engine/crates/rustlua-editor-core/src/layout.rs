@@ -146,6 +146,8 @@ pub struct EditorLayout {
     pub panel_widths: BTreeMap<String, f32>,
     /// 面板可见性（资源面板/控制台等）。
     pub panel_visible: BTreeMap<String, bool>,
+    /// 工作区工具栏的可勾选项（`编辑 ▸ 工具栏`）。缺键 = 该项用默认精简集。
+    pub toolbar_visible: BTreeMap<String, bool>,
     pub workspace_tab: String,
     pub scene_view_mode: String,
     pub scene_tool: String,
@@ -193,6 +195,8 @@ impl Default for EditorLayout {
                 (PANEL_ASSISTANT.to_owned(), true),
                 (PANEL_UI_STUDIO.to_owned(), false),
             ]),
+            // 空 = 全用编辑器侧的精简默认值（默认只显示高频项）。
+            toolbar_visible: BTreeMap::new(),
             workspace_tab: "scene".to_owned(),
             scene_view_mode: "2d".to_owned(),
             scene_tool: "select".to_owned(),
@@ -347,6 +351,7 @@ impl EditorLayout {
             "version": self.version,
             "panel_widths": self.panel_widths,
             "panel_visible": self.panel_visible,
+            "toolbar_visible": self.toolbar_visible,
             "workspace_tab": self.workspace_tab,
             "scene_view_mode": self.scene_view_mode,
             "scene_tool": self.scene_tool,
@@ -390,6 +395,13 @@ impl EditorLayout {
             for (key, value) in visible {
                 if let Some(value) = value.as_bool() {
                     layout.panel_visible.insert(key.clone(), value);
+                }
+            }
+        }
+        if let Some(visible) = value.get("toolbar_visible").and_then(|v| v.as_object()) {
+            for (key, value) in visible {
+                if let Some(value) = value.as_bool() {
+                    layout.toolbar_visible.insert(key.clone(), value);
                 }
             }
         }
