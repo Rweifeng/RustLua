@@ -10,21 +10,31 @@
 
 | 子效果 | 用到的节点 | 接到哪里 |
 |---|---|---|
-| 火焰流动 | `texture × constant(火焰色) × sine(闪烁)` | `Output.tint` 的一部分 |
-| 冲击波 | `ring(speed)` | 与火焰相乘，环带扫过时提亮 |
-| 刀光弧 | `sector(arc_width/radius/thickness/spin)` | `Output.alpha` 遮罩，弧 rotates 才显形 |
+| 刀光弧 | `sector(arc_width/radius/thickness/spin)` | `Output.alpha` 遮罩；`arc_width=0.24`（约 86°）才是"一道斩击"，太小会退化成月牙 |
+| 白热刃口 | `sector → ×自身 → ×自身 …` 的幂次链 | 高次幂把软边压暗、只留刃口最亮处，再乘火焰色 → 亮白核心 + 暖橙过渡 |
+| 火焰流动 | `texture(rotate_uv(uv)) × constant × sine(闪烁)` | 与幂次链相加进 `Output.tint`，沿刀弧铺一层会跳动的火 |
+| 冲击波 | `ring(speed)` | 与幂次链相乘后并入 tint，环带扫过时提亮 |
 | 深度描边 | `depth_edge(edge_width)` | 与火焰色相乘后加到 tint，场景交界处发亮 |
 
-它不是"加载三个模板再叠三层"——`project.toml` 只有一个 `effect_overlay`，M90 的多层 API 只服务
-编辑器手动叠加。正确做法是在一张图里用 `Multiply`/`Add` 把三种效果合成，输出一个 tint 与一个 alpha
-（见该文件节点：`fire → fire_pulse → body → tint_mix → out.tint`、`blade → out.alpha`）。
+**关键构图经验**：`sector` 输出 Scalar，`Multiply`/`Add` 输出 Vec4；校验只允许 Scalar→Vec4
+隐式提升，反过来不行，所以 alpha 只能直接接 `sector`，白热核心必须在 Vec4 一侧做。
+`radius` 决定弧的向心位置——取 0.36 左右弧才落在画面内，0.5 会贴边被裁掉一半。
+只用一层 `smoothstep` 的 sector 当 alpha 会得到"一团暗雾"，必须靠幂次链压出锐边。
 
-命名参数因此是各模板参数的并集：`edge_width`、`color_r/g/b`、`frequency`、`speed`、
-`arc_width/radius/thickness/spin`（8 个槽，远低于 16 上限）。`demo_3d.lua` 的 `effect_overlay` 步
+它不是"加载三个模板再叠三层"——`project.toml` 只有一个 `effect_overlay`，M90 的多层 API 只服务
+编辑器手动叠加。正确做法是在一张图里用 `Multiply`/`Add` 把几种效果合成，输出一个 tint 与一个 alpha
+（见该文件节点：`blade2/blade4/blade8` 幂次链 → `hot → white`、`fire → fire_body`、`shock → halo`
+汇入 `tintmix → final → out.tint`，`blade → out.alpha`）。
+
+命名参数是各模板参数的并集：`edge_width`、`color_r/g/b`、`frequency`、`speed`、`spin`、
+`angle0/spin_speed`、`arc_width/radius/thickness`（10 个槽，远低于 16 上限）。
+注意**同名参数出现多次会被自动加节点名前缀**（两个 `sector` 会得到 `blade_spin`/`core_spin`），
+那会打断演示脚本里 `set_effect_param('spin')` 的调用——所以本图只用**一个** sector，
+白热核心靠 `Multiply` 自乘而不是加第二个 sector。`demo_3d.lua` 的 `effect_overlay` 步
 逐帧改 `spin`/`speed`/`color_r/g/b` 与 `time`，看到的就是运行时真在用的那套 uniform。
 
-槽位顺序由拓扑遍历决定：本图 slot0=`edge_width`、slot1=`color`、slot2=`frequency`、
-slot3=`speed`、slot4-7=扇形参数。改图前先看 `compile_wgsl_uniform` 的槽位表，别在脚本里写死槽号。
+槽位顺序由拓扑遍历决定：本图 slot0=`edge_width`、slot1=`color`，其余按节点顺序排。
+改图前先看 `compile_wgsl_uniform` 的槽位表，别在脚本里写死槽号。
 
 > 三处 uniform 修正（本效果必需）：`ring` 读自己的 `speed` 槽、`rotate_uv` 读 `spin_speed` 槽、
 > `constant` 的默认色取节点 `r/g/b` 而不是恒为白色。三者此前都错误地回退到 slot0，

@@ -2,122 +2,98 @@
   "version": 1,
   "name": "flame_blade_slash",
   "nodes": [
-    {
-      "id": "uv",
-      "kind": "uv",
-      "position": [0.0, 200.0],
-      "params": {}
-    },
-    {
-      "id": "time",
-      "kind": "time",
-      "position": [0.0, 360.0],
-      "params": {}
-    },
+    { "id": "uv", "kind": "uv", "position": [0.0, 200.0], "params": {} },
+    { "id": "time", "kind": "time", "position": [0.0, 380.0], "params": {} },
     {
       "id": "edge",
       "kind": "depth_edge",
       "position": [180.0, 40.0],
-      "params": {
-        "edge_width": 0.0025
-      }
+      "params": { "edge_width": 0.0025 }
     },
     {
       "id": "tint",
       "kind": "constant",
       "position": [180.0, 220.0],
-      "params": {
-        "r": 1.0,
-        "g": 0.42,
-        "b": 0.08
-      }
+      "params": { "r": 1.0, "g": 0.55, "b": 0.18 }
     },
     {
-      "id": "tex",
-      "kind": "texture",
-      "position": [180.0, 420.0],
-      "params": {}
+      "id": "rot",
+      "kind": "rotate_uv",
+      "position": [180.0, 400.0],
+      "params": { "angle0": 0.0, "spin_speed": 0.6 }
     },
     {
-      "id": "flicker",
-      "kind": "sine",
-      "position": [180.0, 600.0],
+      "id": "blade",
+      "kind": "sector",
+      "position": [180.0, 580.0],
       "params": {
-        "frequency": 12.0
+        "arc_width": 0.24,
+        "radius": 0.36,
+        "thickness": 0.08,
+        "spin": 2.2
       }
     },
     {
       "id": "shock",
       "kind": "ring",
       "position": [180.0, 780.0],
-      "params": {
-        "speed": 0.9
-      }
+      "params": { "speed": 0.9 }
     },
     {
-      "id": "blade",
-      "kind": "sector",
-      "position": [180.0, 960.0],
-      "params": {
-        "arc_width": 0.32,
-        "radius": 0.4,
-        "thickness": 0.16,
-        "spin": 2.0
-      }
+      "id": "flicker",
+      "kind": "sine",
+      "position": [180.0, 940.0],
+      "params": { "frequency": 3.0 }
     },
-    {
-      "id": "fire",
-      "kind": "multiply",
-      "position": [420.0, 300.0],
-      "params": {}
-    },
-    {
-      "id": "fire_pulse",
-      "kind": "multiply",
-      "position": [600.0, 300.0],
-      "params": {}
-    },
-    {
-      "id": "body",
-      "kind": "multiply",
-      "position": [780.0, 340.0],
-      "params": {}
-    },
-    {
-      "id": "edge_rim",
-      "kind": "multiply",
-      "position": [420.0, 120.0],
-      "params": {}
-    },
-    {
-      "id": "tint_mix",
-      "kind": "add",
-      "position": [960.0, 300.0],
-      "params": {}
-    },
-    {
-      "id": "out",
-      "kind": "output",
-      "position": [1140.0, 420.0],
-      "params": {}
-    }
+    { "id": "flame", "kind": "texture", "position": [180.0, 1100.0], "params": {} },
+    { "id": "blade2", "kind": "multiply", "position": [420.0, 560.0], "params": {} },
+    { "id": "blade4", "kind": "multiply", "position": [600.0, 560.0], "params": {} },
+    { "id": "blade8", "kind": "multiply", "position": [780.0, 560.0], "params": {} },
+    { "id": "fire", "kind": "multiply", "position": [420.0, 1000.0], "params": {} },
+    { "id": "fire_pulse", "kind": "multiply", "position": [600.0, 1000.0], "params": {} },
+    { "id": "hot", "kind": "multiply", "position": [960.0, 480.0], "params": {} },
+    { "id": "white", "kind": "add", "position": [1140.0, 480.0], "params": {} },
+    { "id": "fire_body", "kind": "multiply", "position": [780.0, 1000.0], "params": {} },
+    { "id": "halo", "kind": "multiply", "position": [600.0, 760.0], "params": {} },
+    { "id": "mix1", "kind": "add", "position": [960.0, 900.0], "params": {} },
+    { "id": "tintmix", "kind": "add", "position": [1320.0, 620.0], "params": {} },
+    { "id": "rim", "kind": "multiply", "position": [420.0, 160.0], "params": {} },
+    { "id": "final", "kind": "add", "position": [1500.0, 620.0], "params": {} },
+    { "id": "out", "kind": "output", "position": [1680.0, 620.0], "params": {} }
   ],
   "edges": [
     { "from": { "node": "uv", "port": "value" }, "to": { "node": "edge", "port": "uv" } },
-    { "from": { "node": "uv", "port": "value" }, "to": { "node": "tex", "port": "uv" } },
+    { "from": { "node": "uv", "port": "value" }, "to": { "node": "rot", "port": "uv" } },
     { "from": { "node": "uv", "port": "value" }, "to": { "node": "blade", "port": "uv" } },
     { "from": { "node": "time", "port": "value" }, "to": { "node": "flicker", "port": "time" } },
-    { "from": { "node": "tex", "port": "value" }, "to": { "node": "fire", "port": "a" } },
+    { "from": { "node": "rot", "port": "value" }, "to": { "node": "flame", "port": "uv" } },
+    { "from": { "node": "blade", "port": "value" }, "to": { "node": "blade2", "port": "a" } },
+    { "from": { "node": "blade", "port": "value" }, "to": { "node": "blade2", "port": "b" } },
+    { "from": { "node": "blade2", "port": "value" }, "to": { "node": "blade4", "port": "a" } },
+    { "from": { "node": "blade2", "port": "value" }, "to": { "node": "blade4", "port": "b" } },
+    { "from": { "node": "blade4", "port": "value" }, "to": { "node": "blade8", "port": "a" } },
+    { "from": { "node": "blade4", "port": "value" }, "to": { "node": "blade8", "port": "b" } },
+    { "from": { "node": "flame", "port": "value" }, "to": { "node": "fire", "port": "a" } },
     { "from": { "node": "tint", "port": "value" }, "to": { "node": "fire", "port": "b" } },
     { "from": { "node": "fire", "port": "value" }, "to": { "node": "fire_pulse", "port": "a" } },
     { "from": { "node": "flicker", "port": "value" }, "to": { "node": "fire_pulse", "port": "b" } },
-    { "from": { "node": "fire_pulse", "port": "value" }, "to": { "node": "body", "port": "a" } },
-    { "from": { "node": "shock", "port": "value" }, "to": { "node": "body", "port": "b" } },
-    { "from": { "node": "tint", "port": "value" }, "to": { "node": "edge_rim", "port": "a" } },
-    { "from": { "node": "edge", "port": "value" }, "to": { "node": "edge_rim", "port": "b" } },
-    { "from": { "node": "body", "port": "value" }, "to": { "node": "tint_mix", "port": "a" } },
-    { "from": { "node": "edge_rim", "port": "value" }, "to": { "node": "tint_mix", "port": "b" } },
-    { "from": { "node": "tint_mix", "port": "value" }, "to": { "node": "out", "port": "tint" } },
+    { "from": { "node": "blade8", "port": "value" }, "to": { "node": "hot", "port": "a" } },
+    { "from": { "node": "tint", "port": "value" }, "to": { "node": "hot", "port": "b" } },
+    { "from": { "node": "hot", "port": "value" }, "to": { "node": "white", "port": "a" } },
+    { "from": { "node": "hot", "port": "value" }, "to": { "node": "white", "port": "b" } },
+    { "from": { "node": "blade2", "port": "value" }, "to": { "node": "fire_body", "port": "a" } },
+    { "from": { "node": "fire_pulse", "port": "value" }, "to": { "node": "fire_body", "port": "b" } },
+    { "from": { "node": "shock", "port": "value" }, "to": { "node": "halo", "port": "a" } },
+    { "from": { "node": "blade2", "port": "value" }, "to": { "node": "halo", "port": "b" } },
+    { "from": { "node": "fire_body", "port": "value" }, "to": { "node": "mix1", "port": "a" } },
+    { "from": { "node": "halo", "port": "value" }, "to": { "node": "mix1", "port": "b" } },
+    { "from": { "node": "mix1", "port": "value" }, "to": { "node": "tintmix", "port": "a" } },
+    { "from": { "node": "white", "port": "value" }, "to": { "node": "tintmix", "port": "b" } },
+    { "from": { "node": "tint", "port": "value" }, "to": { "node": "rim", "port": "a" } },
+    { "from": { "node": "edge", "port": "value" }, "to": { "node": "rim", "port": "b" } },
+    { "from": { "node": "tintmix", "port": "value" }, "to": { "node": "final", "port": "a" } },
+    { "from": { "node": "rim", "port": "value" }, "to": { "node": "final", "port": "b" } },
+    { "from": { "node": "final", "port": "value" }, "to": { "node": "out", "port": "tint" } },
     { "from": { "node": "blade", "port": "value" }, "to": { "node": "out", "port": "alpha" } }
   ]
 }

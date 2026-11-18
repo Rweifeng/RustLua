@@ -975,6 +975,16 @@ mod tests {
             at_0.chunks(4).any(|pixel| pixel[3] > 0),
             "炎刃斩击渲染结果全透明：刀光弧遮罩没有真正输出"
         );
+        // 白热核心：刃口必须有一段高不透明 + 高亮的像素（RGB 全高），
+        // 否则就是"一团暗红雾"——用户反馈的退化样貌，仅查 alpha>0 抓不住。
+        let hot_pixels = at_0
+            .chunks(4)
+            .filter(|pixel| pixel[3] > 180 && pixel[0] > 200 && pixel[1] > 140 && pixel[2] > 90)
+            .count();
+        assert!(
+            hot_pixels >= 12,
+            "刀光弧缺少白热高亮核心：满足条件的像素只有 {hot_pixels} 个"
+        );
 
         // 时间推进：刀光弧旋转 + 冲击波环扩散，画面必须变。
         let at_1 = render_graph(&gpu, &graph, 1.75).expect("t=1.75 渲染");

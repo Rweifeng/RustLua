@@ -22,7 +22,9 @@
 //! | A | 相机绑定组布局 → [`base_layouts::camera_bind_group_layout`]（101 行、1 处） | ✅ 已拆 |
 //! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
 //! | 4 | 白图 / 阴影纹理 → [`shadow_textures::shadow_textures`]（115 行、5 处） | ✅ 已拆 |
-//! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
+//! | E | 帧环与 albedo 采样器 → [`frame_arena::frame_arena`]（24 行、3 处） | ✅ 已拆 |
+//! | J | 环境光照 group → [`environment_group::environment_group`]（21 行、1 处） | ✅ 已拆 |
+//! | 5 | 平面反射（96 行、3 处） | 待拆（D 已拆，现在应可做） |
 //! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
 //! | 7 | 世界 Sprite → [`world_sprite::world_sprite_resources`]（86 行、6 处） | ✅ 已拆 |
 //! | 8 | GPU 粒子布局 → [`gpu_particles::gpu_particle_layouts`]（67 行、3 处） | ✅ 已拆 |
@@ -67,7 +69,7 @@ use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::async_loader::{AsyncLoader, LoadMode};
 use rustlua_render::frame::{OverlayVertex, VectorTextVertex, WorldSpriteVertex};
 use rustlua_render::render_plan::RenderPlan;
-use rustlua_render::render_settings::{EnvironmentLighting, IblMode, RenderSettings};
+use rustlua_render::render_settings::{IblMode, RenderSettings};
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{Device, Queue};
@@ -81,6 +83,8 @@ use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod base_layouts;
 pub(super) mod camera_scene;
 pub(super) mod device;
+pub(super) mod environment_group;
+pub(super) mod frame_arena;
 pub(super) mod gpu_particles;
 pub(super) mod post_process;
 pub(super) mod shadow_textures;
@@ -89,8 +93,8 @@ pub(super) mod texture;
 pub(super) mod world_sprite;
 
 use super::{
-    DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    RenderFrameMetrics, Renderer, compute::ComputeState, depth_stencil_state,
+    DepthPass, FrameDraw, GpuPassReport, GpuTimestampState, RenderFrameMetrics, Renderer,
+    compute::ComputeState, depth_stencil_state,
 };
 
 impl Renderer {
@@ -430,30 +434,13 @@ impl Renderer {
         let shadow_camera_buffer = cs.shadow_camera_buffer;
         let shadow_pass_camera_buffers = cs.shadow_pass_camera_buffers;
         let identity_palette = cs.identity_palette;
-        // P0-①：帧级环形缓冲的容量与对齐来自设备限制，跨后端（DX12/Vulkan/Metal/GL）都成立。
-        let uniform_align = device.limits().min_uniform_buffer_offset_alignment.max(1) as u64;
-        let storage_align = device.limits().min_storage_buffer_offset_alignment.max(1) as u64;
-        let material_arena = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-material3d-frame-arena"),
-            size: FRAME_ARENA_INITIAL_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let instance_arena = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-instance-models-frame-arena"),
-            size: FRAME_ARENA_INITIAL_BYTES,
-            // VERTEX：PBR 的逐实例法线矩阵与模型矩阵共用这块环形缓冲（不同偏移）。
-            usage: storage_usage | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-albedo-sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            // 只有内置地形细节图集上传 mip 链；三线性过滤让远景按米制 LOD 平滑过渡。
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        // 帧环与地形采样器：拆分批 E 搬到 `construct/frame_arena.rs`。
+        let fa = super::construct::frame_arena::frame_arena(&device, storage_usage);
+        let uniform_align = fa.uniform_align;
+        let storage_align = fa.storage_align;
+        let material_arena = fa.material_arena;
+        let instance_arena = fa.instance_arena;
+        let albedo_sampler = fa.albedo_sampler;
         // 白贴图与阴影纹理：拆分批 4 搬到 `construct/shadow_textures.rs`。
         // 它不经过 camera_bind_group_layout，所以能先于批次 3 拆。
         // 阴影清屏（`if shadow_cascade_limit < 4`）留在下面：它消费这里的产物、
@@ -777,27 +764,15 @@ impl Renderer {
                     }],
                 })
             });
-        // P3-R03：环境 group（uniform + 预过滤 cubemap + 采样器）。即使 IBL 关闭也绑定一份
-        // 全零 SH 与 1×1 黑 cube，这样 PBR 管线布局只有一种，不需要为 Off/On 切换布局。
-        // 浮点线性过滤不可用时按 nearest/不可过滤声明（Tier B），避免绑定校验失败。
-        let environment_bind_group_layout =
-            super::environment::bind_group_layout(&device, capabilities.float_linear_filter);
-        let environment_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-environment-buffer"),
-            contents: bytemuck::cast_slice(&EnvironmentLighting::default().uniform(IblMode::Off)),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let environment_fallback_view = super::environment::fallback_view(&device, &queue);
-        let environment_sampler =
-            super::environment::sampler(&device, capabilities.float_linear_filter);
-        let environment_view = environment_fallback_view.clone();
-        let environment_bind_group = super::environment::bind_group(
-            &device,
-            &environment_bind_group_layout,
-            &environment_buffer,
-            &environment_view,
-            &environment_sampler,
-        );
+        // 环境光照 group：拆分批 J 搬到 `construct/environment_group.rs`。
+        let env =
+            super::construct::environment_group::environment_group(&device, &queue, &capabilities);
+        let environment_bind_group_layout = env.bind_group_layout;
+        let environment_buffer = env.buffer;
+        let environment_fallback_view = env.fallback_view;
+        let environment_sampler = env.sampler;
+        let environment_view = env.view;
+        let environment_bind_group = env.bind_group;
         let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rustlua-mesh3d-pipeline-layout"),
             bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
