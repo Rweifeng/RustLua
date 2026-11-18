@@ -19,6 +19,7 @@
 //! |---|---|---|
 //! | 1 | 设备与能力探测 → [`device::boot_device`]（148 行、0 处资源创建） | ✅ 已拆 |
 //! | 2 | 逐纹理采样器表 → [`texture::texture_samplers`]（51 行、1 处，在循环里） | ✅ 已拆 |
+//! | A | 相机绑定组布局 → [`base_layouts::camera_bind_group_layout`]（101 行、1 处） | ✅ 已拆 |
 //! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
 //! | 4 | 白图 / 阴影纹理 → [`shadow_textures::shadow_textures`]（115 行、5 处） | ✅ 已拆 |
 //! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
@@ -39,10 +40,16 @@
 //!
 //! 代价是这一批只搬了 51 行。**批次划分的价值在于每批都能独立验证，不在于每批够大。**
 //!
-//! 批次 7/8 **跳过了行号顺序**（本该等批次 3）。原因：`camera_bind_group_layout`（243–343）
-//! 挡住批次 3，而世界 Sprite 与 GPU 粒子布局不经过它——它们只依赖 `device` / `format` /
-//! `capabilities` / `texture_bind_group_layout`，所以能先拆。先做能做的，
-//! 让 `new_async` 尽早缩下来，也更快积累"拆完还能验证"的信心。
+//! 批次 7/8 **跳过了行号顺序**（本该等批次 3）。原因：`camera_bind_group_layout`
+//! 物理上挡住批次 3，而世界 Sprite 与 GPU 粒子布局不经过它——它们只依赖
+//! `device` / `format` / `capabilities` / `texture_bind_group_layout`，所以能先拆。
+//!
+//! **后来发现"挡住"是个误判**（2026-11-18）：`camera_bind_group_layout` 只吃 `device`、
+//! 零其他输入、产出恰好一个布局。它夹在中间（263–362）**不等于**它依赖邻居。
+//! 精密测过之后按批次 A 拆掉了（101 行），它才是整张依赖图真正的根。
+//!
+//! 教训：**"物理位置相邻"和"依赖相邻"是两件事**。判断能不能拆要算依赖边，
+//! 不能只看行号顺序。
 //!
 //! 批次 8 必须在批次 7 之后：它的 `pipeline_layout` 引用了世界 Sprite 的相机布局
 //! （group0/group1 与 Sprite 管线共用同一个布局对象，所以粒子不需要自己的相机 uniform）。
@@ -71,6 +78,7 @@ use super::pipeline_cache::{
     VARIANT_COMPILE_BUDGET_MS,
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
+pub(super) mod base_layouts;
 pub(super) mod device;
 pub(super) mod gpu_particles;
 pub(super) mod post_process;
@@ -260,107 +268,10 @@ impl Renderer {
             bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
+        // 相机 3D 绑定组布局：拆分批 A 搬到 `construct/base_layouts.rs`。
+        // 这一段只吃 device、零其他输入，是整张依赖图的根。
         let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-camera3d-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        // P3-R02：PBR 片元要读相机世界位置算视线；旧网格着色器只声明 64 字节
-                        // 结构，读写同一块 buffer 的前半段。尺寸 176 = 11×vec4（P3-R209 起含封口深度）。
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(176),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            // 方向光 48B + 16 盏点光 × 32B = 560B（见 `light_uniform_bytes`）。
-                            min_binding_size: wgpu::BufferSize::new(super::LIGHT_UNIFORM_BYTES),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            // 四级阴影：4 × mat4 = 256B。
-                            min_binding_size: wgpu::BufferSize::new(256),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            // 48 个面矩阵 + 8 组点光位置/远平面 = 3200B。
-                            min_binding_size: wgpu::BufferSize::new(
-                                super::POINT_SHADOW_UNIFORM_BYTES as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 6,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::CubeArray,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 7,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 8,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 11,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+            super::construct::base_layouts::camera_bind_group_layout(&device);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rustlua-textured-shader"),
             source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
