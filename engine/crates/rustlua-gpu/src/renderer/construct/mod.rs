@@ -18,7 +18,7 @@
 //! | 批次 | 内容 | 状态 |
 //! |---|---|---|
 //! | 1 | 设备与能力探测 → [`device::boot_device`]（148 行、0 处资源创建） | ✅ 已拆 |
-//! | 2 | 全局采样器与文本（302 行、14 处） | 待拆 |
+//! | 2 | 逐纹理采样器表 → [`texture::texture_samplers`]（51 行、1 处，在循环里） | ✅ 已拆 |
 //! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
 //! | 4 | 帧环 / 白图 / 阴影纹理（309 行、16 处） | 待拆 |
 //! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
@@ -28,6 +28,16 @@
 //! | 9 | 后处理（795 行、31 处） | 待拆 |
 //!
 //! 批次 1 刻意选**唯一不含资源创建**的段落：它是验证拆分手法本身的最低风险样板。
+//! 批次 2 则验证了另一件事：**按依赖关系切分，而不是按行号**。
+//!
+//! `new_async` 按行号切不出干净的批次——`texture_bind_group_layout`(216) →
+//! `pipeline_layout`(238) → `shader`(344) → `pipeline`(348) 是一整条依赖链，
+//! 而 `camera_bind_group_layout`(243–343) 夹在中间、被 997/1052/1195/1203 行用到，
+//! 现在动不了。所以"文本段落整体搬迁"会打断依赖或被迫连不相干的一起搬。
+//! 批次 2 改挑 `texture_samplers`：它**自包含**（只吃 `device` + 两个静态方法），
+//! 不前依赖后文、后文也不改它。
+//!
+//! 代价是这一批只搬了 51 行。**批次划分的价值在于每批都能独立验证，不在于每批够大。**
 //!
 //! `Renderer` 结构体与全部字段仍留在 `renderer/mod.rs`（§3.1.2）；本模块是它的后代，
 //! 结构体字面量按私有字段构造**不需要**放宽任何可见性——子模块用 `pub(super)` 取用
@@ -57,6 +67,7 @@ use super::pipeline_cache::{
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod device;
+pub(super) mod texture;
 
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
@@ -359,57 +370,9 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        // M79 P1-3c：逐纹理采样器表（滤镜 × 寻址 的全组合，下标 = `filter * Wrap::COUNT + wrap`）。
-        // **第一格必须与上面那个全局 `sampler` 同参数**（Nearest + ClampToEdge）——那是"没在
-        // `resources.meta` 里登记过的贴图"走的路径，它要逐字节维持今天的样子，这条由
-        // `the_undocumented_texture_path_keeps_todays_pixels` 钉住。
-        let mut texture_samplers = Vec::new();
-        for filter in [
-            rustlua_assets::import_settings::TextureFilter::Nearest,
-            rustlua_assets::import_settings::TextureFilter::Linear,
-        ] {
-            use rustlua_assets::import_settings::TextureWrap;
-            for wrap in [
-                TextureWrap::ClampToEdge,
-                TextureWrap::Repeat,
-                TextureWrap::MirroredRepeat,
-            ] {
-                texture_samplers.push(device.create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some(&format!(
-                        "rustlua-texture-sampler-{}-{}",
-                        filter.token(),
-                        wrap.token()
-                    )),
-                    mag_filter: Renderer::wgpu_filter_mode(filter),
-                    min_filter: Renderer::wgpu_filter_mode(filter),
-                    // P3-R96：线性材质采样开 8× 各向异性，地形/水面在掠射角更清晰；
-                    // wgpu 要求 anisotropy>1 时三档过滤都必须是 Linear。
-                    mipmap_filter: if filter
-                        == rustlua_assets::import_settings::TextureFilter::Linear
-                    {
-                        wgpu::FilterMode::Linear
-                    } else {
-                        wgpu::FilterMode::Nearest
-                    },
-                    anisotropy_clamp: if filter
-                        == rustlua_assets::import_settings::TextureFilter::Linear
-                    {
-                        8
-                    } else {
-                        1
-                    },
-                    address_mode_u: Renderer::wgpu_address_mode(wrap),
-                    address_mode_v: Renderer::wgpu_address_mode(wrap),
-                    address_mode_w: Renderer::wgpu_address_mode(wrap),
-                    ..Default::default()
-                }));
-            }
-        }
-        debug_assert_eq!(
-            texture_samplers.len(),
-            rustlua_assets::import_settings::TextureFilter::COUNT
-                * rustlua_assets::import_settings::TextureWrap::COUNT
-        );
+        // 逐纹理采样器表：拆分批 2 搬到 `construct/texture.rs`。
+        // 这一段自包含（只吃 device + 两个静态方法），是按**依赖关系**而非行号切分的样板。
+        let texture_samplers = super::construct::texture::texture_samplers(&device);
         // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
         let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rustlua-sdf-sampler"),

@@ -34,19 +34,112 @@
 //! 2. **拆分 `new_async` 时不小心漏了或搬错了顺序**：清单会精确指出第几项对不上。
 //!
 //! 这个门**不判断哪个是对的**——它只保证"变化必须是有人决定的"。
+//!
+//! ## 它测不到什么（2026-11-18 实测，必须说清）
+//!
+//! 静态扫描数的是**创建语句出现的次数**，不是**运行时真正建了几个**。
+//! 实测：把 `texture::texture_samplers` 的内层循环从 3 个 wrap 减到 2 个，
+//! 创建语句仍然只有一处、顺序没变，**本门照常绿**——而实际少建了 2 个采样器。
+//!
+//! 这个盲区不能靠静态扫描补（要看得懂循环边界就等于写了个小型解释器）。
+//! 它由两道运行时判据兜着：
+//!
+//! - `texture::texture_samplers` 里的 `debug_assert_eq!`（数量必须等于
+//!   `TextureFilter::COUNT × TextureWrap::COUNT`）；
+//! - `the_undocumented_texture_path_keeps_todays_pixels`（第一格的参数口径，
+//!   它管的是"采样器参数对不对"，不是数量）。
+//!
+//! 换句话说：**本门守顺序，运行时的门守数量**。两者职责不重叠，改这里之前先想清楚
+//! 要守的是哪一半。
 
 use std::path::{Path, PathBuf};
 
-/// `new_async` 的源码（从 crate 根定位，避免依赖当前工作目录）。
+/// `construct/` 目录（`mod.rs` 与各批次子模块都在这里）。
+fn construct_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/renderer/construct")
+}
+
+/// `mod.rs` 的源码。
 fn construct_source() -> String {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/renderer/construct/mod.rs");
+    let path = construct_dir().join("mod.rs");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("读不到 {}：{error}", path.display()))
 }
 
+/// 把 `new_async` 里对子模块的调用**就地展开**成那个子模块的全部资源创建。
+///
+/// ## 为什么要展开
+///
+/// 批次 2 起，资源创建开始分散到 `construct/` 的子模块里（`texture::texture_samplers`
+/// 就是第一个）。如果门只看 `mod.rs`，那些搬到子模块的创建就会从序列里消失——
+/// 2026-11-18 实测：拆完批次 2，门报"第 6 项开始不一致"，少掉 6 个 `create_sampler`。
+///
+/// **那不是代码错了，是判据需要演进**。批次拆分的目的是"顺序不变"，而不是"创建
+/// 必须写在一个文件里"。所以这里按**调用位置**把子模块的内容接回去：
+/// 调用点在哪一项，那个子模块的创建序列就插在哪一项。
+///
+/// 展开规则刻意保守：只认 `super::construct::<module>::<fn>(` 这种完整路径，
+/// 不做泛化的跨文件调用图分析——那会引入"分析器自己出错"的风险，而这道门的价值
+/// 恰恰在于它简单到可以信任。
+fn expand_submodule_calls(body: &str) -> String {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        // 形如：`let texture_samplers = super::construct::texture::texture_samplers(&device);`
+        if let Some(rest) = line.split("super::construct::").nth(1) {
+            let mut parts = rest.split("::");
+            let module = parts.next().unwrap_or("").trim();
+            let func = parts
+                .next()
+                .unwrap_or("")
+                .split('(')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !module.is_empty() && !func.is_empty() {
+                let path = construct_dir().join(format!("{module}.rs"));
+                let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+                    panic!(
+                        "`new_async` 调用了 {module}::{func}，但读不到 {}：{error}",
+                        path.display()
+                    )
+                });
+                let module_body = function_body(&source, func);
+                // 子模块里可能还有下一层调用（批次继续拆下去会遇到），递归展开。
+                out.push(expand_submodule_calls(&module_body));
+                continue;
+            }
+        }
+        out.push(line.to_owned());
+    }
+    out.join("\n")
+}
+
+/// 从源码里取出某个函数（或包含该名字的第一段 `fn ... { }`）的函数体。
+fn function_body(source: &str, name: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let needle = format!("fn {name}(");
+    let start = lines
+        .iter()
+        .position(|line| line.contains(&needle))
+        .unwrap_or_else(|| panic!("`{name}` 不在子模块里——调用点与定义对不上"));
+    let mut depth = 0_i32;
+    let mut started = false;
+    for (offset, line) in lines[start..].iter().enumerate() {
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if line.contains('{') {
+            started = true;
+        }
+        if started && depth == 0 {
+            return lines[start..start + offset + 1].join("\n");
+        }
+    }
+    panic!("`{name}` 的函数体没有闭合");
+}
+
 /// 从源码里取出 `new_async` 的函数体（按大括号配平，不认识字符串里的花括号——
 /// 这个文件的函数体里没有裸花括号字面量，且配平失败会让下面的断言直接报错）。
-fn new_async_body(source: &str) -> String {
+fn new_async_body_raw(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let start = lines
         .iter()
@@ -65,6 +158,14 @@ fn new_async_body(source: &str) -> String {
         }
     }
     panic!("`new_async` 的函数体没有闭合——大括号配平失败");
+}
+
+/// `new_async` 的函数体，**子模块调用已就地展开**。
+///
+/// 两个测试都用这个而不是 `_raw`：批次拆分后创建会分散到 `construct/*.rs`，
+/// 只看 `mod.rs` 会把搬走的创建漏掉（批次 2 实测少 6 个 `create_sampler`）。
+fn new_async_body(source: &str) -> String {
+    expand_submodule_calls(&new_async_body_raw(source))
 }
 
 /// 去掉行注释与块注释（换行符保留，后面还要按行切分）。

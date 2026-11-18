@@ -940,11 +940,7 @@ mod tests {
 
         // 改命名参数 spin（刀光弧转速）后，同一时刻画面必须变。
         let mut tuned = graph.clone();
-        if let Some(node) = tuned
-            .nodes
-            .iter_mut()
-            .find(|node| node.id == "blade")
-        {
+        if let Some(node) = tuned.nodes.iter_mut().find(|node| node.id == "blade") {
             node.params.insert("spin".into(), 5.0);
         }
         let retuned = render_graph(&gpu, &tuned, 0.25).expect("调 spin 后渲染");

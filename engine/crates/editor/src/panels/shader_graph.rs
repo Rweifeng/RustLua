@@ -1229,20 +1229,14 @@ mod tests {
             match &clipped.shape {
                 // GPU 缺失时预览画灰色占位块；有 GPU 时是 egui 图片/控制条。
                 egui::Shape::Rect(shape) => shape.fill == Color32::from_gray(28),
-                egui::Shape::Text(shape) => {
-                    shape.galley.text().contains("实时预览需要 GPU 设备")
-                }
+                egui::Shape::Text(shape) => shape.galley.text().contains("实时预览需要 GPU 设备"),
                 _ => false,
             }
         });
         assert!(
             has_later_content,
-            "检查器底色之后必须还有预览内容，否则预览被盖住：{:?}",
-            output
-                .shapes
-                .iter()
-                .map(|c| format!("{:?}", c.shape))
-                .collect::<Vec<_>>()
+            "检查器底色之后必须还有预览内容，否则预览被盖住（共 {} 个绘制指令）",
+            output.shapes.len()
         );
     }
 
@@ -1325,21 +1319,31 @@ mod tests {
         );
         assert!(state.time > 0.0, "播放状态下时间应当推进");
         assert!(!state.last_source.is_empty(), "应当已编译一份 WGSL");
-        // 有 GPU 时预览图必须真的画在检查器底色之上，否则用户只看到一块空底色。
+        // 有 GPU 时预览图（egui Image → Mesh）必须真的画在检查器底色之上，
+        // 否则用户只看到一块空底色（"模板说明"文字在底色之后，不能算预览）。
         let bg = Color32::from_rgb(31, 35, 39);
         let bg_at = output
             .shapes
             .iter()
-            .rposition(|clipped| matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.fill == bg))
+            .rposition(
+                |clipped| matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.fill == bg),
+            )
+            .expect("检查器底色");
+        // 有 GPU 时预览图（带纹理 brush 的 Rect）必须画在检查器底色之上，
+        // 否则用户只看到一块空底色（"模板说明"文字在底色之后，不算预览）。
+        let bg = Color32::from_rgb(31, 35, 39);
+        let bg_at = output
+            .shapes
+            .iter()
+            .rposition(
+                |clipped| matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.fill == bg),
+            )
             .expect("检查器底色");
         assert!(
             output.shapes[bg_at + 1..].iter().any(|clipped| {
-                matches!(
-                    &clipped.shape,
-                    egui::Shape::Mesh(_) | egui::Shape::Text(_)
-                )
+                matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.brush.is_some())
             }),
-            "检查器底色之后必须还有预览图或控制条，否则预览被盖住"
+            "检查器底色之后必须画出带纹理的预览图，否则预览被盖住"
         );
         let _ = std::fs::remove_dir_all(root);
     }
