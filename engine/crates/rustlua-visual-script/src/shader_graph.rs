@@ -1868,7 +1868,6 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
             let default = match param.param {
                 "frequency" => 1.0,
                 "power" => 3.0,
-                "color" => 1.0,
                 "speed" => 0.6,
                 "width" => 0.08,
                 "strength" => 0.02,
@@ -1886,7 +1885,14 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                 "direction" => 0.0,
                 _ => 0.0,
             };
-            let value = node.params.get(param.param).copied().unwrap_or(default);
+            // 颜色常量在节点里存成 r/g/b 三个键，编译后合并成一个 vec4 槽的 x/y/z；
+            // 按分量读回对应键，否则默认色永远是白色（改了颜色不重编就看不到）。
+            let key = if param.param == "color" {
+                ["r", "g", "b", "a"][param.component.min(3)]
+            } else {
+                param.param
+            };
+            let value = node.params.get(key).copied().unwrap_or(default);
             if let Some(slot) = slots.get_mut(param.slot) {
                 slot[param.component] = value;
             }
@@ -2100,7 +2106,7 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                             let value = n.params.get("speed").copied().unwrap_or(0.6);
                             format!("{value:.4}")
                         }
-                        Some(_) => param_expr(&n.id, "spin_speed", 0),
+                        Some(_) => param_expr(&n.id, "speed", 0),
                     };
                     lines.push(format!(
                         "    let {v} = vec4<f32>(pow(clamp(1.0 - abs(length(uv - vec2<f32>(0.5, 0.5)) * 2.0 - fract(time * {speed})), 0.0, 1.0), 8.0));"
@@ -2120,7 +2126,7 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                             let value = n.params.get("spin_speed").copied().unwrap_or(1.5);
                             format!("{value:.4}")
                         }
-                        Some(_) => param_expr(&n.id, "speed", 0),
+                        Some(_) => param_expr(&n.id, "spin_speed", 0),
                     };
                     // WGSL 没有块表达式，展开成多条 let；变量名带节点前缀防撞名。
                     lines.push(format!("    let {v}_c = ({uv}) - vec2<f32>(0.5, 0.5);"));

@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 /// `new_async` 的源码（从 crate 根定位，避免依赖当前工作目录）。
 fn construct_source() -> String {
-    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/renderer/construct.rs");
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/renderer/construct/mod.rs");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("读不到 {}：{error}", path.display()))
 }

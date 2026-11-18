@@ -1,11 +1,37 @@
 //! `Renderer` 的构造侧（WP12 阶段 4d 从 `renderer/mod.rs` 原样搬出）：`new`、
-//! `new_offscreen` 和 1,070 行的 `new_async`——适配器/设备/表面、七条管线、采样器与
+//! `new_offscreen` 与 `new_async`——适配器/设备/表面、七条管线、采样器与
 //! 各张 GPU 缓冲的创建都在这里。
 //!
-//! 计划 §5 的硬规矩 2：**只搬位置，不拆函数体** ⇒ `new_async` 整段原样搬，它的分段
-//! （管线、缓冲、时间戳）另开工作包（§9）。`Renderer` 结构体与全部字段仍留在
-//! `renderer/mod.rs`（§3.1.2）；本模块是它的后代，结构体字面量按私有字段构造**不需要**
-//! 放宽任何可见性。
+//! ## `new_async` 的分批拆分（2026-11-18 起）
+//!
+//! WP12 当时定的是"**只搬位置，不拆函数体**"，拆函数体留给"PBR/HDR 落地时顺势做"
+//! 的工作包。PBR/HDR 已于 2026-10-23/24 交付，而那个包没开——`new_async` 从搬迁时的
+//! 1,070 行涨到 2,371 行（占全文件 70%）。`docs/62` 的 1.7 版更正登记了这笔账。
+//!
+//! 拆分按"一次一批、每批单独验证"推进。每批的等价判据是
+//! `tests/construct_creation_order.rs` 里的**资源创建序列**：92 次 `device.create_*`
+//! 的类型与顺序一个都不能变。（文件级拆分用的"纯搬运"证明对拆函数体不成立——
+//! 变量要重新绑定、作用域要重新组织，行段必然变。）
+//!
+//! 进度：
+//!
+//! | 批次 | 内容 | 状态 |
+//! |---|---|---|
+//! | 1 | 设备与能力探测 → [`device::boot_device`]（148 行、0 处资源创建） | ✅ 已拆 |
+//! | 2 | 全局采样器与文本（302 行、14 处） | 待拆 |
+//! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
+//! | 4 | 帧环 / 白图 / 阴影纹理（309 行、16 处） | 待拆 |
+//! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
+//! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
+//! | 7 | 世界 Sprite（86 行、6 处） | 待拆 |
+//! | 8 | GPU 粒子布局（68 行、3 处） | 待拆 |
+//! | 9 | 后处理（795 行、31 处） | 待拆 |
+//!
+//! 批次 1 刻意选**唯一不含资源创建**的段落：它是验证拆分手法本身的最低风险样板。
+//!
+//! `Renderer` 结构体与全部字段仍留在 `renderer/mod.rs`（§3.1.2）；本模块是它的后代，
+//! 结构体字面量按私有字段构造**不需要**放宽任何可见性——子模块用 `pub(super)` 取用
+//! 父模块的私有项，这条在批次 2 起会真正用到。
 
 use crate::{
     shader::{
@@ -22,10 +48,7 @@ use rustlua_render::render_plan::RenderPlan;
 use rustlua_render::render_settings::{EnvironmentLighting, IblMode, RenderSettings};
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
 use wgpu::util::DeviceExt;
-use wgpu::{
-    CompositeAlphaMode, Device, DeviceDescriptor, Instance, InstanceDescriptor, PresentMode, Queue,
-    SurfaceConfiguration, TextureUsages,
-};
+use wgpu::{Device, Queue};
 use winit::window::Window;
 
 use super::pipeline_cache::{
@@ -33,11 +56,12 @@ use super::pipeline_cache::{
     VARIANT_COMPILE_BUDGET_MS,
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
+pub(super) mod device;
+
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, RendererCapabilities,
-    TONEMAP_UNIFORM_BYTES, camera_uniform, compute::ComputeState, depth_stencil_state,
-    identity_palette_data,
+    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, TONEMAP_UNIFORM_BYTES,
+    camera_uniform, compute::ComputeState, depth_stencil_state, identity_palette_data,
 };
 
 impl Renderer {
@@ -174,154 +198,21 @@ impl Renderer {
         } else {
             LoadMode::Sync
         };
-        // Surface mode: create instance/adapter/device from the window.
-        // Offscreen mode: use the caller-provided device/queue.
-        // 窗口路径的 adapter 只用于能力探测；离屏路径没有 adapter，靠限制值判定。
-        let mut adapter_for_caps: Option<wgpu::Adapter> = None;
-        let (device, queue, surface, format, config, adapter_name) = if let Some(window) = window {
-            let size = window.inner_size();
-            let instance = Instance::new(&InstanceDescriptor::default());
-            let surface = instance
-                .create_surface(window)
-                .map_err(|error| anyhow::anyhow!("could not create surface: {error}"))?;
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
-                })
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("could not find a compatible GPU adapter: {error}")
-                })?;
-            let adapter_name = adapter.get_info().name;
-            let timestamp_features =
-                wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-            let required_features = if adapter.features().contains(timestamp_features) {
-                timestamp_features
-            } else {
-                wgpu::Features::empty()
-            };
-            let (device, queue) = adapter
-                .request_device(&DeviceDescriptor {
-                    label: Some("rustlua-render-device"),
-                    required_features,
-                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    trace: wgpu::Trace::Off,
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("could not create GPU device: {error}"))?;
-            let capabilities = surface.get_capabilities(&adapter);
-            let format = capabilities
-                .formats
-                .iter()
-                .copied()
-                .find(|format| format.is_srgb())
-                .or_else(|| capabilities.formats.first().copied())
-                .ok_or_else(|| anyhow::anyhow!("GPU surface reported no supported formats"))?;
-            let present_mode = if capabilities.present_modes.contains(&PresentMode::Mailbox) {
-                PresentMode::Mailbox
-            } else {
-                PresentMode::Fifo
-            };
-            let alpha_mode = capabilities
-                .alpha_modes
-                .first()
-                .copied()
-                .unwrap_or(CompositeAlphaMode::Auto);
-            let config = SurfaceConfiguration {
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width: size.width.max(1),
-                height: size.height.max(1),
-                present_mode,
-                alpha_mode,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            };
-            surface.configure(&device, &config);
-            adapter_for_caps = Some(adapter);
-            (device, queue, Some(surface), format, config, adapter_name)
-        } else {
-            let (device, queue) = external_device
-                .ok_or_else(|| anyhow::anyhow!("offscreen renderer requires a device/queue"))?;
-            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-            let config = SurfaceConfiguration {
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width: 1280,
-                height: 720,
-                present_mode: PresentMode::Fifo,
-                alpha_mode: CompositeAlphaMode::Auto,
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            };
-            (device, queue, None, format, config, "offscreen".to_owned())
-        };
-        // 设备有没有存储缓冲（WebGL2 / 任何 downlevel 设备上都是 0）。构造路径上有三处要看它：
-        // 矢量文字的两个绑定、3D 材质的逐实例矩阵（storage 数组 ↔ 64 字节 uniform 两种取法）、
-        // 以及实例环/实例化合批。不该建的去建**不是**"功能少一点"，而是在
-        // `create_bind_group_layout` 上直接吃一条校验错误——wgpu 对未被 error scope 捕获的
-        // 校验错误走默认 handler，wasm 上是 `panic=abort`，整个渲染器就此死掉。
-        // 所以这里按**设备能力**（而不是按平台 `cfg`）分叉：原生桌面照旧走存储缓冲，
-        // web 走"没有矢量文字、3D 换 uniform 取法"的构造。
-        let storage_capable = device.limits().max_storage_buffers_per_shader_stage > 0;
-        // M74-03 P0：能力快照在构造期采一次。`adapter_for_caps` 只有窗口路径才有——
-        // 离屏渲染器拿的是外部 device（编辑器 eframe），没有 downlevel flag 可查，
-        // 由 `RendererCapabilities::probe` 退到限制值判定。
-        let capabilities =
-            RendererCapabilities::probe(&device, &queue, adapter_for_caps.as_ref()).await;
-        if let Some(reason) = capabilities.compute_unavailable_reason() {
-            tracing::info!(
-                target: "render",
-                backend = capabilities.backend_name(),
-                reason = %reason,
-                "[render] compute 通道不可用：GPU 粒子等消费者必须走 CPU 档"
-            );
-        } else {
-            tracing::info!(
-                target: "render",
-                backend = capabilities.backend_name(),
-                workgroup = ?capabilities.max_compute_workgroup_size,
-                "[render] compute 通道可用"
-            );
-        }
-        // P3-R01：HDR 能力是**两轴独立证据**（可渲染/读回 + 可线性过滤）。这里只报告，不决定
-        // 是否启用——是否启用由 `RenderSettings.hdr` 与本帧内容在 `render_passes` 里解析。
-        if let Some(reason) = capabilities.hdr_unavailable_reason() {
-            tracing::info!(
-                target: "render",
-                backend = capabilities.backend_name(),
-                reason = %reason,
-                "[render] HDR 场景颜色不可用：HDR 策略将回退到 LDR"
-            );
-        } else {
-            tracing::info!(
-                target: "render",
-                backend = capabilities.backend_name(),
-                "[render] HDR 场景颜色可用（Rgba16Float + 线性过滤）；默认策略仍为关闭"
-            );
-        }
-        let storage_usage = if storage_capable {
-            wgpu::BufferUsages::STORAGE
-        } else {
-            wgpu::BufferUsages::empty()
-        };
-        // 实例化本身也吃存储缓冲（逐实例模型矩阵），能力不足时把参数一并关掉：
-        // 这是"同一件事的两条实现里选不需要存储缓冲的那条"，不是少画。
-        let instancing_enabled = instancing_enabled && storage_capable;
-        if !storage_capable {
-            // 一次告警，而不是每帧：矢量文字的两个绑定是存储缓冲，这条设备上只剩 SDF 文字
-            // 与 2D 通路；3D 网格/阴影改走 64 字节 uniform 的模型矩阵（**照样画**，只是
-            // 逐 draw 一次绑定、不做实例化合批）。漏画而日志里一个字都没有，是本仓最不能
-            // 接受的失败类型，所以这里明确说清"哪条路换了实现、哪条路真的没有"。
-            tracing::warn!(target: "game",
-                "设备没有存储缓冲（max_storage_buffers_per_shader_stage=0，WebGL2 即如此）：\
-                 3D 网格/阴影改走 per-draw uniform 模型矩阵（实例化合批关闭），\
-                 矢量文字不构造（宿主应改用 SDF 文字，未改的 draw 会计入 dropped_draws）");
-        }
+        // 设备、能力快照与派生开关：拆分批 1 搬到 `construct/device.rs`。
+        // 这一段一处资源创建都没有，所以它是验证拆分手法的最低风险样板。
+        let boot =
+            super::construct::device::boot_device(window, external_device, instancing_enabled)
+                .await?;
+        let device = boot.device;
+        let queue = boot.queue;
+        let surface = boot.surface;
+        let format = boot.format;
+        let config = boot.config;
+        let adapter_name = boot.adapter_name;
+        let storage_capable = boot.storage_capable;
+        let storage_usage = boot.storage_usage;
+        let instancing_enabled = boot.instancing_enabled;
+        let capabilities = boot.capabilities;
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-texture-bind-group-layout"),

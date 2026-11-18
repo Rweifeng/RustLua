@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "name": "flame_blade_slash",
+  "nodes": [
+    {
+      "id": "uv",
+      "kind": "uv",
+      "position": [0.0, 200.0],
+      "params": {}
+    },
+    {
+      "id": "time",
+      "kind": "time",
+      "position": [0.0, 360.0],
+      "params": {}
+    },
+    {
+      "id": "edge",
+      "kind": "depth_edge",
+      "position": [180.0, 40.0],
+      "params": {
+        "edge_width": 0.0025
+      }
+    },
+    {
+      "id": "tint",
+      "kind": "constant",
+      "position": [180.0, 220.0],
+      "params": {
+        "r": 1.0,
+        "g": 0.42,
+        "b": 0.08
+      }
+    },
+    {
+      "id": "tex",
+      "kind": "texture",
+      "position": [180.0, 420.0],
+      "params": {}
+    },
+    {
+      "id": "flicker",
+      "kind": "sine",
+      "position": [180.0, 600.0],
+      "params": {
+        "frequency": 12.0
+      }
+    },
+    {
+      "id": "shock",
+      "kind": "ring",
+      "position": [180.0, 780.0],
+      "params": {
+        "speed": 0.9
+      }
+    },
+    {
+      "id": "blade",
+      "kind": "sector",
+      "position": [180.0, 960.0],
+      "params": {
+        "arc_width": 0.32,
+        "radius": 0.4,
+        "thickness": 0.16,
+        "spin": 2.0
+      }
+    },
+    {
+      "id": "fire",
+      "kind": "multiply",
+      "position": [420.0, 300.0],
+      "params": {}
+    },
+    {
+      "id": "fire_pulse",
+      "kind": "multiply",
+      "position": [600.0, 300.0],
+      "params": {}
+    },
+    {
+      "id": "body",
+      "kind": "multiply",
+      "position": [780.0, 340.0],
+      "params": {}
+    },
+    {
+      "id": "edge_rim",
+      "kind": "multiply",
+      "position": [420.0, 120.0],
+      "params": {}
+    },
+    {
+      "id": "tint_mix",
+      "kind": "add",
+      "position": [960.0, 300.0],
+      "params": {}
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "position": [1140.0, 420.0],
+      "params": {}
+    }
+  ],
+  "edges": [
+    { "from": { "node": "uv", "port": "value" }, "to": { "node": "edge", "port": "uv" } },
+    { "from": { "node": "uv", "port": "value" }, "to": { "node": "tex", "port": "uv" } },
+    { "from": { "node": "uv", "port": "value" }, "to": { "node": "blade", "port": "uv" } },
+    { "from": { "node": "time", "port": "value" }, "to": { "node": "flicker", "port": "time" } },
+    { "from": { "node": "tex", "port": "value" }, "to": { "node": "fire", "port": "a" } },
+    { "from": { "node": "tint", "port": "value" }, "to": { "node": "fire", "port": "b" } },
+    { "from": { "node": "fire", "port": "value" }, "to": { "node": "fire_pulse", "port": "a" } },
+    { "from": { "node": "flicker", "port": "value" }, "to": { "node": "fire_pulse", "port": "b" } },
+    { "from": { "node": "fire_pulse", "port": "value" }, "to": { "node": "body", "port": "a" } },
+    { "from": { "node": "shock", "port": "value" }, "to": { "node": "body", "port": "b" } },
+    { "from": { "node": "tint", "port": "value" }, "to": { "node": "edge_rim", "port": "a" } },
+    { "from": { "node": "edge", "port": "value" }, "to": { "node": "edge_rim", "port": "b" } },
+    { "from": { "node": "body", "port": "value" }, "to": { "node": "tint_mix", "port": "a" } },
+    { "from": { "node": "edge_rim", "port": "value" }, "to": { "node": "tint_mix", "port": "b" } },
+    { "from": { "node": "tint_mix", "port": "value" }, "to": { "node": "out", "port": "tint" } },
+    { "from": { "node": "blade", "port": "value" }, "to": { "node": "out", "port": "alpha" } }
+  ]
+}

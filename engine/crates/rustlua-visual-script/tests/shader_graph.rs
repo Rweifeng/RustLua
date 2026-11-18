@@ -403,3 +403,155 @@ fn named_params_are_unique_and_expand_colors() {
         .expect("frequency named");
     assert!(frequency.default > 0.0, "默认值应来自槽位默认");
 }
+
+/// 改了常量节点的 r/g/b 后，uniform 默认值必须跟着变，而不是恒为白色。
+/// （火焰色若默认是白色，运行时叠加层不设参数就看不到 authored 颜色。）
+#[test]
+fn authored_constant_color_is_the_uniform_default() {
+    use rustlua_visual_script::shader_graph::ShaderNodeKind;
+    let graph = ShaderTemplate::Fire.graph();
+    let compiled = graph.compile_wgsl_uniform(0, 3).expect("uniform compile");
+    let color_slot = compiled
+        .params
+        .iter()
+        .find(|param| param.param == "color")
+        .map(|param| param.slot)
+        .expect("color slot");
+    // Fire 模板的火焰常量色为 (1.0, 0.45, 0.1)。
+    assert!(
+        (compiled.slots[color_slot][0] - 1.0).abs() < 1e-6
+            && (compiled.slots[color_slot][1] - 0.45).abs() < 1e-6
+            && (compiled.slots[color_slot][2] - 0.1).abs() < 1e-6,
+        "默认色应取节点 r/g/b，实测 {:?}",
+        compiled.slots[color_slot]
+    );
+    let mut edited = graph.clone();
+    if let Some(node) = edited
+        .nodes
+        .iter_mut()
+        .find(|node| node.kind == ShaderNodeKind::Constant)
+    {
+        node.params.insert("r".into(), 0.2);
+        node.params.insert("g".into(), 0.7);
+        node.params.insert("b".into(), 0.9);
+    }
+    let slots = edited.param_values(&compiled);
+    assert!(
+        (slots[color_slot][0] - 0.2).abs() < 1e-6
+            && (slots[color_slot][1] - 0.7).abs() < 1e-6
+            && (slots[color_slot][2] - 0.9).abs() < 1e-6,
+        "改颜色后槽位默认值必须跟着变：{:?}",
+        slots[color_slot]
+    );
+}
+
+/// Ring 扩张速度在 uniform 模式下应读自己的 `speed` 槽，而不是误读 slot 0。
+/// 用「常量在前、环在后」的图构造出 ring 槽号 != 0 的情形，才能抓到这个 bug。
+#[test]
+fn ring_speed_reads_its_own_slot_in_uniform_mode() {
+    use rustlua_visual_script::shader_graph::{ShaderGraph, ShaderNode, ShaderNodeKind};
+    let node = |id: &str, kind| ShaderNode {
+        id: id.into(),
+        kind,
+        position: [0.0, 0.0],
+        params: Default::default(),
+    };
+    let mut constant = node("c", ShaderNodeKind::Constant);
+    constant.params.insert("r".into(), 1.0);
+    let mut ring = node("shock", ShaderNodeKind::Ring);
+    ring.params.insert("speed".into(), 0.9);
+    let graph = ShaderGraph {
+        version: 1,
+        name: "ring_slot".into(),
+        nodes: vec![constant, ring, node("out", ShaderNodeKind::Output)],
+        edges: vec![rustlua_visual_script::shader_graph::ShaderEdge {
+            from: rustlua_visual_script::shader_graph::ShaderPort {
+                node: "shock".into(),
+                port: "value".into(),
+            },
+            to: rustlua_visual_script::shader_graph::ShaderPort {
+                node: "out".into(),
+                port: "tint".into(),
+            },
+        }],
+    };
+    let compiled = graph.compile_wgsl_uniform(1, 3).expect("uniform compile");
+    let ring_slot = compiled
+        .params
+        .iter()
+        .find(|param| param.node == "shock" && param.param == "speed")
+        .map(|param| param.slot)
+        .expect("ring speed slot");
+    assert_ne!(ring_slot, 0, "测试前置：ring 槽号不能是 0");
+    assert!(
+        compiled
+            .source
+            .contains(&format!("fract(time * graph_params.p[{ring_slot}].x)")),
+        "ring 速度必须引用自己的槽 {ring_slot}：\n{}",
+        compiled.source
+    );
+}
+
+/// RotateUv 旋转速度在 uniform 模式下应读 `spin_speed` 槽，而不是误读 slot 0。
+#[test]
+fn rotate_uv_reads_spin_speed_slot_in_uniform_mode() {
+    use rustlua_visual_script::shader_graph::{ShaderGraph, ShaderNode, ShaderNodeKind};
+    let node = |id: &str, kind| ShaderNode {
+        id: id.into(),
+        kind,
+        position: [0.0, 0.0],
+        params: Default::default(),
+    };
+    let mut constant = node("c", ShaderNodeKind::Constant);
+    constant.params.insert("r".into(), 1.0);
+    let mut rotate = node("spin", ShaderNodeKind::RotateUv);
+    rotate.params.insert("angle0".into(), 0.0);
+    rotate.params.insert("spin_speed".into(), 1.5);
+    let graph = ShaderGraph {
+        version: 1,
+        name: "rotate_slot".into(),
+        nodes: vec![
+            constant,
+            rotate,
+            node("tex", ShaderNodeKind::Texture),
+            node("out", ShaderNodeKind::Output),
+        ],
+        edges: vec![
+            rustlua_visual_script::shader_graph::ShaderEdge {
+                from: rustlua_visual_script::shader_graph::ShaderPort {
+                    node: "spin".into(),
+                    port: "value".into(),
+                },
+                to: rustlua_visual_script::shader_graph::ShaderPort {
+                    node: "tex".into(),
+                    port: "uv".into(),
+                },
+            },
+            rustlua_visual_script::shader_graph::ShaderEdge {
+                from: rustlua_visual_script::shader_graph::ShaderPort {
+                    node: "tex".into(),
+                    port: "value".into(),
+                },
+                to: rustlua_visual_script::shader_graph::ShaderPort {
+                    node: "out".into(),
+                    port: "tint".into(),
+                },
+            },
+        ],
+    };
+    let compiled = graph.compile_wgsl_uniform(1, 3).expect("uniform compile");
+    let spin_slot = compiled
+        .params
+        .iter()
+        .find(|param| param.node == "spin" && param.param == "spin_speed")
+        .map(|param| param.slot)
+        .expect("spin_speed slot");
+    assert_ne!(spin_slot, 0, "测试前置：spin 槽号不能是 0");
+    assert!(
+        compiled
+            .source
+            .contains(&format!("time * (graph_params.p[{spin_slot}].x)")),
+        "旋转速度必须引用自己的槽 {spin_slot}：\n{}",
+        compiled.source
+    );
+}

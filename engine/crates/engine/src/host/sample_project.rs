@@ -442,7 +442,7 @@ fn sample_project_render_capabilities_are_demonstrated() {
     let config = rustlua_render::render_config::RenderConfig::from_toml(&project_text);
     assert_eq!(
         config.effect_overlay.as_deref(),
-        Some("assets/fx/showcase_outline.sgraph"),
+        Some("assets/fx/flame_blade_slash.sgraph"),
         "project.toml [render] effect_overlay 没有指向演示用的 .sgraph"
     );
     assert!(
@@ -472,6 +472,14 @@ fn sample_project_render_capabilities_are_demonstrated() {
         named.iter().any(|name| name.starts_with("color_")),
         "`.sgraph` 应暴露描边颜色参数，现有：{named:?}"
     );
+    // 炎刃斩击演示逐帧按名字调 spin/speed/frequency；资产必须真的暴露它们，
+    // 否则 set_effect_param 会返回 false，演示只是"看起来在调"却没有效果。
+    for required in ["spin", "speed", "frequency"] {
+        assert!(
+            named.contains(required),
+            "炎刃斩击 `.sgraph` 应暴露命名参数 {required}（demo_3d 逐帧调它），现有：{named:?}"
+        );
+    }
 
     let (sources, _raw) = demo_sources(&root);
     for call in [

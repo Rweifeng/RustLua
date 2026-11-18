@@ -288,7 +288,7 @@ fn ssr_misses_fall_back_to_the_procedural_sky() {
     );
     // `construct.rs` 在 Windows 的 autocrlf 检出里是 CRLF，多行 `contains` 只写 `\n` 会在本机假红
     // （CI 的 checkout 是 LF）。归一化换行，让本地与 CI 判据一致。
-    let construct = include_str!("../construct.rs").replace("\r\n", "\n");
+    let construct = include_str!("../construct/mod.rs").replace("\r\n", "\n");
     assert!(
         construct.contains("min_binding_size: wgpu::BufferSize::new(176),")
             && construct.contains("label: Some(\"rustlua-ssr-params\"),\n            size: 176,"),

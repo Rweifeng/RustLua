@@ -3,6 +3,33 @@
 > 状态：M84。目标是让不熟悉 WGSL/Shader 的开发者通过中文模板和参数面板制作常见游戏特效；
 > 当前只生成 fragment 函数片段，不改变现有 mesh 顶点 ABI。
 
+## 实战：炎刃斩击（多模板合成一张图，M84）
+
+`examples/game_api/assets/fx/flame_blade_slash.sgraph` 是一份**可直接运行的成品**，演示怎么用模板节点
+合成一个文档里没有现成模板的效果。它把三个模板的图拼进同一张图、同一个 `Output`：
+
+| 子效果 | 用到的节点 | 接到哪里 |
+|---|---|---|
+| 火焰流动 | `texture × constant(火焰色) × sine(闪烁)` | `Output.tint` 的一部分 |
+| 冲击波 | `ring(speed)` | 与火焰相乘，环带扫过时提亮 |
+| 刀光弧 | `sector(arc_width/radius/thickness/spin)` | `Output.alpha` 遮罩，弧 rotates 才显形 |
+| 深度描边 | `depth_edge(edge_width)` | 与火焰色相乘后加到 tint，场景交界处发亮 |
+
+它不是"加载三个模板再叠三层"——`project.toml` 只有一个 `effect_overlay`，M90 的多层 API 只服务
+编辑器手动叠加。正确做法是在一张图里用 `Multiply`/`Add` 把三种效果合成，输出一个 tint 与一个 alpha
+（见该文件节点：`fire → fire_pulse → body → tint_mix → out.tint`、`blade → out.alpha`）。
+
+命名参数因此是各模板参数的并集：`edge_width`、`color_r/g/b`、`frequency`、`speed`、
+`arc_width/radius/thickness/spin`（8 个槽，远低于 16 上限）。`demo_3d.lua` 的 `effect_overlay` 步
+逐帧改 `spin`/`speed`/`color_r/g/b` 与 `time`，看到的就是运行时真在用的那套 uniform。
+
+槽位顺序由拓扑遍历决定：本图 slot0=`edge_width`、slot1=`color`、slot2=`frequency`、
+slot3=`speed`、slot4-7=扇形参数。改图前先看 `compile_wgsl_uniform` 的槽位表，别在脚本里写死槽号。
+
+> 三处 uniform 修正（本效果必需）：`ring` 读自己的 `speed` 槽、`rotate_uv` 读 `spin_speed` 槽、
+> `constant` 的默认色取节点 `r/g/b` 而不是恒为白色。三者此前都错误地回退到 slot0，
+> 逐帧调参会静默失效；回归门在 `rustlua-visual-script/tests/shader_graph.rs`。
+
 ## 使用方式
 
 1. 在编辑器打开 **Shader Graph** 面板，下拉框按分类选择模板并点击「载入模板」。

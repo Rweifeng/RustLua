@@ -271,6 +271,9 @@ impl ShaderGraphPanel {
         self.draw_grid(&painter, canvas);
         self.draw_edges(&painter, canvas);
         self.draw_nodes(ui, &painter, canvas);
+        // 先铺检查器底色，再画实时预览：两者共用同一 painter，后画的覆盖先画的。
+        // 若把底色留在 `draw_inspector` 里铺，它会盖掉预览图（M98 回归）。
+        painter.rect_filled(inspector, 0.0, Color32::from_rgb(31, 35, 39));
         // 实时预览占检查器顶部：改模板/参数后作者第一眼看到的就是画面。
         let preview_height = self.draw_preview(ui, &painter, inspector, gpu);
         self.draw_inspector(ui, &painter, inspector, preview_height);
@@ -906,8 +909,8 @@ impl ShaderGraphPanel {
         inspector: Rect,
         preview_height: f32,
     ) {
-        painter.rect_filled(inspector, 0.0, Color32::from_rgb(31, 35, 39));
         let template = Self::templates()[self.template];
+        // 底色由 `ui()` 在 `draw_preview` 之前铺好；这里再铺会盖掉预览图。
         let mut top = inspector.left_top() + Vec2::new(12.0, preview_height + 14.0);
         painter.text(
             top,
@@ -1188,6 +1191,61 @@ mod tests {
         assert!(out_x > texture_x, "输出节点必须排在输入节点右侧");
     }
 
+    /// 回归：检查器底色必须先于实时预览铺好，否则整块底色会盖掉预览图，
+    /// 表现为"模板说明上方一片空白"（M98 实际截图复现）。无 GPU 时预览画占位提示，
+    /// 同样能被这条测试覆盖——只要占位块在底色之后画即可。
+    #[test]
+    fn inspector_background_is_painted_before_live_preview() {
+        let mut panel = ShaderGraphPanel::default();
+        let root = temp_root("paint-order");
+        let context = egui::Context::default();
+        let output = context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    panel.ui(ui, &root, None);
+                });
+            },
+        );
+        let bg = Color32::from_rgb(31, 35, 39);
+        let indices: Vec<usize> = output
+            .shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clipped)| match &clipped.shape {
+                egui::Shape::Rect(shape) if shape.fill == bg => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert!(!indices.is_empty(), "应铺检查器底色");
+        let preview_at = indices.last().copied().expect("底色索引");
+        let has_later_content = output.shapes[preview_at + 1..].iter().any(|clipped| {
+            match &clipped.shape {
+                // GPU 缺失时预览画灰色占位块；有 GPU 时是 egui 图片/控制条。
+                egui::Shape::Rect(shape) => shape.fill == Color32::from_gray(28),
+                egui::Shape::Text(shape) => {
+                    shape.galley.text().contains("实时预览需要 GPU 设备")
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            has_later_content,
+            "检查器底色之后必须还有预览内容，否则预览被盖住：{:?}",
+            output
+                .shapes
+                .iter()
+                .map(|c| format!("{:?}", c.shape))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn saved_graph_round_trips_through_panel_state() {
         let panel = ShaderGraphPanel::default();
@@ -1253,7 +1311,7 @@ mod tests {
         let root = temp_root("gpu");
         let mut panel = ShaderGraphPanel::default();
         let context = egui::Context::default();
-        let _ = context.run(egui::RawInput::default(), |context| {
+        let output = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| {
                 panel.ui(ui, &root, Some(&gpu));
             });
@@ -1267,6 +1325,22 @@ mod tests {
         );
         assert!(state.time > 0.0, "播放状态下时间应当推进");
         assert!(!state.last_source.is_empty(), "应当已编译一份 WGSL");
+        // 有 GPU 时预览图必须真的画在检查器底色之上，否则用户只看到一块空底色。
+        let bg = Color32::from_rgb(31, 35, 39);
+        let bg_at = output
+            .shapes
+            .iter()
+            .rposition(|clipped| matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.fill == bg))
+            .expect("检查器底色");
+        assert!(
+            output.shapes[bg_at + 1..].iter().any(|clipped| {
+                matches!(
+                    &clipped.shape,
+                    egui::Shape::Mesh(_) | egui::Shape::Text(_)
+                )
+            }),
+            "检查器底色之后必须还有预览图或控制条，否则预览被盖住"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

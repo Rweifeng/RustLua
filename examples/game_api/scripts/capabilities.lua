@@ -279,7 +279,7 @@ return {
             step = "effect_overlay",
             setting = "effect_overlay",
             api = { "render.set_effect_params", "render.set_effect_param", "render.set_effect_time" },
-            note = "project.toml [render] 挂 `.sgraph`；槽位/命名参数逐帧可调，可采样场景色与深度",
+            note = "project.toml [render] 挂 `.sgraph`；炎刃斩击=火焰流动+刀光弧+冲击波合成一张图，槽位/命名参数(spin/speed/color)逐帧可调，可采样场景色与深度",
         },
         {
             id = "render.soft_particles",

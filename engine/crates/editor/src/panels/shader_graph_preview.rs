@@ -909,4 +909,58 @@ mod tests {
             "扭曲强度为 0 时应采样原画面，>0 时坐标必须偏移"
         );
     }
+
+    /// 实战资产炎刃斩击：从磁盘读真实 `.sgraph`，走与运行时相同的编译+渲染路径。
+    /// 证明它不是"能编译的空图"——像素非空、随时间变、改命名参数也变。
+    #[test]
+    fn flame_blade_slash_asset_renders_and_responds_to_tuning() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip 炎刃斩击像素门：no fallback adapter");
+            return;
+        };
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/game_api/assets/fx/flame_blade_slash.sgraph");
+        let text = std::fs::read_to_string(&path).expect("读取炎刃斩击 .sgraph 失败");
+        let graph = ShaderGraph::from_json(&text).expect("炎刃斩击 .sgraph 必须是合法图");
+        graph.validate().expect("炎刃斩击图校验");
+        let compiled = graph
+            .compile_wgsl_uniform(0, 3)
+            .expect("炎刃斩击必须能编译成 uniform 叠加层");
+
+        let at_0 = render_graph(&gpu, &graph, 0.25).expect("t=0.25 渲染");
+        assert_eq!(at_0.len(), (PREVIEW_W * PREVIEW_H * 4) as usize);
+        assert!(
+            at_0.chunks(4).any(|pixel| pixel[3] > 0),
+            "炎刃斩击渲染结果全透明：刀光弧遮罩没有真正输出"
+        );
+
+        // 时间推进：刀光弧旋转 + 冲击波环扩散，画面必须变。
+        let at_1 = render_graph(&gpu, &graph, 1.75).expect("t=1.75 渲染");
+        assert_ne!(at_0, at_1, "改时间必须改变炎刃斩击画面");
+
+        // 改命名参数 spin（刀光弧转速）后，同一时刻画面必须变。
+        let mut tuned = graph.clone();
+        if let Some(node) = tuned
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "blade")
+        {
+            node.params.insert("spin".into(), 5.0);
+        }
+        let retuned = render_graph(&gpu, &tuned, 0.25).expect("调 spin 后渲染");
+        assert_ne!(at_0, retuned, "改 spin 参数必须改变刀光弧画面");
+
+        // 门：命名参数表真的暴露了演示脚本逐帧调的那几个名字。
+        let names: Vec<_> = compiled
+            .named_params()
+            .into_iter()
+            .map(|param| param.name)
+            .collect();
+        for required in ["edge_width", "color_r", "frequency", "speed", "spin"] {
+            assert!(
+                names.iter().any(|name| name == required),
+                "炎刃斩击应暴露 {required}，现有 {names:?}"
+            );
+        }
+    }
 }

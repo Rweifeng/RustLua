@@ -425,7 +425,7 @@ reset_render_fields = function()
     render.set_quality(1)
     render.set_effect_time(0.0)
     render.set_effect_params(0, 0.0025, 0.0, 0.0, 0.0)
-    render.set_effect_params(1, 1.0, 0.82, 0.25, 0.0)
+    render.set_effect_params(1, 1.0, 0.42, 0.08, 0.0)
 end
 
 --- 逐格网格的可见形态：`cells3d.build` 的 spec 直接交给 `mesh.set`，
@@ -633,14 +633,14 @@ local steps = {
     },
     {
         id = "effect_overlay",
-        title = "Effect overlay",
-        claim = "project.toml [render] 的 .sgraph 叠加层在运行时可用：按名字或槽位改参数、改时间，非法槽位/非有限值/负时间一律拒绝（headless 下没有宿主挂载时，按名字改参数会如实返回原因）",
+        title = "Effect overlay / 炎刃斩击",
+        claim = "project.toml [render] 的 .sgraph 叠加层在运行时可用：火焰流动 + 刀光弧 + 冲击波合成一张图，按名字或槽位改参数、改时间，非法槽位/非有限值/负时间一律拒绝（headless 下没有宿主挂载时，按名字改参数会如实返回原因）",
         api = {
             "render.set_effect_params",
             "render.set_effect_param",
             "render.set_effect_time",
         },
-        code = "render.set_effect_params(0, 0.0035, 0, 0, 0); render.set_effect_param('edge_width', 0.0035); render.set_effect_time(1.25)",
+        code = "render.set_effect_param('spin', 2.8); render.set_effect_param('speed', 0.9); render.set_effect_params(1, 1.0, 0.42, 0.08, 0.0); render.set_effect_time(1.25)",
         enter = function()
             reset_world()
             ensure_landscape()
@@ -648,17 +648,22 @@ local steps = {
         run = function(dt)
             elapsed = elapsed + dt
             spin_landscape(elapsed)
-            -- 槽位 0.x = 深度描边宽度，槽位 1.xyz = 描边颜色（.sgraph 里的节点参数）。
+            -- 炎刃斩击：刀光弧旋转(spin)、冲击波扩散(speed)、火焰色(color_r/g/b)、闪烁(frequency)
+            -- 都走命名参数；槽位 0.x 仍是深度描边宽度，保留槽位 API 的演示。
+            render.set_effect_param("spin", 1.6 + 1.2 * (0.5 + 0.5 * math.sin(elapsed * 0.7)))
+            render.set_effect_param("speed", 0.6 + 0.5 * (0.5 + 0.5 * math.sin(elapsed * 1.1)))
+            render.set_effect_params(1, 1.0, 0.32 + 0.2 * (0.5 + 0.5 * math.sin(elapsed)), 0.06, 0.0)
             render.set_effect_params(0, 0.0025 + 0.0015 * (0.5 + 0.5 * math.sin(elapsed)), 0.0, 0.0, 0.0)
             render.set_effect_time(elapsed)
-            lab.note("金色深度描边由 .sgraph 叠加层画出；改槽位改宽度，改时间是宿主时钟之外的覆盖")
+            lab.note("炎刃斩击 = 火焰纹理×火焰色×闪烁 + 冲击波环，刀光弧遮罩；改命名参数即改画面，改时间是宿主时钟之外的覆盖")
         end,
         read = function()
             return {
-                { "overlay", "showcase_outline.sgraph" },
-                { "slot 0.x", string.format("%.4f", 0.003) },
+                { "overlay", "flame_blade_slash.sgraph" },
+                { "spin", string.format("%.2f", 1.6 + 1.2 * (0.5 + 0.5 * math.sin(elapsed * 0.7))) },
+                { "speed", string.format("%.2f", 0.6 + 0.5 * (0.5 + 0.5 * math.sin(elapsed * 1.1))) },
                 { "time", string.format("%.2f", elapsed) },
-                { "param", "edge_width" },
+                { "param", "spin / speed / color_r/g/b" },
             }
         end,
         check = function(t)

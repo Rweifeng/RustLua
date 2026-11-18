@@ -87,16 +87,19 @@ return {
 
 ```toml
 [render]
-# M88/M91/M92/M94/M95：全屏深度描边叠加层（`.sgraph` 是唯一源）。
-effect_overlay = "assets/fx/showcase_outline.sgraph"
+# M88/M91/M92/M94/M95：炎刃斩击叠加层——火焰流动 + 刀光弧 + 冲击波合成一张 `.sgraph`。
+effect_overlay = "assets/fx/flame_blade_slash.sgraph"
 # M98：GPU 粒子软边（0 = 硬边；默认 0.02）。
 particle_softness = 0.04
 ```
 
-`.sgraph` 是 JSON 图（`rustlua_visual_script::shader_graph::ShaderGraph`）：
-`depth_edge` → `output.alpha`，`constant` → `output.tint`。命名参数为 `edge_width` 与
-`color_r/g/b`；运行时叠加层采样场景深度（`@binding(6)`），因此走"离屏 + 回拷"路径——
-这正是 M91/M92 给叠加层加的能力。
+`.sgraph` 是 JSON 图（`rustlua_visual_script::shader_graph::ShaderGraph`）：演示用的
+`flame_blade_slash.sgraph` 把三个模板合成一张图——`texture × constant × sine`（火焰流动与闪烁）
+乘 `ring`（冲击波环）得到颜色，`sector`（刀光弧）遮罩 alpha，`depth_edge` 提供深度边缘描边。
+命名参数为 `edge_width`、`color_r/g/b`、`frequency`、`speed` 与 `arc_width/radius/thickness/spin`；
+运行时叠加层采样场景深度（`@binding(6)`），因此走"离屏 + 回拷"路径——这正是 M91/M92 给叠加层加的能力。
+演示脚本 `demo_3d.lua` 的 `effect_overlay` 步逐帧改 `spin`/`speed`/`color` 与 `time`，三个模板的
+参数各自独立生效。
 
 **反面对照**（自检里真跑）：`render.set_effect_params(16, …)` 拒非法槽位、NaN 值拒、
 `render.set_effect_time(-1)` 拒、未知命名参数拒；`render.set_fog(2.0)` 等越界值拒并带原因。
