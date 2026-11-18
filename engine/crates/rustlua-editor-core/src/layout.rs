@@ -690,6 +690,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 「编辑 ▸ 工具栏」的勾选随工程布局往返；老文件缺键时回落编辑器侧的精简默认（空表）。
+    #[test]
+    fn toolbar_visibility_persists_and_old_layouts_fall_back_to_default() {
+        let root = temp_root("toolbar-visible");
+        let mut toolbar_visible = BTreeMap::new();
+        toolbar_visible.insert("overlays".to_owned(), true);
+        toolbar_visible.insert("resolution".to_owned(), false);
+        let layout = EditorLayout {
+            toolbar_visible: toolbar_visible.clone(),
+            ..EditorLayout::default()
+        };
+        save_layout(&root, &layout).expect("save");
+        match load_layout(&root) {
+            LayoutLoad::Loaded(loaded) => assert_eq!(loaded.toolbar_visible, toolbar_visible),
+            other => panic!("加载失败：{other:?}"),
+        }
+        let mut value = layout.to_json();
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("toolbar_visible");
+        assert!(
+            EditorLayout::from_json(&value).toolbar_visible.is_empty(),
+            "老布局缺键时交给编辑器用精简默认"
+        );
+        // 类型不符的字段不污染状态。
+        let mut broken = layout.to_json();
+        broken
+            .as_object_mut()
+            .expect("object")
+            .insert("toolbar_visible".to_owned(), serde_json::json!("yes"));
+        assert!(EditorLayout::from_json(&broken).toolbar_visible.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 设备模拟设置随布局往返；越界机型下标收敛为 None，缺字段的老文件回落默认。
     #[test]
     fn device_sim_persists_and_converges() {

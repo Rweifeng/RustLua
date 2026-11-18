@@ -1350,6 +1350,30 @@ mod tests {
         assert_ne!(app.show_collision_overlay, collision);
     }
 
+    /// 精简后的工具栏把次要控件收进「编辑 ▸ 工具栏」，像面板开关一样逐项勾选。
+    #[test]
+    fn edit_menu_exposes_toolbar_toggles() {
+        use crate::panels::toolbar::ToolbarItem;
+        assert!(
+            EDIT_MENU
+                .iter()
+                .any(|row| matches!(row, MenuRow::ToolbarToggles)),
+            "编辑菜单必须有工具栏自定义入口"
+        );
+        // 动态行不进命令面板（和 PanelToggles 同口径）。
+        assert!(
+            !palette_items()
+                .iter()
+                .any(|item| item.path.contains("工具栏 / "))
+        );
+        let mut app = menu_test_app();
+        let before = app.toolbar_item_visible(ToolbarItem::Overlays);
+        app.set_toolbar_item_visible(ToolbarItem::Overlays, !before);
+        assert_ne!(app.toolbar_item_visible(ToolbarItem::Overlays), before);
+        app.set_toolbar_item_visible(ToolbarItem::Overlays, before);
+        assert_eq!(app.toolbar_item_visible(ToolbarItem::Overlays), before);
+    }
+
     /// 中央视图的守卫：两个不能同时关掉，关到最后一个时只留提示、不改状态。
     #[test]
     fn the_last_central_view_cannot_be_hidden() {

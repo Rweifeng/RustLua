@@ -4,6 +4,7 @@
 //! `crate::layout_tests::*`，测试名不变。
 
 use crate::menu::MenuAction;
+use crate::panels::toolbar::ToolbarItem;
 use crate::shortcuts::EditorShortcut;
 use crate::{EditorApp, SceneTool, SceneViewMode, WorkspaceTab};
 use eframe::egui;
@@ -22,6 +23,41 @@ fn temp_root(label: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("temp root");
     root
+}
+
+/// 「编辑 ▸ 工具栏」勾选状态随布局持久化：保存 → 重开 → 还原，且默认仍是精简集。
+#[test]
+fn toolbar_visibility_round_trips_through_editor_layout() {
+    let root = temp_root("toolbar-visibility");
+    let project = || editor::ProjectInfo {
+        root: root.clone(),
+        version: "test".to_owned(),
+        directories: Vec::new(),
+    };
+    let mut app = EditorApp::new(project(), None, LogSink::new(64));
+    app.project_loaded = true;
+    app.set_toolbar_item_visible(ToolbarItem::Overlays, true);
+    app.set_toolbar_item_visible(ToolbarItem::Resolution, false);
+    app.persist_layout();
+
+    let raw = std::fs::read_to_string(editor::layout_path(&root)).expect("layout.json");
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(json["toolbar_visible"][ToolbarItem::Overlays.key()], true);
+    assert_eq!(
+        json["toolbar_visible"][ToolbarItem::Resolution.key()],
+        false
+    );
+
+    let mut reloaded = EditorApp::new(project(), None, LogSink::new(64));
+    reloaded.project_loaded = true;
+    reloaded.load_layout_for_project();
+    assert!(reloaded.toolbar_item_visible(ToolbarItem::Overlays));
+    assert!(!reloaded.toolbar_item_visible(ToolbarItem::Resolution));
+    assert!(
+        reloaded.toolbar_item_visible(ToolbarItem::PauseResume),
+        "未改过的项保持精简默认"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// 阶段 2 收尾：六个工作台面板的可见性走同一条持久化路径；两个中央视图同时为

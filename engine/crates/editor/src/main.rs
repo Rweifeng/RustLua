@@ -1770,6 +1770,7 @@ impl EditorApp {
             _ => SceneTool::Select,
         });
         self.scene_zoom = self.layout.scene_zoom;
+        self.toolbar_visibility = ToolbarVisibility::from_layout(&self.layout.toolbar_visible);
         self.gizmo_space = crate::scene_interaction::GizmoSpace::parse(&self.layout.gizmo_space)
             .unwrap_or_default();
         self.gizmo_pivot = crate::scene_interaction::GizmoPivot::parse(&self.layout.gizmo_pivot)
@@ -1968,6 +1969,7 @@ impl EditorApp {
         for (key, visible) in visibility {
             self.layout.panel_visible.insert(key.to_owned(), visible);
         }
+        self.layout.toolbar_visible = self.toolbar_visibility.to_layout();
         self.layout.workspace_tab = match self.workspace_tab {
             WorkspaceTab::Scene => "scene",
             WorkspaceTab::Game => "game",
@@ -2033,6 +2035,15 @@ impl EditorApp {
         for (key, visible) in visibility {
             current.panel_visible.insert(key.to_owned(), visible);
         }
+        let toolbar_now = self.toolbar_visibility.to_layout();
+        // 老布局/首次打开没有工具栏键（空表）：默认值不算用户改动，基线帧不写盘。
+        // 一旦用户勾过任何一项，saved 就非空，之后每次改动都能被下面的比较捕获。
+        let toolbar_changed = if saved.toolbar_visible.is_empty() {
+            toolbar_now != ToolbarVisibility::default().to_layout()
+        } else {
+            toolbar_now != saved.toolbar_visible
+        };
+        current.toolbar_visible = toolbar_now;
         let tab = match self.workspace_tab {
             WorkspaceTab::Scene => "scene",
             WorkspaceTab::Game => "game",
@@ -2076,6 +2087,7 @@ impl EditorApp {
         let changed = visibility
             .iter()
             .any(|(key, visible)| saved.panel_is_visible(key) != *visible)
+            || toolbar_changed
             || current.workspace_tab != saved.workspace_tab
             || current.scene_view_mode != saved.scene_view_mode
             || current.scene_tool != saved.scene_tool

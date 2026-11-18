@@ -87,6 +87,7 @@ pub(super) mod device;
 pub(super) mod environment_group;
 pub(super) mod frame_arena;
 pub(super) mod gpu_particles;
+pub(super) mod material_layout;
 pub(super) mod post_process;
 pub(super) mod shadow_bindings;
 pub(super) mod shadow_textures;
@@ -306,116 +307,10 @@ impl Renderer {
         // 材质布局里有 1 个是**存储缓冲**（`binding 2` = 逐实例模型矩阵，给实例化用）。
         // 能力不足时不放它：布局本身仍然合法（原生那条路完全不变），而依赖它的管线会走占位
         // （见下面的 `mesh_pipeline` / `shadow_pipeline`），3D 通道在 `passes.rs` 里也不再声明。
-        let mut material_entries: Vec<wgpu::BindGroupLayoutEntry> = vec![
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    // P3-R02：6×vec4 = 基色 / 表面 / 自发光 / 参数 / 贴图开关 / 动画。
-                    // P3-R162–165：+4×vec4 = 清漆 / SSS / 虹彩 / 绒毛（共 10×vec4 = 160 字节）。
-                    min_binding_size: wgpu::BufferSize::new(super::MATERIAL_UNIFORM_BYTES),
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(
-                        (rustlua_render::mesh3d::MAX_BONES * 64) as u64,
-                    ),
-                },
-                count: None,
-            },
-        ];
-        // 材质布局的 binding 2 是**逐实例模型矩阵**。有存储缓冲的设备走 storage 数组（支持
-        // 实例化合批）；没有的设备（WebGL2）换成 64 字节 uniform——同一批 draw，只是取法不同。
-        // 两条路都真画，不再"能力不足就整条 3D 通道占位"（见 `passes.rs` 的帧内 draw 与
-        // `arena.rs` 的绑定端）。
-        material_entries.push(wgpu::BindGroupLayoutEntry {
-            binding: 2,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: if storage_capable {
-                    wgpu::BufferBindingType::Storage { read_only: true }
-                } else {
-                    wgpu::BufferBindingType::Uniform
-                },
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(64),
-            },
-            count: None,
-        });
-        material_entries.extend([
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            // P3-R02：metallic-roughness（G/B）与 emissive。旧 WGSL 不声明这两个绑定，
-            // 布局里多出的条目对旧管线无影响（`pbr=off` 的像素门因此仍逐字节一致）。
-            wgpu::BindGroupLayoutEntry {
-                binding: 5,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 6,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            // P3-R02-3：法线（切线空间）与遮蔽（R 通道）贴图，均为线性数据。
-            wgpu::BindGroupLayoutEntry {
-                binding: 7,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 8,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-        ]);
+        // 材质 3D 绑定组布局：拆分批 C 搬到 `construct/material_layout.rs`。
+        // 只吃 device + storage_capable，零其他依赖；三条管线布局（批次 K）都要用它。
         let material_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-material3d-bind-group-layout"),
-                entries: &material_entries,
-            });
+            super::construct::material_layout::material_bind_group_layout(&device, storage_capable);
         // 首帧 uniform 的初值：相机矩阵按**目标视口**算（宽高比只从视口来，拆分批 7）。
         // 相机/光照/初始 uniform：拆分批 D 搬到 `construct/camera_scene.rs`。
         // 依赖 A 的 camera layout 与 B 的 sampler —— 两个前置都已就位。

@@ -214,7 +214,6 @@ impl EditorApp {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let mut drawn = false;
                     // Play/Stop：场景与游戏运行控制，同一按钮切换，不显示 Play 字样。
                     let playing = self.is_playing();
                     let (icon, tooltip) = if playing {
@@ -231,7 +230,7 @@ impl EditorApp {
                             editor::EditorCommand::StartPlay
                         });
                     }
-                    drawn = true;
+                    let mut drawn = true;
                     // ER-10：暂停/继续 + 单帧步进 + 重启（仅运行/暂停时可用）。
                     // 按钮只发 typed 命令，真正的状态迁移在 `PlayController` 内完成。
                     let play_state = self.play_state();
@@ -632,10 +631,14 @@ impl EditorApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{aspect_label_for, resolution_for_aspect, resolution_matches_aspect};
+    use super::{
+        ToolbarItem, ToolbarVisibility, aspect_label_for, resolution_for_aspect,
+        resolution_matches_aspect,
+    };
     use crate::EditorApp;
     use eframe::egui;
     use rustlua_infra::logging::LogSink;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// E18：比例切换保持长边。1280×720 换 21:9 时高变为 549（1280×9/21 取整），
     /// 换 9:16 时长宽互换为 720×1280。
@@ -662,6 +665,42 @@ mod tests {
         assert_eq!(aspect_label_for((1000, 1000)), None);
     }
 
+    /// 默认精简集：只有高频三项；低频项一个都不出现（否则窄面板又要滚动）。
+    #[test]
+    fn default_toolbar_keeps_only_primary_items() {
+        let visibility = ToolbarVisibility::default();
+        for item in ToolbarItem::ALL {
+            let expected = matches!(
+                item,
+                ToolbarItem::PauseResume | ToolbarItem::Resolution | ToolbarItem::SceneZoom
+            );
+            assert_eq!(visibility.visible(item), expected, "{item:?}");
+        }
+        // 持久化键必须一一对应：撞名会让两个复选框互相踩。
+        let keys: BTreeSet<_> = ToolbarItem::ALL.iter().map(|item| item.key()).collect();
+        assert_eq!(keys.len(), ToolbarItem::ALL.len());
+    }
+
+    /// 勾选结果随 layout.json 往返；缺键回落精简默认，未知键忽略。
+    #[test]
+    fn toolbar_visibility_round_trips_through_layout_map() {
+        let mut visibility = ToolbarVisibility::default();
+        visibility.set(ToolbarItem::DevicePreset, true);
+        visibility.set(ToolbarItem::Overlays, true);
+        visibility.set(ToolbarItem::Resolution, false);
+        let stored = visibility.to_layout();
+        assert_eq!(stored.get(ToolbarItem::DevicePreset.key()), Some(&true));
+        assert_eq!(ToolbarVisibility::from_layout(&stored), visibility);
+
+        let mut partial = BTreeMap::new();
+        partial.insert(ToolbarItem::DevicePreset.key().to_owned(), true);
+        partial.insert("unknown_item".to_owned(), true);
+        let restored = ToolbarVisibility::from_layout(&partial);
+        assert!(restored.visible(ToolbarItem::DevicePreset));
+        assert!(!restored.visible(ToolbarItem::Overlays));
+        assert!(restored.visible(ToolbarItem::PauseResume), "缺键回落默认");
+    }
+
     #[test]
     fn workspace_toolbar_stays_on_one_row_in_narrow_view() {
         let root =
@@ -672,10 +711,16 @@ mod tests {
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(768.0, 500.0),
+                egui::vec2(520.0, 500.0),
             )),
             ..Default::default()
         };
+        // 精简集不画设备模拟/Game 缩放/三个菜单，520px 的窄叶子也无需滚动。
+        assert!(!app.toolbar_item_visible(ToolbarItem::DevicePreset));
+        assert!(!app.toolbar_item_visible(ToolbarItem::GameViewZoom));
+        assert!(!app.toolbar_item_visible(ToolbarItem::Tools));
+        assert!(!app.toolbar_item_visible(ToolbarItem::Sort));
+        assert!(!app.toolbar_item_visible(ToolbarItem::Overlays));
         let _ = context.run(raw, |context| {
             egui::CentralPanel::default().show(context, |ui| {
                 let top = ui.next_widget_position().y;
