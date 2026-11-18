@@ -10,14 +10,17 @@ pub(crate) const PREVIEW_H: u32 = 160;
 
 /// 把生成的 Shader Graph 片段包装成完整全屏 WGSL 着色器。
 ///
-/// 统一绑定：`@group(0) @binding(0) texture`、`(1) sampler`、`(2) uniform { time }`。
-/// `time` 走 uniform 而不是写死 0，预览才能看到会动的模板。
+/// 统一绑定：`@group(0) @binding(0) texture`、`(1) sampler`、`(2) uniform { time, intensity }`。
+/// `time` 走 uniform 而不是写死 0，预览才能看到会动的模板；`intensity` 是面板「效果强度」
+/// 滑块的总强度：同时缩放 RGB 与 alpha，置 0 即完全关掉效果（不是画一层黑）。
 pub(crate) fn preview_shader_source(graph_wgsl: &str) -> String {
     format!(
         r#"{graph_wgsl}
 struct PreviewParams {{
     time: f32,
-    _pad: vec3<f32>,
+    intensity: f32,
+    _pad: vec2<f32>,
+    _tail: vec4<f32>,
 }};
 @group(0) @binding(2) var<uniform> preview: PreviewParams;
 struct VertexOutput {{
@@ -39,7 +42,11 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {{
 }}
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {{
-    return shader_graph_color(input.uv, preview.time, input.color);
+    let color = shader_graph_color(input.uv, preview.time, input.color);
+    return vec4<f32>(
+        color.rgb * preview.intensity,
+        clamp(color.a * preview.intensity, 0.0, 1.0)
+    );
 }}
 "#
     )
@@ -360,12 +367,22 @@ impl ShaderPreview {
         }
     }
 
-    /// 以 `time` 渲染一帧并同步回读紧凑 RGBA8（`PREVIEW_W * PREVIEW_H * 4` 字节）。
-    pub(crate) fn render(&mut self, time: f32) -> Result<Vec<u8>, String> {
+    /// 以 `time` / `intensity` 渲染一帧并同步回读紧凑 RGBA8（`PREVIEW_W * PREVIEW_H * 4` 字节）。
+    /// `intensity` 与 `time` 同属 binding 2 的 uniform：改它只写 32 字节 buffer，不重编管线。
+    pub(crate) fn render(&mut self, time: f32, intensity: f32) -> Result<Vec<u8>, String> {
         let Some(pipeline) = &self.pipeline else {
             return Err("预览管线尚未编译".to_owned());
         };
-        let params_bytes: Vec<u8> = [time, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        let params_bytes: Vec<u8> = [
+            time,
+            intensity,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
@@ -572,7 +589,7 @@ mod tests {
     fn render_template(gpu: &TestGpu, wgsl: &str, time: f32) -> Result<Vec<u8>, String> {
         let mut preview = ShaderPreview::new(&gpu.device, &gpu.queue);
         preview.set_shader(&preview_shader_source(wgsl))?;
-        preview.render(time)
+        preview.render(time, 1.0)
     }
 
     /// 用 uniform 参数版源码渲染一张图，并把图上的参数写进槽位。
@@ -592,7 +609,7 @@ mod tests {
             *slot = *value;
         }
         preview.set_params(&slots);
-        preview.render(time)
+        preview.render(time, 1.0)
     }
 
     /// 每个模板都要能真渲染出非全透明的一帧，且同一输入两次渲染逐字节一致。
@@ -745,7 +762,7 @@ mod tests {
             .set_shader("fn broken( -> vec4<f32> { return vec4<f32>(1.0); }")
             .expect_err("坏 WGSL 必须报错");
         assert!(error.contains("WGSL"), "错误信息应说明是 WGSL：{error}");
-        assert!(preview.render(0.0).is_err(), "坏管线不能渲染");
+        assert!(preview.render(0.0, 1.0).is_err(), "坏管线不能渲染");
     }
 
     fn empty_scene_mesh() -> rustlua_render::frame::SceneMesh {

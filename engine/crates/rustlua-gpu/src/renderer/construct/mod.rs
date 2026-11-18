@@ -20,7 +20,7 @@
 //! | 1 | 设备与能力探测 → [`device::boot_device`]（148 行、0 处资源创建） | ✅ 已拆 |
 //! | 2 | 逐纹理采样器表 → [`texture::texture_samplers`]（51 行、1 处，在循环里） | ✅ 已拆 |
 //! | 3 | 材质布局与缓冲（228 行、11 处） | 待拆 |
-//! | 4 | 帧环 / 白图 / 阴影纹理（309 行、16 处） | 待拆 |
+//! | 4 | 白图 / 阴影纹理 → [`shadow_textures::shadow_textures`]（115 行、5 处） | ✅ 已拆 |
 //! | 5 | 平面反射与环境（151 行、7 处） | 待拆 |
 //! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
 //! | 7 | 世界 Sprite → [`world_sprite::world_sprite_resources`]（86 行、6 处） | ✅ 已拆 |
@@ -76,6 +76,7 @@ use super::pipeline_cache::{
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod device;
 pub(super) mod gpu_particles;
+pub(super) mod shadow_textures;
 pub(super) mod texture;
 pub(super) mod world_sprite;
 
@@ -726,121 +727,28 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        // 1x1 white texture bound when a material has no base-color texture.
-        let white_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-albedo-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &white_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255u8, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
+        // 白贴图与阴影纹理：拆分批 4 搬到 `construct/shadow_textures.rs`。
+        // 它不经过 camera_bind_group_layout，所以能先于批次 3 拆。
+        // 阴影清屏（`if shadow_cascade_limit < 4`）留在下面：它消费这里的产物、
+        // 还要读构造参数，本质是"建完之后的一次性初始化"，不是"建资源"。
+        let shadows = super::construct::shadow_textures::shadow_textures(
+            &device,
+            &queue,
+            format,
+            point_shadow_resolution,
         );
-        let white_albedo_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // 前八盏（最多 8 盏）点光的立方体阴影：8×6 个深度面，主着色器按光源位置找槽位、
-        // 主着色器按 cube array 方向交给硬件跨面过滤。P3-R200：面边长按档建（512 ⇒ 48 MiB）。
-        let point_shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-point-shadow-array"),
-            size: wgpu::Extent3d {
-                width: point_shadow_resolution,
-                height: point_shadow_resolution,
-                depth_or_array_layers: super::POINT_SHADOW_LAYERS as u32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        // 以实际建出的纹理尺寸为准回填字段：门的读数是「真的建了多大」，不是参数回显。
-        let point_shadow_resolution = point_shadow_texture.size().width;
-        let point_shadow_array_view =
-            point_shadow_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("rustlua-point-shadow-cube-array-view"),
-                dimension: Some(wgpu::TextureViewDimension::CubeArray),
-                base_array_layer: 0,
-                array_layer_count: Some(super::POINT_SHADOW_LAYERS as u32),
-                ..wgpu::TextureViewDescriptor::default()
-            });
-        let point_shadow_face_views: [wgpu::TextureView; super::POINT_SHADOW_LAYERS] =
-            std::array::from_fn(|layer| {
-                point_shadow_texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("rustlua-point-shadow-face-view"),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: layer as u32,
-                    array_layer_count: Some(1),
-                    ..wgpu::TextureViewDescriptor::default()
-                })
-            });
-        let point_shadow_uniform_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-point-shadow-uniform"),
-                contents: &[0u8; super::POINT_SHADOW_UNIFORM_BYTES],
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-        let point_shadow_camera_buffers: [wgpu::Buffer; super::POINT_SHADOW_LAYERS] =
-            std::array::from_fn(|_layer| {
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("rustlua-point-shadow-camera"),
-                    contents: bytemuck::cast_slice(&Mat4::identity().columns),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                })
-            });
-        // P3-R24：方向光 ESM。4 层 2048² `R16Float`，与 CSM 同分辨率。
-        let esm_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-esm-shadow"),
-            size: wgpu::Extent3d {
-                width: super::ESM_SIZE,
-                height: super::ESM_SIZE,
-                depth_or_array_layers: super::ESM_LAYERS as u32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let esm_array_view = esm_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("rustlua-esm-array-view"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        let esm_layer_views: [wgpu::TextureView; super::ESM_LAYERS] =
-            std::array::from_fn(|layer| {
-                esm_texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("rustlua-esm-layer-view"),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: layer as u32,
-                    array_layer_count: Some(1),
-                    ..Default::default()
-                })
-            });
+        // 白贴图本体后文不直接持有（只用其视图），但结构体里保留以便热重载时重建。
+        let _white_texture = shadows.white_texture;
+        let white_albedo_view = shadows.white_albedo_view;
+        let _point_shadow_texture = shadows.point_shadow_texture;
+        let point_shadow_resolution = shadows.point_shadow_resolution;
+        let point_shadow_array_view = shadows.point_shadow_array_view;
+        let point_shadow_face_views = shadows.point_shadow_face_views;
+        let point_shadow_uniform_buffer = shadows.point_shadow_uniform_buffer;
+        let point_shadow_camera_buffers = shadows.point_shadow_camera_buffers;
+        let _esm_texture = shadows.esm_texture;
+        let esm_array_view = shadows.esm_array_view;
+        let esm_layer_views = shadows.esm_layer_views;
         // P3-R199：未渲染的远级联在构建期一次性清成「全亮」——深度 1.0 / ESM 白。
         // 采样这些层的像素只会失去该距离的阴影，不会被上一帧或未初始化内容误压暗。
         if shadow_cascade_limit < 4 {
