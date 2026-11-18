@@ -72,7 +72,6 @@ use rustlua_render::frame::{OverlayVertex, VectorTextVertex, WorldSpriteVertex};
 use rustlua_render::render_plan::RenderPlan;
 use rustlua_render::render_settings::{IblMode, RenderSettings};
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
-use wgpu::util::DeviceExt;
 use wgpu::{Device, Queue};
 use winit::window::Window;
 
@@ -82,9 +81,11 @@ use super::pipeline_cache::{
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod base_layouts;
+pub(super) mod camera_bindings;
 pub(super) mod camera_scene;
 pub(super) mod device;
 pub(super) mod environment_group;
+pub(super) mod esm;
 pub(super) mod frame_arena;
 pub(super) mod gpu_particles;
 pub(super) mod material_layout;
@@ -402,232 +403,37 @@ impl Renderer {
             }
             queue.submit(Some(clear_encoder.finish()));
         }
-        let esm_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-esm-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(16),
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let esm_layer_buffers: [wgpu::Buffer; super::ESM_LAYERS] = std::array::from_fn(|layer| {
-            let words = [layer as u32, 0, 0, 0];
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-esm-layer"),
-                contents: bytemuck::cast_slice(&words),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-        });
-        let esm_bind_groups: [wgpu::BindGroup; super::ESM_LAYERS] = std::array::from_fn(|layer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("rustlua-esm-bind-group"),
-                layout: &esm_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: esm_layer_buffers[layer].as_entire_binding(),
-                    },
-                ],
-            })
-        });
-        let esm_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-esm-shadow-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shader::ESM.source.into()),
-        });
-        let esm_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-esm-pipeline-layout"),
-            bind_group_layouts: &[&esm_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let esm_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rustlua-esm-pipeline"),
-            layout: Some(&esm_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &esm_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &esm_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R16Float,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rustlua-camera3d-bind-group"),
-            layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: shadow_camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: point_shadow_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::TextureView(&esm_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
-                },
-            ],
-        });
-        // P3-R170：平面反射的镜像相机 uniform 与绑定组。除 binding 0 指向另一块 buffer 外
-        // 与主相机绑定组逐项相同——反射 pass 因此能原样复用材质/环境绑定。
-        // P3-R209：尺寸跟 Camera 结构走（11×vec4 = 176 字节），反射 pass 也跑同一份 PBR 着色器。
-        let planar_camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-planar-camera"),
-            size: 176,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let planar_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rustlua-planar-camera-bind-group"),
-            layout: &camera_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: planar_camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: shadow_camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: point_shadow_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::TextureView(&esm_array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
-                },
-            ],
-        });
-        // 未启用平面反射时 Tonemap 绑定这个 1×1 透明占位图：绑定组形状恒定，
-        // 着色器用 alpha<0.5 判定"没命中"，与绑定组形状切换的时序问题无关。
-        let planar_reflection_texture = device.create_texture(&wgpu::TextureDescriptor {
-            // 回读门要能证明"没跑时仍是这张占位图"，所以占位图也带 COPY_SRC。
-            label: Some("rustlua-planar-reflection-placeholder"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &planar_reflection_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[0u8; 8],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(8),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
+        // ESM 方向光阴影：拆分批 G 搬到 `construct/esm.rs`。
+        // ESM 存 exp(k·z) 而非深度，可线性过滤 → 远处软边比 CSM 平滑。
+        let esm = super::construct::esm::esm_shadow(&device, &shadow_sample_view);
+        let _esm_bind_group_layout = esm.bind_group_layout;
+        let _esm_layer_buffers = esm.layer_buffers;
+        let esm_bind_groups = esm.bind_groups;
+        let _esm_shader = esm.shader;
+        let _esm_pipeline_layout = esm.pipeline_layout;
+        let esm_pipeline = esm.pipeline;
+        // 相机绑定组与平面反射：拆分批 H 搬到 `construct/camera_bindings.rs`。
+        // 10 个输入全部来自 A/D/F，所以它是最后一个能拆的批次。
+        let cb = super::construct::camera_bindings::camera_bindings(
+            &device,
+            &queue,
+            &camera_bind_group_layout,
+            &camera_buffer,
+            &light_buffer,
+            &shadow_camera_buffer,
+            &point_shadow_uniform_buffer,
+            &point_shadow_array_view,
+            &point_shadow_plain_sampler,
+            &shadow_sampler,
+            &esm_array_view,
+            &shadow_sample_view,
         );
-        let planar_reflection_view =
-            planar_reflection_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let planar_reflection_depth = Self::create_depth_view(&device, 1, 1);
+        let camera_bind_group = cb.camera_bind_group;
+        let planar_camera_buffer = cb.planar_camera_buffer;
+        let planar_camera_bind_group = cb.planar_camera_bind_group;
+        let planar_reflection_texture = cb.planar_reflection_texture;
+        let planar_reflection_view = cb.planar_reflection_view;
+        let planar_reflection_depth = cb.planar_reflection_depth;
         // 阴影绑定：拆分批 I 搬到 `construct/shadow_bindings.rs`。
         // 方向光级联与点光立方体面共用一个 64B uniform 的 layout。
         let sb = super::construct::shadow_bindings::shadow_bindings(
