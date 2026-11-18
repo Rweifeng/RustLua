@@ -62,7 +62,7 @@ use crate::{
     shader::{MESH3D, MESH3D_PBR, SHADOW, ShaderSource},
     shader_preprocess::{PreprocessError, PreprocessOptions, PreprocessedShader, preprocess},
 };
-use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
+use rustlua_camera::camera::FrameViews;
 use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::async_loader::{AsyncLoader, LoadMode};
 use rustlua_render::frame::{OverlayVertex, VectorTextVertex, WorldSpriteVertex};
@@ -79,6 +79,7 @@ use super::pipeline_cache::{
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod base_layouts;
+pub(super) mod camera_scene;
 pub(super) mod device;
 pub(super) mod gpu_particles;
 pub(super) mod post_process;
@@ -89,8 +90,7 @@ pub(super) mod world_sprite;
 
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    RenderFrameMetrics, Renderer, camera_uniform, compute::ComputeState, depth_stencil_state,
-    identity_palette_data,
+    RenderFrameMetrics, Renderer, compute::ComputeState, depth_stencil_state,
 };
 
 impl Renderer {
@@ -411,120 +411,25 @@ impl Renderer {
                 entries: &material_entries,
             });
         // 首帧 uniform 的初值：相机矩阵按**目标视口**算（宽高比只从视口来，拆分批 7）。
-        let initial_viewport = Viewport::new(config.width as f32, config.height as f32)?;
-        let camera = Camera3D::perspective(
-            Vec3::new(0.0, 0.0, 5.0),
-            Vec3::ZERO,
-            std::f32::consts::FRAC_PI_2,
-            0.1,
-            100.0,
-        )?;
-        let camera_matrix = camera.view_projection_matrix(initial_viewport)?;
-        let light_camera =
-            Camera3D::perspective(Vec3::new(4.0, 6.0, 4.0), Vec3::ZERO, 1.3, 0.1, 30.0)?;
-        let light_view = light_camera.view_matrix()?;
-        let light_projection = Mat4 {
-            columns: [
-                [0.1, 0.0, 0.0, 0.0],
-                [0.0, 0.1, 0.0, 0.0],
-                [0.0, 0.0, -1.0 / 29.9, 0.0],
-                [0.0, 0.0, -0.1 / 29.9, 1.0],
-            ],
-        };
-        let light_matrix = light_projection * light_view;
-        let (shadow_sample_view, shadow_views) =
-            Self::create_shadow_view(&device, shadow_resolution);
-        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-shadow-comparison-sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            compare: Some(wgpu::CompareFunction::LessEqual),
-            ..Default::default()
-        });
-        let point_shadow_plain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-point-shadow-plain-sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-camera3d-buffer"),
-            contents: bytemuck::cast_slice(&camera_uniform(
-                &camera_matrix,
-                camera.position,
-                0.0,
-                camera.clip_plane,
-                0.5,
-                1.0,
-                100.0,
-                0.26,
-                [1.0, 1.0, 1.0, 0.0],
-                [0.0, 0.0],
-                [0.0, 1.5],
-                [0.0, 1.5, 0.0, 1.5],
-                0.0,
-            )),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-light-buffer"),
-            // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负；
-            // 点光数组先全部补零，由 `write_light_uniforms` 每帧重写。
-            contents: &super::light_uniform_bytes(
-                rustlua_render::light::Light::default(),
-                &[],
-                false,
-                false,
-                None,
-            ),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-shadow-camera-buffer"),
-            contents: bytemuck::cast_slice(
-                &[
-                    light_matrix.columns,
-                    light_matrix.columns,
-                    light_matrix.columns,
-                    light_matrix.columns,
-                ]
-                .concat(),
-            ),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let shadow_pass_camera_buffers = [
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-shadow-pass-camera-near"),
-                contents: bytemuck::cast_slice(&light_matrix.columns),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }),
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-shadow-pass-camera-mid"),
-                contents: bytemuck::cast_slice(&light_matrix.columns),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }),
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-shadow-pass-camera-far"),
-                contents: bytemuck::cast_slice(&light_matrix.columns),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }),
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("rustlua-shadow-pass-camera-ultra"),
-                contents: bytemuck::cast_slice(&light_matrix.columns),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }),
-        ];
-        let identity_palette = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-identity-joint-palette"),
-            contents: bytemuck::cast_slice(&identity_palette_data()),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        // 相机/光照/初始 uniform：拆分批 D 搬到 `construct/camera_scene.rs`。
+        // 依赖 A 的 camera layout 与 B 的 sampler —— 两个前置都已就位。
+        let cs = super::construct::camera_scene::camera_scene(&device, &config, shadow_resolution)?;
+        let _initial_viewport = cs.initial_viewport;
+        let _camera = cs.camera;
+        let _camera_matrix = cs.camera_matrix;
+        let _light_camera = cs.light_camera;
+        let _light_view = cs.light_view;
+        let _light_projection = cs.light_projection;
+        let _light_matrix = cs.light_matrix;
+        let shadow_sampler = cs.shadow_sampler;
+        let point_shadow_plain_sampler = cs.point_shadow_plain_sampler;
+        let shadow_sample_view = cs.shadow_sample_view;
+        let shadow_views = cs.shadow_views;
+        let camera_buffer = cs.camera_buffer;
+        let light_buffer = cs.light_buffer;
+        let shadow_camera_buffer = cs.shadow_camera_buffer;
+        let shadow_pass_camera_buffers = cs.shadow_pass_camera_buffers;
+        let identity_palette = cs.identity_palette;
         // P0-①：帧级环形缓冲的容量与对齐来自设备限制，跨后端（DX12/Vulkan/Metal/GL）都成立。
         let uniform_align = device.limits().min_uniform_buffer_offset_alignment.max(1) as u64;
         let storage_align = device.limits().min_storage_buffer_offset_alignment.max(1) as u64;

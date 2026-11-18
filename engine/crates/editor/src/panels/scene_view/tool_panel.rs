@@ -27,33 +27,37 @@ impl EditorApp {
         let tool = self.scene_tool();
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
-        let tools_content_width = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
-                // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
-                    // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
-                    for candidate in mode.tools().iter().rev() {
-                        let label = match candidate {
+        // 量工具条的**真实占用宽度**，不能用 `ui.min_rect().width()`：right_to_left 布局下
+        // `min_rect` 会包含整条 430 宽的分配矩形（剩余空白也算进去），于是在窄画布里
+        // 被误判成「状态胶囊 + 工具条装不下」，把「世界/轴心」挤到第二行、分辨率 HUD
+        // 再掉到第三行（用户截图反馈）。逐个取按钮 rect 的最左边缘才是它实际占的宽度。
+        let mut tools_left = tools_rect.right();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+            // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
+                // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
+                for candidate in mode.tools().iter().rev() {
+                    let label = match candidate {
+                        SceneTool::TilePaint => "▦",
+                        other => match other {
+                            SceneTool::Select => "选择",
+                            SceneTool::Move => "移动",
+                            SceneTool::Rotate => "旋转",
+                            SceneTool::Scale => "缩放",
                             SceneTool::TilePaint => "▦",
-                            other => match other {
-                                SceneTool::Select => "选择",
-                                SceneTool::Move => "移动",
-                                SceneTool::Rotate => "旋转",
-                                SceneTool::Scale => "缩放",
-                                SceneTool::TilePaint => "▦",
-                            },
-                        };
-                        if icon_toggle(ui, tool == *candidate, label, mode.tool_hint(*candidate))
-                            .clicked()
-                        {
-                            requested = Some(*candidate);
-                        }
+                        },
+                    };
+                    let response =
+                        icon_toggle(ui, tool == *candidate, label, mode.tool_hint(*candidate));
+                    tools_left = tools_left.min(response.rect.left());
+                    if response.clicked() {
+                        requested = Some(*candidate);
                     }
-                });
-                ui.min_rect().width()
-            })
-            .inner;
+                }
+            });
+        });
+        let tools_content_width = tools_rect.right() - tools_left;
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }

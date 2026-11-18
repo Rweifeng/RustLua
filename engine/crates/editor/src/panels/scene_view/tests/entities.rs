@@ -647,6 +647,77 @@ fn overlay_status_row_shares_one_vertical_center() {
     assert!(delta < 1.0, "浮层一行的中心差 {delta:.1}px，左右两组没对齐");
 }
 
+/// 窄视图回归：520 -wide 窗口下「世界/轴心」曾被挤到第二行、分辨率 HUD 掉到第三行。
+/// 起因是工具条宽度用 `ui.min_rect().width()` 量成了容器全宽 430 而不是按钮真实占用。
+/// 按钮 rect 测量修正后，画布装得下时状态胶囊必须与工具条同一行。
+#[test]
+fn overlay_status_stays_on_first_row_in_narrow_view() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
+    let project = open_project(&root).expect("打开样板工程");
+    let mut app = EditorApp::new(project, None, LogSink::new(16));
+    let context = egui::Context::default();
+    crate::util::configure_cjk_fallback(&context);
+    // 用户截图对应的窗口宽度；跑两帧让工具条宽度从上一帧量到（首帧按 0 算）。
+    for _ in 0..2 {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(520.0, 456.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let rect = ui.max_rect();
+                app.draw_scene_tool_panel(ui, rect);
+            });
+        });
+    }
+    let status = app.scene_status_rect;
+    let tools = app.scene_tools_rect;
+    assert!(
+        (app.scene_overlay_bottom_offset - 30.0).abs() < 1.0,
+        "状态行被挤到第二行了：overlay offset={}，应为 30",
+        app.scene_overlay_bottom_offset
+    );
+    assert!(
+        (status.center().y - tools.center().y).abs() < 1.0,
+        "状态胶囊与工具条不在同一行：status={status:?} tools={tools:?}"
+    );
+    assert!(status.left() < tools.left(), "状态胶囊应在工具条左侧");
+}
+
+/// 3D 状态行尾挂 IBL 档位，字更多也不能把「世界/轴心」挤到第二行。
+#[test]
+fn overlay_status_stays_on_first_row_in_3d_narrow_view() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
+    let project = open_project(&root).expect("打开样板工程");
+    let mut app = EditorApp::new(project, None, LogSink::new(16));
+    app.scene_view_mode = crate::SceneViewMode::View3D;
+    let context = egui::Context::default();
+    crate::util::configure_cjk_fallback(&context);
+    for _ in 0..2 {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(520.0, 456.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                let rect = ui.max_rect();
+                app.draw_scene_tool_panel(ui, rect);
+            });
+        });
+    }
+    assert!(
+        (app.scene_overlay_bottom_offset - 30.0).abs() < 1.0,
+        "3D 状态行被挤到第二行了：overlay offset={}",
+        app.scene_overlay_bottom_offset
+    );
+}
+
 #[test]
 fn overlay_status_stays_at_top_when_content_fits() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
