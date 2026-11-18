@@ -85,7 +85,25 @@ fn expand_submodule_calls(body: &str) -> String {
     let mut out = Vec::new();
     for line in body.lines() {
         // 形如：`let texture_samplers = super::construct::texture::texture_samplers(&device);`
-        if let Some(rest) = line.split("super::construct::").nth(1) {
+        // 子模块内部再调兄弟模块时会写 `super::texture::texture_samplers(...)`（少一层
+        // `construct`）。两种都要认，否则拆到第二层就会漏展开。
+        // **只认真正的函数调用**：`super::<mod>::<fn>(` 后面必须紧跟 `(`。
+        // 只按 `super::` 切会把 `crate::renderer::ESM_LAYERS] = std::array` 这类
+        // 常量路径也当成调用（实测过，报了个不存在的 `ESM_LAYERS] = std.rs`）。
+        let after_super = line
+            .split("super::construct::")
+            .nth(1)
+            .or_else(|| line.split("super::").nth(1))
+            .filter(|rest| {
+                // `<mod>::<fn>(` — 形如 `texture::texture_samplers(&device)`
+                let mut parts = rest.split("::");
+                let _module = parts.next().unwrap_or("");
+                parts
+                    .next()
+                    .map(|tail| tail.contains('(') && !tail.contains('='))
+                    .unwrap_or(false)
+            });
+        if let Some(rest) = after_super {
             let mut parts = rest.split("::");
             let module = parts.next().unwrap_or("").trim();
             let func = parts
@@ -95,8 +113,12 @@ fn expand_submodule_calls(body: &str) -> String {
                 .next()
                 .unwrap_or("")
                 .trim();
-            if !module.is_empty() && !func.is_empty() {
-                let path = construct_dir().join(format!("{module}.rs"));
+            // **只展开 `construct/` 目录下真实存在的子模块**。
+            // `super::environment::bind_group_layout` 的 environment 是 `renderer/environment.rs`
+            // （上一层的兄弟模块），不是 construct 的子模块——它内部的创建不归本门管。
+            // 判据用"文件存在"，比维护一张白名单更不容易腐烂。
+            let path = construct_dir().join(format!("{module}.rs"));
+            if !module.is_empty() && !func.is_empty() && path.is_file() {
                 let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
                     panic!(
                         "`new_async` 调用了 {module}::{func}，但读不到 {}：{error}",

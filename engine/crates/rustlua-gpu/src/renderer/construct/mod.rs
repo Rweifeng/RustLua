@@ -59,7 +59,7 @@
 //! 父模块的私有项，这条在批次 2 起会真正用到。
 
 use crate::{
-    shader::{MESH3D, MESH3D_PBR, SHADOW, ShaderSource, TEXTURED_SHADER, VECTOR_TEXT_SHADER},
+    shader::{MESH3D, MESH3D_PBR, SHADOW, ShaderSource},
     shader_preprocess::{PreprocessError, PreprocessOptions, PreprocessedShader, preprocess},
 };
 use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
@@ -83,13 +83,14 @@ pub(super) mod device;
 pub(super) mod gpu_particles;
 pub(super) mod post_process;
 pub(super) mod shadow_textures;
+pub(super) mod text_pipeline;
 pub(super) mod texture;
 pub(super) mod world_sprite;
 
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, camera_uniform,
-    compute::ComputeState, depth_stencil_state, identity_palette_data,
+    RenderFrameMetrics, Renderer, camera_uniform, compute::ComputeState, depth_stencil_state,
+    identity_palette_data,
 };
 
 impl Renderer {
@@ -272,118 +273,30 @@ impl Renderer {
         // 这一段只吃 device、零其他输入，是整张依赖图的根。
         let camera_bind_group_layout =
             super::construct::base_layouts::camera_bind_group_layout(&device);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-textured-shader"),
-            source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
-        });
-        let pipeline = build_textured_pipeline(
+        // 2D 贴图/文本/矢量字：拆分批 B 搬到 `construct/text_pipeline.rs`。
+        // 它产出 sampler/shader/pipeline，被 D 相机光照、G ESM、J 环境三处依赖 ——
+        // 拆了它 D 才能拆。
+        let tp = super::construct::text_pipeline::text_pipeline(
             &device,
-            &pipeline_layout,
-            &shader,
             format,
-            "rustlua-textured-pipeline",
-        );
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-texture-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        // 逐纹理采样器表：拆分批 2 搬到 `construct/texture.rs`。
-        // 这一段自包含（只吃 device + 两个静态方法），是按**依赖关系**而非行号切分的样板。
-        let texture_samplers = super::construct::texture::texture_samplers(&device);
-        // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
-        let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-sdf-sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let pipeline_sdf = build_textured_pipeline(
-            &device,
+            storage_capable,
+            storage_usage,
             &pipeline_layout,
-            &shader,
-            format,
-            "rustlua-textured-sdf-pipeline",
         );
-        // 矢量文字的两个绑定是**片元存储缓冲**，能力不足时这里就是空布局（合法），
-        // 对应的管线也换成占位管线（见下面 `vector_pipeline`）。
-        let mut vector_entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
-        if storage_capable {
-            vector_entries.extend([
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ]);
-        }
-        let vector_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-vector-text-bind-group-layout"),
-                entries: &vector_entries,
-            });
-        let vector_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-vector-text-pipeline-layout"),
-            bind_group_layouts: &[&vector_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let vector_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-vector-text-shader"),
-            source: wgpu::ShaderSource::Wgsl(VECTOR_TEXT_SHADER.into()),
-        });
-        let vector_pipeline = if storage_capable {
-            build_vector_text_pipeline(
-                &device,
-                &vector_layout,
-                &vector_shader,
-                format,
-                "rustlua-vector-text-pipeline",
-            )
-        } else {
-            placeholder_pipeline(&device, format, "rustlua-vector-text-placeholder-pipeline")
-        };
-        let vector_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-vector-text-vertex-buffer"),
-            size: 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let vector_glyph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-vector-text-glyph-buffer"),
-            size: 64 * 1024,
-            usage: storage_usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let vector_segment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-vector-text-segment-buffer"),
-            size: 1024 * 1024,
-            usage: storage_usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-vertex-buffer"),
-            size: INITIAL_2D_VERTEX_BUFFER_BYTES,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let _shader = tp.shader;
+        let pipeline = tp.pipeline;
+        let sampler = tp.sampler;
+        let texture_samplers = tp.texture_samplers;
+        let sdf_sampler = tp.sdf_sampler;
+        let pipeline_sdf = tp.pipeline_sdf;
+        let vector_bind_group_layout = tp.vector_bind_group_layout;
+        let vector_layout = tp.vector_layout;
+        let _vector_shader = tp.vector_shader;
+        let vector_pipeline = tp.vector_pipeline;
+        let vector_vertex_buffer = tp.vector_vertex_buffer;
+        let vector_glyph_buffer = tp.vector_glyph_buffer;
+        let vector_segment_buffer = tp.vector_segment_buffer;
+        let vertex_buffer = tp.vertex_buffer;
         // 材质布局里有 1 个是**存储缓冲**（`binding 2` = 逐实例模型矩阵，给实例化用）。
         // 能力不足时不放它：布局本身仍然合法（原生那条路完全不变），而依赖它的管线会走占位
         // （见下面的 `mesh_pipeline` / `shadow_pipeline`），3D 通道在 `passes.rs` 里也不再声明。
