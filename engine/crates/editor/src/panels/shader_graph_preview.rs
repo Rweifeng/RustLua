@@ -373,16 +373,7 @@ impl ShaderPreview {
         let Some(pipeline) = &self.pipeline else {
             return Err("预览管线尚未编译".to_owned());
         };
-        let params_bytes: Vec<u8> = [
-            time,
-            intensity,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        ]
+        let params_bytes: Vec<u8> = [time, intensity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
@@ -890,6 +881,40 @@ mod tests {
         assert_eq!(values[slot][0], 3.0, "参数值应当写进槽位");
     }
 
+    /// 「效果强度」是面板滑杆，但真正改变画面的是 binding 2 里的 uniform：
+    /// 同一份源码、同一组图参数，只改强度也必须改变像素；0 表示完全透明（不是一层黑）。
+    #[test]
+    fn preview_intensity_scales_pixels_without_recompiling() {
+        use rustlua_visual_script::shader_graph::ShaderTemplate;
+
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip Shader Graph intensity: no fallback adapter");
+            return;
+        };
+        let graph = ShaderTemplate::Fire.graph();
+        let compiled = graph.compile_wgsl_uniform(0, 3).expect("compile");
+        let mut preview = ShaderPreview::new(&gpu.device, &gpu.queue);
+        preview
+            .set_shader(&preview_shader_source(&compiled.source))
+            .expect("shader");
+        let mut slots = [[0.0_f32; 4]; 16];
+        for (slot, value) in slots.iter_mut().zip(graph.param_values(&compiled).iter()) {
+            *slot = *value;
+        }
+        preview.set_params(&slots);
+
+        let full = preview.render(0.3, 1.0).expect("full intensity");
+        let half = preview.render(0.3, 0.5).expect("half intensity");
+        let zero = preview.render(0.3, 0.0).expect("zero intensity");
+
+        assert!(full.iter().any(|channel| *channel != 0), "满强度应画出像素");
+        assert_ne!(full, half, "只改强度 uniform 就必须改变画面");
+        assert!(
+            zero.iter().all(|channel| *channel == 0),
+            "强度 0 应当完全透明，而不是画一层黑"
+        );
+    }
+
     /// 热浪/折射的扭曲真的改变了采样坐标：强度 0 与 0.05 渲染结果不同。
     #[test]
     fn distorted_scene_differs_from_undistorted_sample() {
@@ -917,10 +942,10 @@ mod tests {
             .expect("strength slot");
         slots[slot] = [0.0, 0.0, 0.0, 0.0];
         preview.set_params(&slots);
-        let flat = preview.render(0.3).expect("flat render");
+        let flat = preview.render(0.3, 1.0).expect("flat render");
         slots[slot] = [0.05, 0.0, 0.0, 0.0];
         preview.set_params(&slots);
-        let warped = preview.render(0.3).expect("warped render");
+        let warped = preview.render(0.3, 1.0).expect("warped render");
         assert_ne!(
             flat, warped,
             "扭曲强度为 0 时应采样原画面，>0 时坐标必须偏移"

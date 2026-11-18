@@ -25,7 +25,7 @@
 //! | 6 | PBR / mesh 管线（122 行、4 处） | 待拆 |
 //! | 7 | 世界 Sprite → [`world_sprite::world_sprite_resources`]（86 行、6 处） | ✅ 已拆 |
 //! | 8 | GPU 粒子布局 → [`gpu_particles::gpu_particle_layouts`]（67 行、3 处） | ✅ 已拆 |
-//! | 9 | 后处理（795 行、31 处） | 待拆 |
+//! | 9 | 后处理 → [`post_process::post_process_resources`]（661 行、31 处） | ✅ 已拆 |
 //!
 //! 批次 1 刻意选**唯一不含资源创建**的段落：它是验证拆分手法本身的最低风险样板。
 //! 批次 2 则验证了另一件事：**按依赖关系切分，而不是按行号**。
@@ -52,10 +52,7 @@
 //! 父模块的私有项，这条在批次 2 起会真正用到。
 
 use crate::{
-    shader::{
-        MESH3D, MESH3D_PBR, POST_PROCESS_SHADER, SHADOW, ShaderSource, TEXTURED_SHADER,
-        TONEMAP_SHADER, VECTOR_TEXT_SHADER,
-    },
+    shader::{MESH3D, MESH3D_PBR, SHADOW, ShaderSource, TEXTURED_SHADER, VECTOR_TEXT_SHADER},
     shader_preprocess::{PreprocessError, PreprocessOptions, PreprocessedShader, preprocess},
 };
 use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
@@ -76,14 +73,15 @@ use super::pipeline_cache::{
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 pub(super) mod device;
 pub(super) mod gpu_particles;
+pub(super) mod post_process;
 pub(super) mod shadow_textures;
 pub(super) mod texture;
 pub(super) mod world_sprite;
 
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, FrameDraw, GpuPassReport, GpuTimestampState,
-    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, TONEMAP_UNIFORM_BYTES,
-    camera_uniform, compute::ComputeState, depth_stencil_state, identity_palette_data,
+    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, camera_uniform,
+    compute::ComputeState, depth_stencil_state, identity_palette_data,
 };
 
 impl Renderer {
@@ -1220,667 +1218,56 @@ impl Renderer {
                 &texture_bind_group_layout,
             );
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
-        // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
-        // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。
-        let post_process_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-post-process-shader"),
-            source: wgpu::ShaderSource::Wgsl(POST_PROCESS_SHADER.into()),
-        });
-        let post_process_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-post-process-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let post_process_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-post-process-pipeline-layout"),
-                bind_group_layouts: &[&post_process_layout],
-                push_constant_ranges: &[],
-            });
-        let post_process_pipeline = build_fullscreen_pipeline(
+        // 后处理通道：拆分批 9 搬到 `construct/post_process.rs`（661 行、31 处）。
+        // 它排在 new_async 后半段，但只在下面 Ok(Self{..}) 里才碰到早期变量，
+        // 创建资源本身只吃 device/queue/format/capabilities —— 所以能独立搬。
+        let pp = super::construct::post_process::post_process_resources(
             &device,
-            &post_process_pipeline_layout,
-            &post_process_shader,
+            &queue,
             format,
-            "rustlua-post-process-pipeline",
+            &capabilities,
         );
-        let post_process_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("rustlua-post-process-sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let post_process_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-post-process-params"),
-            // 32 字节：exposure + vignette + exposure_ev + tonemap code，随后是一个 vec4 着色
-            // （见 rustlua_render::post_process 的 `uniform`）。
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Tonemap 需要额外的深度与逆视图投影做 SSAO，因此单独一份绑定布局；
-        // 后处理 LDR 路径继续用上面 3 项的布局，不去读深度。
-        let tonemap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rustlua-tonemap-bind-group-layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(TONEMAP_UNIFORM_BYTES),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                // P3-R166：`sect=1` 地形的高度图（R=高 8 位、G=低 8 位，16 位定点）。
-                // 不走采样器：Tonemap 用 `textureLoad` 自己插值，避免线性过滤把两个字节混掉。
-                wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                // P3-R170：水面平面反射的离屏色图（半分辨率的 HDR 镜像视图）。
-                // 关掉时绑的是 1×1 透明占位图，着色器按 `planar.x` 与 alpha 掩码跳过。
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 10,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let tonemap_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-tonemap-pipeline-layout"),
-                bind_group_layouts: &[&tonemap_layout],
-                push_constant_ranges: &[],
-            });
-        // P3-R01：Tonemap 全屏管线。片元先把线性值乘 `2^exposure_ev` 再走曲线；
-        // P3-R09 起还可读深度做 SSAO。能力不足时不创建，HDR 因此不会被启用。
-        let tonemap_pipeline = if capabilities.hdr_usable() {
-            let tonemap_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("rustlua-tonemap-shader"),
-                source: wgpu::ShaderSource::Wgsl(TONEMAP_SHADER.into()),
-            });
-            Some(build_fullscreen_pipeline(
-                &device,
-                &tonemap_pipeline_layout,
-                &tonemap_shader,
-                format,
-                "rustlua-tonemap-pipeline",
-            ))
-        } else {
-            None
-        };
-        let tonemap_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-tonemap-params"),
-            // 400 字节：8 个标量 + 视图投影 + 逆视图投影 + 世界→局部 + 相机位置 + 光照方向 + 雾 + 景深
-            // + 天空 + 水面反射 + 云层 + 剖面裁剪平面/世界→局部/地形范围（P3-R166）
-            // + 平面反射开关/强度（P3-R170）。
-            size: TONEMAP_UNIFORM_BYTES,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // 没有剖面地形时绑定这张 1×1 占位高度图；着色器靠 `section_terrain.w` 关闭分支，
-        // 不会真读它，但绑定布局要求每个槽位都有资源。
-        let section_height_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-tonemap-height-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &section_height_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[0u8, 0, 0, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let section_height_white =
-            section_height_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssao_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-ssao-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(144),
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let ssao_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-ssao-pipeline-layout"),
-            bind_group_layouts: &[&ssao_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-ssao-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO.source.into()),
-        });
-        let ssao_pipeline = build_fullscreen_pipeline(
-            &device,
-            &ssao_pipeline_layout,
-            &ssao_shader,
-            wgpu::TextureFormat::R8Unorm,
-            "rustlua-ssao-pipeline",
-        );
-        let ssao_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-ssao-params"),
-            size: 144,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let ssao_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-ssao-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ssao_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255u8],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(1),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ssao_raw_view = ssao_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssao_blur_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-ssao-blur-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ssao_blur_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255u8],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(1),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ssao_view = ssao_blur_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssao_blur_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-ssao-blur-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(16),
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let ssao_blur_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-ssao-blur-pipeline-layout"),
-                bind_group_layouts: &[&ssao_blur_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        let ssao_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-ssao-blur-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO_BLUR.source.into()),
-        });
-        let ssao_blur_pipeline = build_fullscreen_pipeline(
-            &device,
-            &ssao_blur_pipeline_layout,
-            &ssao_blur_shader,
-            wgpu::TextureFormat::R8Unorm,
-            "rustlua-ssao-blur-pipeline",
-        );
-        let ssao_blur_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-ssao-blur-params"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let ssr_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-ssr-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(176),
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        let ssr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rustlua-ssr-pipeline-layout"),
-            bind_group_layouts: &[&ssr_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let ssr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-ssr-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shader::SSR.source.into()),
-        });
-        let ssr_pipeline = build_fullscreen_pipeline(
-            &device,
-            &ssr_pipeline_layout,
-            &ssr_shader,
-            wgpu::TextureFormat::Rgba16Float,
-            "rustlua-ssr-pipeline",
-        );
-        let ssr_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-ssr-params"),
-            size: 176,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let ssr_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-ssr-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ssr_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(16),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ssr_raw_view = ssr_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssr_blur_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-ssr-blur-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ssr_blur_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(16),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ssr_view = ssr_blur_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssr_history_white = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rustlua-ssr-history-white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ssr_history_white,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytemuck::cast_slice(&[0.0_f32, 0.0, 0.0, 0.0]),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(16),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ssr_history_view =
-            ssr_history_white.create_view(&wgpu::TextureViewDescriptor::default());
-        let ssr_blur_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rustlua-ssr-blur-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(144),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let ssr_blur_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("rustlua-ssr-blur-pipeline-layout"),
-                bind_group_layouts: &[&ssr_blur_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        let ssr_blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rustlua-ssr-blur-shader"),
-            source: wgpu::ShaderSource::Wgsl(crate::shader::SSR_BLUR.source.into()),
-        });
-        let ssr_blur_pipeline = build_fullscreen_pipeline(
-            &device,
-            &ssr_blur_pipeline_layout,
-            &ssr_blur_shader,
-            wgpu::TextureFormat::Rgba16Float,
-            "rustlua-ssr-blur-pipeline",
-        );
-        let ssr_blur_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-ssr-blur-params"),
-            size: 144,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let _post_process_shader = pp.post_process_shader;
+        let post_process_layout = pp.post_process_layout;
+        let post_process_pipeline_layout = pp.post_process_pipeline_layout;
+        let post_process_pipeline = pp.post_process_pipeline;
+        let post_process_sampler = pp.post_process_sampler;
+        let post_process_params = pp.post_process_params;
+        let tonemap_layout = pp.tonemap_layout;
+        let _tonemap_pipeline_layout = pp.tonemap_pipeline_layout;
+        let tonemap_pipeline = pp.tonemap_pipeline;
+        let tonemap_params = pp.tonemap_params;
+        let section_height_white = pp.section_height_white;
+        let ssao_bind_group_layout = pp.ssao_bind_group_layout;
+        let _ssao_pipeline_layout = pp.ssao_pipeline_layout;
+        let _ssao_shader = pp.ssao_shader;
+        let ssao_pipeline = pp.ssao_pipeline;
+        let ssao_params = pp.ssao_params;
+        let _ssao_white = pp.ssao_white;
+        let ssao_raw_view = pp.ssao_raw_view;
+        let _ssao_blur_white = pp.ssao_blur_white;
+        let ssao_view = pp.ssao_view;
+        let ssao_blur_bind_group_layout = pp.ssao_blur_bind_group_layout;
+        let _ssao_blur_pipeline_layout = pp.ssao_blur_pipeline_layout;
+        let _ssao_blur_shader = pp.ssao_blur_shader;
+        let ssao_blur_pipeline = pp.ssao_blur_pipeline;
+        let ssao_blur_params = pp.ssao_blur_params;
+        let ssr_bind_group_layout = pp.ssr_bind_group_layout;
+        let _ssr_pipeline_layout = pp.ssr_pipeline_layout;
+        let _ssr_shader = pp.ssr_shader;
+        let ssr_pipeline = pp.ssr_pipeline;
+        let ssr_params = pp.ssr_params;
+        let _ssr_white = pp.ssr_white;
+        let ssr_raw_view = pp.ssr_raw_view;
+        let ssr_blur_white = pp.ssr_blur_white;
+        let ssr_view = pp.ssr_view;
+        let ssr_history_white = pp.ssr_history_white;
+        let ssr_history_view = pp.ssr_history_view;
+        let ssr_blur_bind_group_layout = pp.ssr_blur_bind_group_layout;
+        let _ssr_blur_pipeline_layout = pp.ssr_blur_pipeline_layout;
+        let _ssr_blur_shader = pp.ssr_blur_shader;
+        let ssr_blur_pipeline = pp.ssr_blur_pipeline;
+        let ssr_blur_params = pp.ssr_blur_params;
         tracing::info!(target: "game",
             "[render] initialized: adapter={adapter_name} format={format:?} present_mode={:?} gpu_timestamp={timestamp_enabled}",
             config.present_mode

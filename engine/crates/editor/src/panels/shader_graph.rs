@@ -36,6 +36,10 @@ struct PreviewState {
     error: Option<String>,
     /// 当前图的参数槽位表：每帧按图上的参数值重写 uniform（不重编管线）。
     compiled: Option<rustlua_visual_script::shader_graph::CompiledShader>,
+    /// 上一次写进 uniform 的槽位与「效果强度」。暂停时靠它们发现"参数变了"，
+    /// 否则暂停状态下拖滑杆只改了 uniform、画面却停在上一帧。
+    last_slots: [[f32; 4]; 16],
+    last_intensity: f32,
 }
 
 /// 模板画廊状态：一台独立预览器 + 每模板一张缩略图（逐帧渲染，避免一次性卡住 UI）。
@@ -345,6 +349,8 @@ impl ShaderGraphPanel {
             last_render_ms: 0.0,
             error: None,
             compiled: None,
+            last_slots: [[f32::NAN; 4]; 16],
+            last_intensity: f32::NAN,
         });
 
         if state.last_source != source {
@@ -354,26 +360,33 @@ impl ShaderGraphPanel {
             state.compiled = Some(compiled);
         }
 
-        // 参数走 uniform：Inspector 拖动滑杆只改这里的值，**不重编管线**。
+        // 参数走 uniform：Inspector 拖动滑杆/「效果强度」只改这里的值，**不重编管线**。
+        // 与上一帧比对后才重写 buffer，并据此标脏——暂停时拖滑杆也能看到一帧结果。
+        let mut params_changed = false;
         if let Some(compiled) = state.compiled.as_ref() {
             let values = self.graph.param_values(compiled);
             let mut slots = [[0.0_f32; 4]; 16];
             for (slot, value) in slots.iter_mut().zip(values.iter()) {
                 *slot = *value;
             }
-            state.renderer.set_params(&slots);
+            if slots != state.last_slots || self.intensity != state.last_intensity {
+                state.renderer.set_params(&slots);
+                state.last_slots = slots;
+                state.last_intensity = self.intensity;
+                params_changed = true;
+            }
         }
 
         // 播放时推进时间；暂停时仍允许"改一次参数渲一次"，作者不必点播放也能看静态结果。
         let dt = ui.input(|input| input.stable_dt).min(0.1);
-        let mut dirty = state.texture.is_none();
+        let mut dirty = state.texture.is_none() || params_changed;
         if state.playing {
             state.time = (state.time + dt) % 1000.0;
             dirty = true;
         }
         if dirty && state.error.is_none() {
             let started = std::time::Instant::now();
-            match state.renderer.render(state.time) {
+            match state.renderer.render(state.time, self.intensity) {
                 Ok(pixels) => {
                     state.last_render_ms = started.elapsed().as_secs_f32() * 1000.0;
                     let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -627,7 +640,7 @@ impl ShaderGraphPanel {
                         *slot = *value;
                     }
                     state.preview.set_params(&slots);
-                    state.preview.render(0.35)
+                    state.preview.render(0.35, 1.0)
                 });
             match result {
                 Ok(pixels) => {
@@ -1251,6 +1264,26 @@ mod tests {
         assert!(!saved_panel.is_dirty(), "与保存快照相同即不脏");
     }
 
+    /// 画一帧面板，返回本帧上传的纹理图像（预览重渲时会出现在这里）。
+    fn panel_frame(
+        panel: &mut ShaderGraphPanel,
+        context: &egui::Context,
+        root: &std::path::Path,
+        gpu: &(wgpu::Device, wgpu::Queue),
+    ) -> Vec<(egui::TextureId, egui::epaint::ImageData)> {
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                panel.ui(ui, root, Some(gpu));
+            });
+        });
+        output
+            .textures_delta
+            .set
+            .into_iter()
+            .map(|(id, delta)| (id, delta.image))
+            .collect()
+    }
+
     fn temp_root(label: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "rustlua-sgraph-panel-{label}-{}",
@@ -1334,6 +1367,50 @@ mod tests {
                 matches!(&clipped.shape, egui::Shape::Rect(shape) if shape.brush.is_some())
             }),
             "检查器底色之后必须画出带纹理的预览图，否则预览被盖住"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 「效果强度」滑杆必须真的接到预览 uniform：暂停时拖它，画面也要重渲一帧。
+    /// 旧代码只在 `playing` 时标脏，暂停拖滑杆只改了字段、画面停在上一帧。
+    #[test]
+    fn effect_intensity_slider_repaints_while_paused() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip Shader Graph slider: no fallback adapter");
+            return;
+        };
+        let root = temp_root("intensity_slider");
+        let mut panel = ShaderGraphPanel::default();
+        let context = egui::Context::default();
+        let first = panel_frame(&mut panel, &context, &root, &gpu);
+        let texture_id = panel
+            .preview
+            .as_ref()
+            .expect("预览器应当已建立")
+            .texture
+            .as_ref()
+            .expect("首帧应上传预览纹理")
+            .id();
+        let pixels = |frame: Vec<(egui::TextureId, egui::epaint::ImageData)>| {
+            frame
+                .into_iter()
+                .find(|(id, _)| *id == texture_id)
+                .and_then(|(_, image)| match image {
+                    egui::epaint::ImageData::Color(image) => Some(image.pixels.clone()),
+                })
+        };
+        let before = pixels(first).expect("首帧应上传预览纹理");
+
+        // 暂停后只改滑杆：如果滑杆是空接线，就不会重渲，纹理也不会重新上传。
+        panel.preview.as_mut().expect("预览器应当已建立").playing = false;
+        panel.intensity = 0.25;
+        let changed = panel_frame(&mut panel, &context, &root, &gpu);
+        let after = pixels(changed).expect("暂停时改强度必须重渲并上传新画面");
+        assert_ne!(before, after, "暂停时改效果强度必须真的改变预览画面");
+        assert_eq!(
+            panel.preview.as_ref().expect("预览器").last_intensity,
+            0.25,
+            "强度值必须进入预览 uniform 的上一帧记录"
         );
         let _ = std::fs::remove_dir_all(root);
     }

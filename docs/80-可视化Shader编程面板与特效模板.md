@@ -34,7 +34,9 @@ slot3=`speed`、slot4-7=扇形参数。改图前先看 `compile_wgsl_uniform` �
 
 1. 在编辑器打开 **Shader Graph** 面板，下拉框按分类选择模板并点击「载入模板」。
 2. 右栏顶部就是**实时预览**：默认自动播放，改模板/改参数后下一帧就能看到画面变化；
-   可点「⏸ 暂停」定格，控制条会显示当前时间与单帧渲染耗时。
+   可点「⏸ 暂停」定格，控制条会显示当前时间与单帧渲染耗时。工具栏的**效果强度**
+   （0~2）是预览的总强度：同时缩放颜色与不透明度，拖到 0 即完全关掉效果；暂停时
+   拖动也会重绘一帧，不必重新播放。
 3. 画布里的节点与连线就是 `.sgraph` 里的节点与连线：拖动节点摆位置，选中节点后在右侧
    检查器调参数（正弦频率、边缘硬度、常量红绿蓝）。每次拖动只压一步撤销。
 4. 检查器同时给出「分类 / 性能等级 / 先调什么」三项，非程序员不必翻文档就能开始调。
@@ -56,6 +58,12 @@ Shader Graph 资产使用 `.sgraph` 扩展名。资源导入器校验 UTF-8、BO
   不播放时不重绘，编辑器不会空转。
 - 参数是 **uniform**（每个槽一个 `vec4<f32>`），拖 Inspector 参数只改这块 buffer，
   **不重编管线**；预览里看到的就是将来运行时同一段代码、同一套参数槽。
+- 「效果强度」走 binding 2 的 `PreviewParams.intensity`（与时间同一个 buffer，32 字节），
+  在包装层同时缩放 `rgb` 与 `alpha`；它只作用于编辑器预览，不写运行时叠加层的
+  `EffectParams`（那条路径由 `render.set_effect_param(s)` 控制，避免动到 GPU 契约）。
+- 预览器记住上一帧的槽位值与强度：暂停时只要其中任一变化就重写 uniform 并重渲一帧，
+  否则"暂停调参"只改了内存、画面却不动。`effect_intensity_slider_repaints_while_paused`
+  守住这个行为。
 - 面板铺绘制指令的顺序是「检查器底色 → 实时预览图 → 模板说明」。底色必须在预览之前画：
   两者共用同一个 painter，若让检查器在预览之后再铺满底色，预览就会被整块盖住，
   表现为"模板说明上方一片空白"。`inspector_background_is_painted_before_live_preview`
@@ -193,7 +201,7 @@ CRT 扫描线与冲刺速度线。
 
 ## 验证门
 
-`cargo test -p editor shader_graph`（11 项）在真实 wgpu fallback adapter 上跑离屏渲染并回读像素：
+`cargo test -p editor shader_graph`（20 项）在真实 wgpu fallback adapter 上跑离屏渲染并回读像素：
 
 | 门 | 判据 |
 |---|---|
@@ -203,6 +211,8 @@ CRT 扫描线与冲刺速度线。
 | `texture_sampling_reads_the_bound_texture` | 棋盘纹理输入下输出至少两种颜色（纹理绑定真的被采样） |
 | `invalid_shader_is_reported_instead_of_panicking` | 坏 WGSL 返回中文错误、渲染请求被拒，编辑器不 panic |
 | `live_preview_uploads_a_texture_and_advances_time` | 面板画一帧就建出预览器、上传纹理、推进时间，且带纹理的预览图画在检查器底色之上（实时预览真的在跑） |
+| `preview_intensity_scales_pixels_without_recompiling` | 同一份 WGSL、同一组图参数，只改强度 uniform：满强度非空、半强度画面不同、0 时全透明 |
+| `effect_intensity_slider_repaints_while_paused` | 暂停时改「效果强度」必须重渲并上传新画面；参数没变时不反复重渲（防止滑杆空接线） |
 | `inspector_background_is_painted_before_live_preview` | 无 GPU 时检查器底色之后还能看到预览占位块（防止整块底色盖掉预览，截图回归） |
 | `panel_draws_headless_without_gpu_and_keeps_the_graph` | 无 GPU 时面板仍能画一帧且不改动图，也不会建预览器 |
 | `open_relative_loads_a_saved_graph` | 双击入口按相对路径载入磁盘上的图，且打开即"干净" |
