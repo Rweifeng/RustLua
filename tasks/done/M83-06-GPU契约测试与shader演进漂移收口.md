@@ -1,7 +1,7 @@
 # 任务：GPU 契约测试与 shader 演进漂移收口
 
 - 任务 ID：M83-06
-- 状态：6 条全部已修（2 条 CRLF 假红 + 4 条 shader 漂移真红），待整跑复核
+- 状态：已完成并验收（2026-11-16）——6 条全修，整跑 `rustlua-gpu --lib` 308/308 绿；已归档 `done/`
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -98,7 +98,7 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
 验证：`shader_variants::` 23 passed；`water_absorption::tonemap_only_absorbs_inside_the_water_mask` 1 passed；
 `hdr::tonemap_shader_adds_screen_space_water_reflection` 1 passed；`cargo fmt --all -- --check` exit 0。
 
-## 待复核
+## 整跑复核（已完成，2026-11-16）
 
 整跑 `cargo test -p rustlua-gpu --lib --all-features`（单线程）：
 
@@ -107,8 +107,9 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
 
 ## 未完成项 / 已知限制
 
-- 4 条真红未修：属水面/IBL shader 契约的拥有方工作，且需先确认 P3-R277 / P3-R208 / 折射步进的
-  既定语义；本任务只提供定性与修法方向，不做猜测性改动。
+- 无剩余未收口项：6 条契约断言（2 条 CRLF 假红 + 4 条 shader 漂移真红）已在第二笔全部修复，
+  整跑 308/308 绿（见「待复核」段，读数已回填）。（此条原先记的是"4 条真红未修"，为第二笔
+  修复前的旧文字，保留修订痕迹以免误读；结论以本条与状态行为准。）
 - 本机 autocrlf 检出的行尾问题**已根治（2026-11-16）**：`.gitattributes` 新增 `*.rs text eol=lf`，
   并把工作区 946 个干净 `.rs` 一次性归一为 LF（0 个 CRLF 残留；对方在途的 WIP 文件未触碰）。
   仓库 blob 本就是 LF，所以 `git add --renormalize -- '*.rs'` 无内容 diff，根治只花了一行规则。
@@ -116,3 +117,15 @@ $env:RUST_TEST_THREADS='1'; cargo test -p rustlua-gpu --lib --all-features
   验证：`check-vendor-patches.ps1` 30/30 通过（说明 LF 归一化没有破坏字节敏感的 fork 断言）。
 - `.gitattributes` 未加 `* text=auto`：`scripts/**/*.ps1` 必须是 UTF-8 BOM + CRLF（PS 5.1 口径），
   通配会一次性改写它们；因此只钉 `*.rs`。
+
+## 归档记录（2026-11-20）
+
+- **归档依据**：6 条契约断言全部修复且保留原判据意图（2 条 CRLF 假红用 `.gitattributes` 钉
+  `*.rs eol=lf` 根治 + 断言侧 `replace` 兜底；4 条 shader 漂移只修正取值锚点、未删断言），
+  整跑 `cargo test -p rustlua-gpu --lib --all-features` = **308 passed / 0 failed / 0 ignored**
+  （日志 `artifacts/logs/quality/m83-06-rustlua-gpu-lib-full.log`），`cargo fmt --all -- --check` exit 0。
+  M83-00 的验收清单亦记「M83-06 已完成（308/308 绿）」。
+- **归档时仍未收口（只登记，不开新包）**：无。`crate` 的源码形状断言随 shader 演进仍可能漂移，
+  这是契约测试的固有维护成本，非本任务残项。
+- 归档动作：移入 `tasks/done/`，`tasks/README` 同步。正文旧文字（状态行"待整跑复核"、
+  §未完成项"4 条真红未修"）已按整跑结果就地修订并留修订痕迹。
