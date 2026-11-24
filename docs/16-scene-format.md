@@ -199,6 +199,12 @@ component  7  RenderMode  mode=screen
 公转，而 Sprite 只跟着 translation 走、纹丝不动，画面上就成了"人不动、碰撞盒在飘"
 （主角的脚底球 `radius=12;offset=0,-16` 正是偏心碰撞盒）。
 
+3D 侧同一口径（2026-11-24 起）：`PhysicsWorld3d::add_body` 的动态刚体同样 `lock_rotations()`，
+`step()` 只回传 `position`，`Transform3D` 的 `rotation` / `scale` 由场景拥有。此前的 3D 动态体
+没锁旋转，碰撞体会在物理世界里自旋/公转而画面朝向不变——与 2D 上面那段描述的是同一类静默分叉。
+要做翻滚玩法，需要先补"姿态回写（`step()` 回传 `Quat`）+ 宿主写 `Transform3D.rotation` + 渲染消费"
+整条链路，再放开这把锁；只解锁不会让画面变对。
+
 布尔字段只接受 `true`/`false`，拼错**报错**而不是静默当 false（`ccd` 被静默关掉会让高速子弹
 重新穿墙且毫无线索）。2D 的 `Tilemap` 实体仍会自动生成静态单元格碰撞体，不需要写 `Collider`。
 
