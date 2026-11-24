@@ -70,19 +70,10 @@ impl EditorApp {
     /// E06：返回是否保存成功。失败（如场景无路径、磁盘写入失败、校验失败）时文档
     /// 保持 dirty 且不变更内容，供「保存并继续」确认流判断是否需要停留在当前文档。
     ///
-    /// 磁盘文件被外部改动过时**拒绝覆盖**（见下面 `disk_status` 的说明）；
-    /// 显式覆盖走 [`EditorApp::save_scene_force`]。
+    /// 磁盘文件被外部改动过时**拒绝覆盖**（见下面 `disk_status` 的说明），
+    /// 且当前没有"强制覆盖"的 UI 出口——被拒绝时的下一步见状态栏文案。
     pub(crate) fn save_scene(&mut self) -> bool {
         self.save_scene_with_policy(false)
-    }
-
-    /// 强制保存：明知磁盘被外部改过也覆盖（显式动作，不绑快捷键）。
-    ///
-    /// 文件菜单里的「强制保存（覆盖外部修改）」项已撤（菜单收敛），此出口目前只剩
-    /// `actions/tests/document_gate.rs` 在用；保留它是为了将来把出口接回 UI 或命令面板。
-    #[cfg_attr(not(test), allow(dead_code, reason = "出口保留给测试与后续 UI 接线"))]
-    pub(crate) fn save_scene_force(&mut self) -> bool {
-        self.save_scene_with_policy(true)
     }
 
     pub(crate) fn save_scene_with_policy(&mut self, force: bool) -> bool {
@@ -111,12 +102,18 @@ impl EditorApp {
         //
         // `scenes/` 与 `scripts/` 本来就是外部工具会写的目录（生成器、git checkout、另一个编辑器），
         // 而这里过去是无条件覆盖——用户的 Ctrl+S 会悄悄吃掉别人的改动，正是计划 §8
-        // 把"数据损坏"列为直接阻断项要防的那类事故。默认拒绝并给出可执行的下一步
-        // （`save_scene_force` 提供显式覆盖出口，用户不会被卡死）。
+        // 把"数据损坏"列为直接阻断项要防的那类事故。
+        //
+        // 拒绝之后**必须给出真正可达的下一步**：菜单里的「强制保存（覆盖外部修改）」已按
+        // 产品决定撤掉（命令面板的数据来自菜单树，所以那边也搜不到），若这里还写它，
+        // 用户就会照着一条不存在的路去找出口。当前真正能走通的只有两条：
+        // 先在外部处理掉那个改动（还原/确认），或者在资源面板重开场景采用磁盘版本——
+        // 后者会丢弃内存里的未保存改动，所以必须写明。
         let disk_status = doc.disk_status();
         if disk_status.blocks_overwrite() && !force {
             self.status = format!(
-                "已阻止保存：{}（{}）。如需覆盖请用「强制保存」，或先用「重新加载」放弃内存改动。",
+                "已阻止保存：{}（{}）。磁盘上的文件已被外部改动，这里不会静默覆盖：\
+                 先在外部确认或还原该文件，或在资源面板重开该场景采用磁盘版本（会丢弃未保存的改动）。",
                 disk_status.describe(),
                 doc.path
                     .as_deref()

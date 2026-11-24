@@ -63,10 +63,15 @@ fn save_refuses_to_overwrite_an_externally_modified_scene() {
         "被拒绝之后文档必须保持 dirty"
     );
 
-    // ④ 显式强制保存：覆盖成功，磁盘内容变成编辑器里的场景。
-    assert!(app.save_scene_force(), "强制保存必须成功：{}", app.status);
+    // ④ 显式覆盖（`save_scene_with_policy(true)`；菜单里的「强制保存」已按产品决定撤掉，
+    //    现在没有 UI 入口，这条只钉"策略开关本身还能覆盖"）：覆盖成功，磁盘内容变成编辑器里的场景。
+    assert!(
+        app.save_scene_with_policy(true),
+        "显式覆盖必须成功：{}",
+        app.status
+    );
     let written = fs::read_to_string(&path).expect("磁盘内容");
-    assert_ne!(written, external, "强制保存必须真的覆盖");
+    assert_ne!(written, external, "显式覆盖必须真的覆盖");
     assert!(
         written.contains(
             &app.document

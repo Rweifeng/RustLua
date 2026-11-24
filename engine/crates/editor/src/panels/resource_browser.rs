@@ -851,7 +851,8 @@ impl EditorApp {
                     |path| path.display().to_string(),
                 );
                 self.push_console_notice(format!(
-                    "当前打开的场景已被外部修改：{name}（保存会被拒绝；请先「重新加载」采用磁盘版本，或先另存再继续编辑）"
+                    "当前打开的场景已被外部修改：{name}（保存会被拒绝，不会静默覆盖；\
+                     重开该场景会采用磁盘版本并丢弃未保存的改动）"
                 ));
                 self.set_scene_view_diagnostic(format!("外部修改：{name} —— 保存已被保护性拒绝"));
             }
