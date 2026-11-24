@@ -37,6 +37,8 @@ rustlua-scene.workspace = true
 rustlua-component-codec.workspace = true
 rustlua-camera.workspace = true
 rustlua-animation.workspace = true
+# M84 P1：Spine 2D 运行时（组合根装 `spine` 表与 `SpineSkeleton` 装配器，宿主每帧推进）。
+rustlua-spine.workspace = true
 rustlua-render.workspace = true
 rustlua-ui.workspace = true
 rustlua-physics.workspace = true

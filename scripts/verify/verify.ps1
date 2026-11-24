@@ -741,7 +741,12 @@ try {
         # 而 matrix.yml 的 blocking cell 查的是 `-p game_web -p gpu-web-probe`，另有
         # `-p game_web --no-default-features` 一格。两条命令的漂移由
         # `check-platform-parity.ps1` 当场判红，所以这里改包集必须同步改 matrix.yml。
-        Invoke-Checked cargo @("check", "-p", "game_web", "-p", "gpu-web-probe", "--target", "wasm32-unknown-unknown", "--locked")
+        #
+        # `rustlua-ui-host-harness`（2026-11-20）：Web/微信 UI 证据 harness 的 cdylib 入口，
+        # 是独立 wasm 包（不在 game_web 闭包里）。它的 4 个 wasm 分支此前**没有任何门编译过**
+        # ——`check-cfg-coverage.ps1` 因此判红。补进本 cell 与 `metrics/wasm-cells.json`
+        # 的 `wasm-default`，让它真的被编译。
+        Invoke-Checked cargo @("check", "-p", "game_web", "-p", "gpu-web-probe", "-p", "rustlua-ui-host-harness", "--target", "wasm32-unknown-unknown", "--locked")
         Invoke-Checked cargo @("check", "-p", "game_web", "--no-default-features", "--target", "wasm32-unknown-unknown", "--locked")
     } else {
         Write-Host "  [SKIP] 未安装 wasm32-unknown-unknown 目标：WebGL/微信平台编译未运行（不是通过；先 rustup target add wasm32-unknown-unknown）" -ForegroundColor Yellow

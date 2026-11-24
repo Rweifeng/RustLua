@@ -51,6 +51,8 @@ pub fn extract_refs(text: &str, kind: ResourceKind) -> Vec<DependencyRef> {
         }
         ResourceKind::Atlas => extract_atlas_texture(text),
         ResourceKind::LuaScript => extract_lua_refs(text),
+        // M84：`.spine` 清单的 `skeleton=` / `atlas=` / `page=` 三行就是依赖边。
+        ResourceKind::Spine => extract_spine_manifest_refs(text),
         _ => Vec::new(),
     }
 }
@@ -103,7 +105,7 @@ pub fn resolve_refs(
     (ids, unresolved)
 }
 
-/// Recomputes dependency edges for every container asset (Scene/Prefab/Atlas/Material/LuaScript),
+/// Recomputes dependency edges for every container asset (Scene/Prefab/Atlas/Material/LuaScript/Spine),
 /// overwriting the previous edges each time so the operation is idempotent.
 /// `read_source` reads a project-relative source file; returning `None` means
 /// the file is gone and yields no edges. Unresolved references are returned so
@@ -112,17 +114,65 @@ pub fn recompute_edges(
     db: &mut ResourceDatabase,
     read_source: &dyn Fn(&Path) -> Option<String>,
 ) -> Vec<UnresolvedRef> {
+    let spine_json_skeletons: HashSet<String> = db
+        .iter()
+        .filter(|record| {
+            record.kind == ResourceKind::Spine
+                && record
+                    .source_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("spine"))
+        })
+        .filter_map(|record| read_source(&record.source_path))
+        .flat_map(|text| extract_spine_manifest_refs(&text))
+        .filter_map(|reference| match reference {
+            DependencyRef::Asset(path)
+                if path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json")) =>
+            {
+                Some(
+                    path.to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                )
+            }
+            _ => None,
+        })
+        .collect();
+
     let containers: Vec<(AssetId, ResourceKind, PathBuf)> = db
         .iter()
         .filter(|record| {
-            matches!(
+            let is_spine_json_skeleton = record.kind == ResourceKind::Scene
+                && record
+                    .source_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+                && spine_json_skeletons.contains(
+                    &record
+                        .source_path
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                );
+            let is_container = matches!(
                 record.kind,
                 ResourceKind::Scene
                     | ResourceKind::Prefab
                     | ResourceKind::Atlas
                     | ResourceKind::Material
                     | ResourceKind::LuaScript
-            )
+            ) || (record.kind == ResourceKind::Spine
+                && record
+                    .source_path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("spine")));
+            is_container && !is_spine_json_skeleton
         })
         .map(|record| (record.id, record.kind, record.source_path.clone()))
         .collect();
@@ -454,6 +504,33 @@ fn extract_scene_assets(text: &str) -> Vec<DependencyRef> {
 /// `#区域名` 只在装配期解析，所以边指向去掉后缀的图集路径。
 fn strip_region_suffix(raw: &str) -> &str {
     raw.split('#').next().unwrap_or(raw)
+}
+
+/// `.spine` 清单引用的骨骼、图集与图集页（M84）。
+///
+/// 三行都是"值就是工程内相对路径"：`skeleton=`（`.skel`/`.json`）、`atlas=`（`.spineatlas`）、
+/// 以及每个 `page=`（PNG）。`spine_version=` 不是路径，跳过；未知键交给导入器报错，
+/// 这里只成边（依赖图不重复报同一件事）。
+fn extract_spine_manifest_refs(text: &str) -> Vec<DependencyRef> {
+    let mut refs = Vec::new();
+    let mut seen = HashSet::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !matches!(key.trim(), "skeleton" | "atlas" | "page") {
+            continue;
+        }
+        let value = value.trim();
+        if !value.is_empty() && seen.insert(value.to_owned()) {
+            refs.push(DependencyRef::Asset(PathBuf::from(value)));
+        }
+    }
+    refs
 }
 
 /// 图集描述文件只依赖它引用的那张合并纹理（`texture=` 行）。
@@ -814,6 +891,111 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// M84 P3-2：`.spine` 清单的三类路径行都成依赖边。
+    ///
+    /// 这条边决定"改骨骼/图集会不会触发重导入"。漏了它，作者改了 `.skel` 却发现游戏里
+    /// 还是旧的骨架——现象像缓存没清，实际是依赖图里根本没有这条线。
+    #[test]
+    fn spine_manifest_refs_skeleton_atlas_and_pages() {
+        let manifest = "spine_version=4.3.75-beta\n\
+            skeleton=assets/spine/hero.skel\n\
+            atlas=assets/spine/hero.spineatlas\n\
+            page=assets/spine/hero.png\n\
+            page=assets/spine/hero2.png\n";
+        let refs = extract_refs(manifest, ResourceKind::Spine);
+        let assets = asset_paths(&refs);
+        for expected in [
+            "assets/spine/hero.skel",
+            "assets/spine/hero.spineatlas",
+            "assets/spine/hero.png",
+            "assets/spine/hero2.png",
+        ] {
+            assert!(
+                assets.iter().any(|path| path == expected),
+                "缺少依赖边 {expected}: {assets:?}"
+            );
+        }
+        // `spine_version` 不是路径，不能变成一条"依赖一个叫 4.3.75-beta 的文件"的边。
+        assert!(
+            !assets.iter().any(|path| path.contains("4.3.75-beta")),
+            "版本行不该成边：{assets:?}"
+        );
+    }
+
+    #[test]
+    fn recompute_edges_includes_spine_manifest_and_resolves_json_skeleton() {
+        let root = temp_root("edges-spine");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let skeleton = db
+            .register("assets/spine/hero.json", ResourceKind::Scene, "scene-1")
+            .unwrap();
+        let atlas = db
+            .register(
+                "assets/spine/hero.spineatlas",
+                ResourceKind::Spine,
+                "spine-1",
+            )
+            .unwrap();
+        let page = db
+            .register("assets/spine/hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        let manifest = db
+            .register("assets/spine/hero.spine", ResourceKind::Spine, "spine-1")
+            .unwrap();
+        let source = "spine_version=4.3.75-beta\n\
+            skeleton=assets/spine/hero.json\n\
+            atlas=assets/spine/hero.spineatlas\n\
+            page=assets/spine/hero.png\n";
+        let read =
+            |path: &Path| (path == Path::new("assets/spine/hero.spine")).then(|| source.to_owned());
+
+        assert!(recompute_edges(&mut db, &read).is_empty());
+        assert_eq!(
+            db.get(manifest).unwrap().dependencies,
+            vec![skeleton, atlas, page]
+        );
+        // JSON remains a generic Scene asset in the database; the manifest context
+        // supplies the Spine-specific meaning without colliding with Scene JSON.
+        assert_eq!(db.get(skeleton).unwrap().kind, ResourceKind::Scene);
+        let before = db.get(manifest).unwrap().dependencies.clone();
+        assert!(recompute_edges(&mut db, &read).is_empty());
+        assert_eq!(db.get(manifest).unwrap().dependencies, before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recompute_edges_reports_missing_spine_manifest_reference() {
+        let root = temp_root("edges-spine-missing");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let atlas = db
+            .register(
+                "assets/spine/hero.spineatlas",
+                ResourceKind::Spine,
+                "spine-1",
+            )
+            .unwrap();
+        let page = db
+            .register("assets/spine/hero.png", ResourceKind::Texture, "texture-1")
+            .unwrap();
+        let manifest = db
+            .register("assets/spine/hero.spine", ResourceKind::Spine, "spine-1")
+            .unwrap();
+        let source = "spine_version=4.3.75-beta\n\
+            skeleton=assets/spine/missing.json\n\
+            atlas=assets/spine/hero.spineatlas\n\
+            page=assets/spine/hero.png\n";
+        let read =
+            |path: &Path| (path == Path::new("assets/spine/hero.spine")).then(|| source.to_owned());
+        let unresolved = recompute_edges(&mut db, &read);
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(
+            unresolved[0].path,
+            PathBuf::from("assets/spine/missing.json")
+        );
+        assert_eq!(db.get(manifest).unwrap().dependencies, vec![atlas, page]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn temp_root(label: &str) -> PathBuf {

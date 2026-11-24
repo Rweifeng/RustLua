@@ -94,8 +94,8 @@ pub(crate) fn gpu_particle_layouts(
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("rustlua-gpu-particles-pipeline-layout"),
                 bind_group_layouts: &[
-                    &world_sprite_camera_layout,
-                    &texture_bind_group_layout,
+                    world_sprite_camera_layout,
+                    texture_bind_group_layout,
                     &draw_layout,
                     &depth_layout,
                 ],

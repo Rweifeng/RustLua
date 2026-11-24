@@ -49,6 +49,7 @@ fn main() -> Result<(), String> {
     let origin = [8.0_f32, 8.0_f32];
 
     let mut mesh = SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

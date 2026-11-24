@@ -6,7 +6,7 @@
 > **渲染展廊**（地形/水面/PBR/光照/后处理/特效叠加层）与 **UI 能力收口**（排版/状态过渡）。
 >
 > 基线读数（2026-11-17 工作区）：
-> - 运行期 Lua API 面 **51 个模块表 / 432 个函数**（`rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
+> - 运行期 Lua API 面 **52 个模块表 / 442 个函数**（`rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
 > - 运行时组件 **31 个**（`ComponentId::ALL`）；
 > - 能力图谱 **64 条能力 / 8 个分组**（`examples/game_api/scripts/capabilities.lua`，由门 `--check` 计数）；
 > - `cargo test -p engine --lib sample_project` **16 条工程门全绿**（12 条 2.0 门 + 4 条 3.0 门）。
@@ -22,7 +22,7 @@
 
 | 引擎变化 | 落点 | 2.0 的缺口 |
 |---|---|---|
-| Shader Graph 运行时叠加层（M88） | `project.toml [render] effect_overlay` + `render.set_effect_params/param/time`（M94/M95） | 3 个函数没有真实调用点（覆盖率门红）；`.sgraph` 资产、命名参数、场景深度采样在演示工程里完全缺席 |
+| Shader Graph 运行时叠加层（M88） | `project.toml [render] effect_overlay` + `render.set_effect_params/param/time`（M94/M95），`.prefab` 特效预设 + `render.play_effect/stop_effect`（M96） | 已覆盖：槽位/命名参数/时间三条路都有真实调用点，两份预设资产随演示工程发布 |
 | 项目级渲染配置（M98 等） | `[render]` 的 `particle_softness` 等键 | 只在引擎单测里；演示工程没有一份"项目级渲染键"的样例 |
 | 3D 渲染管线跨档 | 地形 splat、连续水面、点光阴影、SSAO/SSR/接触阴影/雾/神光/景深 | `api_3d` 只有 `__ground_plane__` 与三角形；地形/水面/体素只在脚本采样里出现，**没有一张能看的画** |
 | UI 子系统收口（M80） | 文本排版（align/valign/overflow/rich_text）、ButtonStates 的 tint/transition、Mask/CanvasGroup、值控件 | 组件覆盖到了，但能力层面没有"这一条对应哪个演示步骤"的索引 |
@@ -80,7 +80,7 @@ return {
 |---|---|---|---|
 | `render_landscape` | 参数化地形（高度场 + 四层 splat + 内嵌贴图）、连续水面（波法线/菲涅尔/天空反射）、5 种 PBR 材质分支、运行期相机 | `mesh.set("__terrain__?…")`、`mesh.set("__water__?…")`、`mesh.set_material`、`camera.set` | 场景外 (40,-1,40) 的 48m 地形 + 20m 水面 + 缓慢自转的金属/粗糙/自发光/半透明物体 |
 | `render_pipeline` | 雾/云/水色/曝光/闪光/积雪/后处理/画质档 + `render.stats` | `render.set_fog`、`set_cloud_*`、`set_exposure`、`set_post_fx`、`set_surface_cover`、`set_quality`、`stats` | 雾与云随时间缓慢变化，右侧卡片读上一帧 draw/tri/set_pass |
-| `effect_overlay` | `.sgraph` 运行时叠加层：槽位参数、命名参数、时间 | `render.set_effect_params`、`set_effect_param`、`set_effect_time` | 金色深度描边叠在 3D 画面上；改槽位改宽度、改时间改相位 |
+| `effect_overlay` | 特效预设（`.prefab`）在逻辑里加载播放：触发/停止/换预设 | `render.play_effect`、`render.stop_effect`、`set_effect_params`、`set_effect_param`、`set_effect_time` | 预设驱动刀光弧（火/冷两份预设同一张图）；脚本每帧声明"我要这层在"，重播即替换 |
 | `voxel_cells` | 逐格体素网格（外露面剔除） | `cells3d.build/dig/count`、`mesh.set` | 挖空中心的 3×3×3 体素：满格 54 面、挖中心 60 面 |
 
 项目级渲染键写在 `examples/game_api/project.toml`：
@@ -98,8 +98,25 @@ particle_softness = 0.04
 乘 `ring`（冲击波环）得到颜色，`sector`（刀光弧）遮罩 alpha，`depth_edge` 提供深度边缘描边。
 命名参数为 `edge_width`、`color_r/g/b`、`frequency`、`speed` 与 `arc_width/radius/thickness/spin`；
 运行时叠加层采样场景深度（`@binding(6)`），因此走"离屏 + 回拷"路径——这正是 M91/M92 给叠加层加的能力。
-演示脚本 `demo_3d.lua` 的 `effect_overlay` 步逐帧改 `spin`/`speed`/`color` 与 `time`，三个模板的
-参数各自独立生效。
+演示脚本 `demo_3d.lua` 的 `effect_overlay` 步逐帧改 `spin`/`speed`/`color` 与 `time`，三个模板的参数各自独立生效。
+
+M96 起，同一张图还能包成**特效预设**在逻辑里按需加载：
+
+```text
+assets/fx/flame_blade_slash.prefab   # name=炎刃斩击，暖色参数
+assets/fx/frost_blade_slash.prefab   # name=冷蓝斩击，同一张图、冷色参数
+```
+
+```lua
+render.play_effect("assets/fx/flame_blade_slash.prefab")
+-- …一帧之后想换风格，换预设即可，不必改配置或重启
+render.play_effect("assets/fx/frost_blade_slash.prefab", "hit")
+render.stop_effect("hit")
+```
+
+同名再 `play` 是**替换**而不是叠加，因此可以每帧声明"我要这层在"；`stop_effect()`（无参）
+只撤脚本层，`project.toml` 的工程级常驻特效不受影响。预设里的参数覆盖在加载期就合进槽位，
+写错名字（如 `spin_speeed`）会立刻报错并列出可用参数，而不是静默丢参数。
 
 **反面对照**（自检里真跑）：`render.set_effect_params(16, …)` 拒非法槽位、NaN 值拒、
 `render.set_effect_time(-1)` 拒、未知命名参数拒；`render.set_fog(2.0)` 等越界值拒并带原因。
@@ -145,9 +162,9 @@ particle_softness = 0.04
 | 门 | 位置 | 3.0 变化 |
 |---|---|---|
 | 逐场景 headless 实例化 + 步进 | `sample_project_runs_every_scene_headless` | 场景新增实体/步骤仍能跑 |
-| 行为自检 | `sample_project_demos_self_test` | api_3d 17 步、ui_test 6 步；新步骤各带断言 |
+| 行为自检 | `sample_project_demos_self_test` | api_3d 17 步、api_fx 3 步、ui_test 6 步；新步骤各带断言 |
 | 脚本全量编译 | `sample_project_scripts_all_compile` | 覆盖 `capabilities.lua` |
-| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 51/432；修掉 3 个 render 特效函数 |
+| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 52/442；修掉 3 个 render 特效函数 |
 | 组件覆盖 | `sample_project_scenes_cover_every_runtime_component` | 不变（31） |
 | 目录/菜单/卡片/命中/遮挡/字形 | 2.0 七条 | 重新生成 `index.scene` 与字体子集 |
 | **能力图谱完整性** | `sample_project_capability_catalog_is_complete`（新） | id/分组/场景/步骤/modules 并集/下限 |

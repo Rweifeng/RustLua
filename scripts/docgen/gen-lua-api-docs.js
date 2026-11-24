@@ -317,6 +317,8 @@ const OWNING_BINDING_FILES = [
   'engine/crates/rustlua-render/src/renderable_lua.rs',
   'engine/crates/rustlua-render/src/texture_lua.rs',
   'engine/crates/rustlua-render/src/visibility_lua.rs',
+  // M84：`spine` 表的绑定住在 Spine 领域 crate 里（组合根只负责装它）。
+  'engine/crates/rustlua-spine/src/spine_lua.rs',
   'engine/crates/rustlua-ui/src/lua_advanced.rs',
   'engine/crates/rustlua-ui/src/lua_nav.rs',
   'engine/crates/rustlua-ui/src/prefab_lua.rs',

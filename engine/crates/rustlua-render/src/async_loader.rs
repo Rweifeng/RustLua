@@ -29,7 +29,7 @@ use std::{
 };
 
 use super::{
-    mesh3d::MeshAsset,
+    mesh3d::{MeshAsset, MeshVertex},
     texture::{TextureAsset, TextureColorSpace},
 };
 
@@ -263,6 +263,40 @@ impl AsyncLoader {
             .filter(|s| **s == LoadState::Done)
             .count()
     }
+
+    /// **CPU 侧解码缓冲**当前占用的估算字节数。
+    ///
+    /// 计入的是 `ready` 队列里那些"已经解码完、但主线程还没 `drain_ready()` 取走"的产物：
+    /// 贴图像素、网格顶点 + 索引。这部分进的是**进程 RSS**，之前的资源账本只统计 GPU 侧
+    /// 字节，于是它对不上进程内存——P1-3 补的就是这一块。
+    ///
+    /// 不含"排队中/解码中"的请求：那些还没有产物，只在 worker 手里短暂存在。
+    /// 也不含成功上传后仍被渲染器缓存持有的副本（那由 `RendererResourceStats` 的
+    /// `texture_bytes` / `mesh_bytes` 另算——两者的差正是"还没上传"的那一份）。
+    #[must_use]
+    pub fn cpu_buffered_bytes(&self) -> u64 {
+        self.ready
+            .iter()
+            .map(|asset| {
+                let texture = asset
+                    .texture
+                    .as_ref()
+                    .map_or(0, |texture| texture.pixels().len() as u64);
+                let meshes = asset.meshes.as_ref().map_or(0, |meshes| {
+                    meshes
+                        .iter()
+                        .flat_map(|mesh| mesh.primitives.iter())
+                        .map(|primitive| {
+                            (std::mem::size_of::<MeshVertex>() * primitive.vertices.len()
+                                + std::mem::size_of::<u32>() * primitive.indices.len())
+                                as u64
+                        })
+                        .sum::<u64>()
+                });
+                texture + meshes
+            })
+            .sum()
+    }
 }
 
 impl Default for AsyncLoader {
@@ -356,6 +390,32 @@ mod tests {
         let bytes = texture.pixels();
         assert_eq!(bytes.len(), 16);
         [bytes[0], bytes[1], bytes[2], bytes[3]]
+    }
+
+    /// `cpu_buffered_bytes` 必须真的跟着 `ready` 队列走：解码完成 → 有字节；
+    /// 取走 → 归零。
+    ///
+    /// 这条门存在的理由：内存面板要显示这个读数，如果它恒为 0，面板就是在骗人。
+    #[test]
+    fn cpu_buffered_bytes_tracks_the_ready_queue() {
+        let png = sample_png("cpu-buffered");
+        // Sync 模式：`request_texture` 当场解码并入队。
+        let mut loader = AsyncLoader::new(LoadMode::Sync);
+        assert_eq!(loader.cpu_buffered_bytes(), 0, "还没请求时没有产物");
+
+        loader.request_texture("sample", &png);
+        let buffered = loader.cpu_buffered_bytes();
+        assert!(buffered > 0, "已解码但未取走，应当报告字节占用");
+        // 2×2 RGBA8 = 16 字节像素（加上 `TextureAsset` 自身字段，读数只算像素）。
+        assert_eq!(buffered, 16, "只计贴图像素字节：{}", buffered);
+
+        let drained = loader.drain_ready();
+        assert_eq!(drained.len(), 1, "取走一条");
+        assert_eq!(
+            loader.cpu_buffered_bytes(),
+            0,
+            "取走之后 CPU 侧不再挂任何解码产物"
+        );
     }
 
     /// Sync 与 Async 对同一 PNG 给出逐字节一致的解码结果（确定性契约）。

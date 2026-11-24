@@ -3,11 +3,14 @@ pub mod offscreen;
 pub mod renderer;
 mod runtime;
 pub mod shader;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shader_library;
 pub mod shader_preprocess;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shader_reload;
+/// 测试用适配器策略（`RUSTLUA_TEST_GPU` 开关的唯一入口）。
+pub mod test_adapter;
 #[cfg(target_arch = "wasm32")]
 pub mod web_surface;
 

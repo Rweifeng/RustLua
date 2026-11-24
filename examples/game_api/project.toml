@@ -13,9 +13,5 @@ text_render_mode = "vector"
 # game_api 3.0：**项目级渲染能力**（引擎里只有项目配置能开的项，Lua 改不了）。
 # 这些键由 `RenderConfig::load_from` 读取：game、web/微信宿主与编辑器 Play 同一条路径。
 [render]
-# M88/M91/M92/M94/M95：Shader Graph 运行时叠加层（炎刃斩击：火焰流动 + 刀光弧 + 冲击波）。
-# `.sgraph` 是唯一源，运行时由 `ShaderGraph::runtime_overlay_source` 编译；参数走 uniform，
-# 演示脚本用 `render.set_effect_param(s)` / `render.set_effect_time` 逐帧调。
-effect_overlay = "assets/fx/flame_blade_slash.sgraph"
 # M98：GPU 粒子软边宽度（深度单位；0 = 硬边，默认 0.02）。
 particle_softness = 0.04

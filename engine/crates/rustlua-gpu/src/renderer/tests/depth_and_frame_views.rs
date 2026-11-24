@@ -299,6 +299,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
     let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
         .expect("offscreen renderer");
     let empty = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -417,6 +418,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
     //    而同一条换算在浏览器被 fit 层掩盖了——微信接管形态没有 fit 层，缺陷才现形。
     let half = Viewport::new((SIZE / 2) as f32, SIZE as f32).unwrap();
     let quad = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: vec![
             OverlayVertex {
                 position: [-1.0, -1.0],

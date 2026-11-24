@@ -134,7 +134,11 @@ impl ToolbarVisibility {
     }
 
     /// 写进 `EditorLayout::toolbar_visible`（全量写，缺项即回落默认）。
-    pub(crate) fn to_layout(&self) -> BTreeMap<String, bool> {
+    ///
+    /// 按值取 `self`（`ToolbarVisibility` 是 `Copy`，只有几十字节的位图）：clippy 的
+    /// `wrong_self_convention` 会判 `to_*` 配 `&self` 为误用——`to_` 约定表示"转成另一个
+    /// 类型"，本就该消费/复制自值，而不是借一个引用再复制。
+    pub(crate) fn to_layout(self) -> BTreeMap<String, bool> {
         ToolbarItem::ALL
             .iter()
             .map(|item| (item.key().to_owned(), self.visible(*item)))

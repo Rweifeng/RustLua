@@ -783,6 +783,16 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
     if let Some(tab) = editor.pending_workspace_focus.take() {
         focus_workspace_tab(&mut dock_state, tab);
     }
+    // M99：属性面板的 `.sgraph` 预览里点了「在 Shader Graph 面板中打开」。
+    // 顺序要紧：先让标签可见（可能被 View 菜单关掉过），再载入图，最后聚焦——
+    // 反过来会出现"图载入了但标签不在树里，读者找不到它"。
+    if let Some(relative) = editor.pending_open_shader_graph.take() {
+        editor.show_shader_graph = true;
+        set_tab_present(&mut dock_state, DockTab::ShaderGraph, true);
+        let root = crate::util::strip_verbatim_prefix(&editor.project.root);
+        editor.shader_graph.open_relative(&root, &relative);
+        let _ = focus_tab(&mut dock_state, DockTab::ShaderGraph);
+    }
     egui::CentralPanel::default().show(context, |ui| {
         // 这些面板是常驻视图：可见性只有 View 菜单一个来源，标签上不提供关闭/折叠按钮
         // （关掉的面板下一帧会被 [`sync_visibility`] 补回主表面）。附带一条硬理由：

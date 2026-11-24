@@ -47,6 +47,24 @@ pub enum FieldChange {
 }
 
 impl FieldChange {
+    /// 单个组件载荷写入（`before = None` 表示新增该组件）。
+    ///
+    /// 定向编辑路径（`CommandHistory::execute_component_field`）直接构造这一条，
+    /// 免去"先克隆整份文档再逐实体 diff"的开销。
+    pub fn component(
+        entity: SceneEntityId,
+        component: impl Into<String>,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> Self {
+        Self::Component {
+            entity,
+            component: component.into(),
+            before,
+            after,
+        }
+    }
+
     pub fn entity(&self) -> SceneEntityId {
         match self {
             Self::Component { entity, .. } | Self::Name { entity, .. } => *entity,

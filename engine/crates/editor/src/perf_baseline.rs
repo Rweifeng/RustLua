@@ -13,6 +13,62 @@ use editor::{
 };
 use rustlua_ecs::transform::Transform3D;
 use rustlua_infra::logging::LogSink;
+
+// P0-3：跨场景的 span 收集器。
+//
+// 基线里每个场景都新建一个 `EditorApp`（因而各有独立的 `Profiler`）。要把它们合成
+// 一份可读的 Chrome trace，就需要在 app 销毁前把 span 取出来、按"上一段结束时刻"
+// 平移后累积。`thread_local` 足够——基线全程单线程。
+thread_local! {
+    static TRACE_COLLECTOR: std::cell::RefCell<Option<rustlua_gpu_profiler_trace::Collector>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// span 收集器的薄封装（放在 `perf_baseline` 内，避免为一次性用途污染 `editor` 的公开 API）。
+mod rustlua_gpu_profiler_trace {
+    use engine::host::profile_trace::{CaptureLevel, SpanRecord, SpanTrace};
+
+    pub(super) struct Collector {
+        trace: SpanTrace,
+        /// 已收进 trace 的尾部时刻；下一段从这里之后开始。
+        next_offset_ns: u64,
+    }
+
+    impl Collector {
+        pub(super) fn new(capacity: usize) -> Self {
+            Self {
+                trace: SpanTrace::new(CaptureLevel::Fine, capacity),
+                next_offset_ns: 0,
+            }
+        }
+
+        /// 追加一段（该段的时间从 0 起），并把偏移推到本段之后。
+        pub(super) fn absorb(&mut self, records: &[SpanRecord]) {
+            if records.is_empty() {
+                return;
+            }
+            self.trace.push_records(records, self.next_offset_ns);
+            // 段间留 1 微秒空隙：Chrome 的时间轴上一个像素都不放大时也不会把两段看成同一帧。
+            let segment_end = records
+                .iter()
+                .map(|record| record.start_ns.saturating_add(record.dur_ns))
+                .max()
+                .unwrap_or(0);
+            self.next_offset_ns = self
+                .next_offset_ns
+                .saturating_add(segment_end)
+                .saturating_add(1_000);
+        }
+
+        pub(super) fn to_json(&self) -> String {
+            self.trace.to_chrome_trace_json()
+        }
+
+        pub(super) fn span_count(&self) -> usize {
+            self.trace.len()
+        }
+    }
+}
 use rustlua_scene::scene::SceneEntityId;
 use rustlua_ui::ui_virtual_list::{SlotPool, VirtualList, VirtualListConfig, bind_window};
 use std::{fs, path::PathBuf, time::Instant};
@@ -134,13 +190,51 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 /// Minimal project description for a headless app instance.
-fn baseline_app(document: SceneDocument) -> EditorApp {
+fn baseline_app(document: SceneDocument) -> TracedApp {
     baseline_app_with_sink(document, 512)
+}
+
+/// 开了 span 捕获的 `EditorApp`：作用域结束时（Drop）把本段的 span 交给
+/// [`TRACE_COLLECTOR`]，时间轴按段平移。
+///
+/// 用 `Deref`/`DerefMut` 包一层而不是改 13 个场景的写法：`app.selection`、
+/// `app.document` 这些原有用法一个字都不用动，捕获开关也只在一个地方管。
+struct TracedApp {
+    app: EditorApp,
+    tracing: bool,
+}
+
+impl std::ops::Deref for TracedApp {
+    type Target = EditorApp;
+    fn deref(&self) -> &EditorApp {
+        &self.app
+    }
+}
+
+impl std::ops::DerefMut for TracedApp {
+    fn deref_mut(&mut self) -> &mut EditorApp {
+        &mut self.app
+    }
+}
+
+impl Drop for TracedApp {
+    fn drop(&mut self) {
+        if !self.tracing {
+            return;
+        }
+        self.app.profiler.stop_span_capture();
+        let records = self.app.profiler.span_records_for_timeline(usize::MAX);
+        TRACE_COLLECTOR.with(|collector| {
+            if let Some(collector) = collector.borrow_mut().as_mut() {
+                collector.absorb(&records);
+            }
+        });
+    }
 }
 
 /// 同 [`baseline_app`]，但自定日志 sink 容量：控制台体量场景需要 sink 深度与灌入量同级
 /// （sink 是控制台行的唯一来源）。
-fn baseline_app_with_sink(document: SceneDocument, sink_capacity: usize) -> EditorApp {
+fn baseline_app_with_sink(document: SceneDocument, sink_capacity: usize) -> TracedApp {
     let mut app = EditorApp::new(
         editor::ProjectInfo {
             root: std::env::temp_dir().join("rustlua-editor-baseline-project"),
@@ -152,7 +246,14 @@ fn baseline_app_with_sink(document: SceneDocument, sink_capacity: usize) -> Edit
     );
     // Private-field access is available because this module lives in the same crate.
     app.document.current_scene = Some(document);
-    app
+    // P0-3：只有本次运行要求导出 trace 时才开捕获（见 `run_and_write_report` 的
+    // `--perf-trace`）——不开时不采集，基线本身的耗时读数不受影响。
+    let tracing = TRACE_COLLECTOR.with(|collector| collector.borrow().is_some());
+    if tracing {
+        app.profiler
+            .start_span_capture(engine::host::profile_trace::CaptureLevel::Fine);
+    }
+    TracedApp { app, tracing }
 }
 
 /// Apply the baseline edit transformation: move one entity by `step` on X.
@@ -1897,7 +1998,158 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
     }
 
+    // 内存五窗口账（docs/66 §7.3 / 优化方案 P0-1）：归属工具，不是性能门槛。
+    // 唯一的硬门是"稳态反复编辑后工作集不得持续增长"——那是"泄漏"的可操作定义。
+    if std::env::var_os("RUSTLUA_SKIP_MEMORY_WINDOWS").is_none() {
+        scenarios.extend(build_memory_windows());
+    }
+
     BaselineReport { scenarios }
+}
+
+/// 一个内存账窗口的读数（docs/66 §7.3 的五个窗口）。
+///
+/// 每个窗口记录**真实进程工作集**（Windows `GetProcessMemoryInfo`）与可观测的缓存条目数；
+/// 窗口之间的差值才是"谁吃掉了内存"的归属依据。非 Windows 平台 `rss_mib=0`，报告里
+/// 明确标注该字段缺失，绝不拿 0 冒充读数。
+#[derive(Clone, Debug)]
+struct MemoryWindow {
+    /// 窗口名（`startup_peak` / `steady_state` / `scene_switch` / `load_document` / `exit`）。
+    name: &'static str,
+    /// 该窗口结束时的进程工作集（MiB）；0 表示平台不支持。
+    rss_mib: f64,
+    /// 缩略图缓存条目数（`EditorApp.thumbnails`）。
+    thumbnails: usize,
+    /// 日志 sink 保留行数（容量上限 500）。
+    console_lines: usize,
+    /// 场景文档 revision 与实体数：确认窗口里真的换了文档，不是空转。
+    document_entities: usize,
+}
+
+impl MemoryWindow {
+    fn note(&self) -> String {
+        let rss = if self.rss_mib > 0.0 {
+            format!("{:.1} MiB", self.rss_mib)
+        } else {
+            "n/a(非 Windows)".to_owned()
+        };
+        format!(
+            "{}: rss={} thumbnails={} console_lines={} entities={}",
+            self.name, rss, self.thumbnails, self.console_lines, self.document_entities
+        )
+    }
+}
+
+/// 采集一个内存窗口的读数。
+fn sample_memory_window(app: &EditorApp, name: &'static str) -> MemoryWindow {
+    MemoryWindow {
+        name,
+        rss_mib: crate::gui_evidence::working_set_mib(),
+        thumbnails: app.thumbnails.len(),
+        console_lines: app.log_sink.len(),
+        document_entities: app
+            .document
+            .current_scene
+            .as_ref()
+            .map_or(0, |document| document.scene.entities.len()),
+    }
+}
+
+/// 五窗口内存账（`docs/66 §7.3`、本方案 P0-1）。
+///
+/// **这是归属工具，不是门槛**：它证明"每个窗口各吃多少内存 / 缓存有没有持续增长"，
+/// 为 P1 的"做或不做"提供读数；它不判红，因为绝对 RSS 与机器强相关。
+/// 唯一的硬不变式是**稳态反复编辑后工作集不得单调增长**——这正是"泄漏"的可操作定义。
+fn build_memory_windows() -> Vec<ScenarioReport> {
+    let spec = FixtureSize::Medium.spec();
+    let fixture = build_scene_fixture(spec);
+    let mut windows = Vec::new();
+
+    // 窗口 1：启动峰值 —— 建完应用（含首帧资源扫描前的状态）立即采样。
+    let mut app = baseline_app(fixture.document.clone());
+    windows.push(sample_memory_window(&app, "startup_peak"));
+
+    // 窗口 2：稳定运行 —— 反复编辑 200 次（超过 Undo 上限，迫使历史真的做取舍），
+    // 采样"进入稳态"与"稳态末尾"两侧；两侧之差就是持续增长量。
+    let ids = fixture.entity_ids();
+    for step in 0..200usize {
+        let id = ids[step % ids.len()];
+        apply_edit(&mut app, id, step);
+    }
+    let steady_enter = sample_memory_window(&app, "steady_state_enter");
+    for step in 200..400usize {
+        let id = ids[step % ids.len()];
+        apply_edit(&mut app, id, step);
+    }
+    let steady_end = sample_memory_window(&app, "steady_state_end");
+    windows.push(steady_enter.clone());
+    windows.push(steady_end.clone());
+
+    // 窗口 3：场景切换 —— 换一份 4 倍大的文档，再换回来；缓存必须跟着换代。
+    let big = build_scene_fixture(FixtureSize::Large.spec());
+    app.set_current_scene_document(big.document.clone());
+    windows.push(sample_memory_window(&app, "scene_switch_large"));
+    app.set_current_scene_document(fixture.document.clone());
+    windows.push(sample_memory_window(&app, "scene_switch_back"));
+
+    // 窗口 4：读档 —— 从磁盘读回同一份文档，与内存版等价（内容一致才算读成功）。
+    let root = temp_root("memory-windows");
+    let scene_path = root.join("perf_fixture.scene");
+    // 先落盘一份（writer 走真实 save_scene 路径），再让 loader 从磁盘读回来。
+    // `project_loaded` 是 save 的前置闸门（否则 status 会说"请先导入游戏工程"），
+    // 这里是无窗口基线，显式置位以走真实保存逻辑而不是绕过它。
+    let mut writer = baseline_app(fixture.document.clone());
+    writer.project.root = root.clone();
+    writer.project_loaded = true;
+    writer.document.current_scene.as_mut().expect("scene").path = Some(scene_path.clone());
+    let wrote = writer.save_scene();
+    let mut loader = baseline_app(SceneDocument::new_scene("empty"));
+    loader.project.root = root.clone();
+    loader.project_loaded = true;
+    let read_ok = if wrote {
+        loader.open_scene_document(&scene_path).is_ok()
+            && loader
+                .document
+                .current_scene
+                .as_ref()
+                .is_some_and(|document| document.scene.entities.len() == spec.entities)
+    } else {
+        false
+    };
+    windows.push(sample_memory_window(&loader, "load_document"));
+
+    // 窗口 5：退出 —— 归还 Scene View 原生纹理与渲染资源后采样（这是 on_exit 的同一条路径）。
+    app.release_scene_view_textures();
+    windows.push(sample_memory_window(&app, "exit"));
+
+    let _ = fs::remove_dir_all(&root);
+
+    // 硬不变式：稳态不得单调增长。阈值用 +1 MiB 容差吸收 allocator 抖动，
+    // 超了就是"编辑越多内存越高"，即可持续增长——必须判红。
+    //
+    // 非 Windows 拿不到真实 RSS（两个读数都是 0）：此时**无法证明**没有增长，
+    // 记为不达标并把理由写进 notes，绝不让这道门在 Linux CI 上静默通过。
+    let growth_mib = steady_end.rss_mib - steady_enter.rss_mib;
+    let measured = steady_enter.rss_mib > 0.0 && steady_end.rss_mib > 0.0;
+    let steady_ok = measured && growth_mib <= 1.0;
+    // 读档正确性是硬门：否则"读档窗口"的读数没有意义。
+    let ok = steady_ok && read_ok;
+
+    let mut notes: Vec<String> = windows.iter().map(MemoryWindow::note).collect();
+    if measured {
+        notes.push(format!(
+            "稳态增长 steady_end-steady_enter={growth_mib:+.2} MiB（阈值 +1.00，超了=持续增长）"
+        ));
+    } else {
+        notes.push(
+            "稳态增长未测：本平台拿不到真实 RSS（非 Windows），无法证明无增长 ⇒ 判红".to_owned(),
+        );
+    }
+    notes.push(format!(
+        "read_document_ok={read_ok} save_ok={wrote}（读档窗口的读数以读成功为前提）"
+    ));
+
+    vec![instant_scenario("memory_five_windows", 0.0, notes, ok)]
 }
 
 /// Judge one layout observation.
@@ -1926,7 +2178,19 @@ fn layout_gate_violation(
 }
 
 /// Baseline entry point used by `--perf-baseline`; returns whether every scenario passed.
-pub(crate) fn run_and_write_report(report_path: Option<&std::path::Path>) -> Result<bool, String> {
+pub(crate) fn run_and_write_report(
+    report_path: Option<&std::path::Path>,
+    trace_path: Option<&std::path::Path>,
+) -> Result<bool, String> {
+    // P0-3：只在要求导出时才装收集器。装了之后每个 `baseline_app` 都会开 Fine 捕获，
+    // 各段在 Drop 时汇总到这里。
+    if trace_path.is_some() {
+        TRACE_COLLECTOR.with(|collector| {
+            *collector.borrow_mut() = Some(rustlua_gpu_profiler_trace::Collector::new(
+                engine::host::profile_trace::DEFAULT_SPAN_CAPACITY,
+            ));
+        });
+    }
     let report = run_baseline();
     let text = report.to_text();
     print!("{text}");
@@ -1939,6 +2203,32 @@ pub(crate) fn run_and_write_report(report_path: Option<&std::path::Path>) -> Res
         }
         fs::write(path, &text)
             .map_err(|error| format!("写入基线报告失败 {}: {error}", path.display()))?;
+    }
+    if let Some(path) = trace_path {
+        let (json, spans) = TRACE_COLLECTOR.with(|collector| {
+            let collector = collector.borrow();
+            let collector = collector
+                .as_ref()
+                .ok_or_else(|| "trace 收集器未初始化".to_owned())?;
+            Ok::<_, String>((collector.to_json(), collector.span_count()))
+        })?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 trace 目录失败 {}: {error}", parent.display()))?;
+        }
+        fs::write(path, &json)
+            .map_err(|error| format!("写入 trace 失败 {}: {error}", path.display()))?;
+        println!(
+            "\ntrace: {} 个 span -> {}（{} 字节，Chrome / Perfetto 可直接打开）",
+            spans,
+            path.display(),
+            json.len()
+        );
+        TRACE_COLLECTOR.with(|collector| {
+            *collector.borrow_mut() = None;
+        });
     }
     Ok(report.ok())
 }

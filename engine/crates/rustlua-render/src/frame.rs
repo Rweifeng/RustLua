@@ -9,6 +9,7 @@ use std::{
 use crate::font::FontAtlas;
 use crate::layer::RenderLayer;
 use crate::light::{Light, PointLight};
+use crate::spine_mesh::SpineMesh;
 use crate::sprite_batch::SpriteDrawBatch;
 use bytemuck::{Pod, Zeroable};
 use rustlua_camera::camera::{Camera3D, RenderView};
@@ -219,6 +220,9 @@ pub struct SceneMesh {
     pub world_sprites: Vec<WorldSpriteVertex>,
     /// `world_sprites` 的绘制分段（纹理下标与既有 `SpriteDrawBatch` 同一语义）。
     pub world_sprite_draws: Vec<SpriteDrawBatch>,
+    /// M84 P1：Spine 三角网格通道。与 world sprite 共用相机/视口/深度，
+    /// 但保留索引 draw order，不参与 sprite 合批。空时渲染器零成本跳过。
+    pub spines: SpineMesh,
     pub paths: Vec<String>,
     /// docs/54 §4.4：与 [`Self::paths`] **同序**的运行时资源身份。
     ///
@@ -291,11 +295,16 @@ pub struct Scene3dBounds {
 /// marks a skinned drawable whose joint matrices are uploaded per frame.
 pub struct Scene3dDrawable {
     pub entity: rustlua_ecs::spatial_transform::SceneEntityId,
-    pub name: String,
-    pub mesh_path: String,
+    /// 实体名。P2 起是 `Arc<str>`：提取期的名字表本身就用 Arc 存，
+    /// 这样每帧每实体只是 +1 引用计数，不再复制字符串（10k 实体曾经是每帧 1 万次分配）。
+    pub name: std::sync::Arc<str>,
+    /// 网格路径。P2 起是 `Arc<str>`：同一网格的 N 个实体共享同一个 Arc，
+    /// 提取期不再逐实体克隆 `String`（10k 实体场景里通常只有几十种网格）。
+    pub mesh_path: std::sync::Arc<str>,
     /// 可选的 `.material` 覆盖（项目相对路径）。`None` = 用 glTF 内嵌材质；
     /// 解析/加载失败时渲染器告警并回退到内嵌材质，不会静默改观感。
-    pub material: Option<String>,
+    /// P2 起是 `Arc<str>`，理由同 `mesh_path`（同一材质的多个实体共享）。
+    pub material: Option<std::sync::Arc<str>>,
     /// docs/54 §4.4：与 `mesh_path` 对应的运行时资源身份。渲染器用它做 O(1) 的网格缓存查找，
     /// 因此"同一个网格"跨帧可比、也不会因为路径字符串相同而重复解析。
     ///

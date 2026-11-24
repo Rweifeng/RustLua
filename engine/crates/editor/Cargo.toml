@@ -46,6 +46,8 @@ rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-physics = { path = "../rustlua-physics" }
 rustlua-render = { path = "../rustlua-render" }
+# M84 P3：Add Component 要造 `SpineSkeleton` 的默认载荷（`to_component_str`）。
+rustlua-spine = { path = "../rustlua-spine" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-scripting = { path = "../rustlua-scripting" }
 rustlua-ui = { path = "../rustlua-ui" }

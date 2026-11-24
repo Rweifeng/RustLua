@@ -152,7 +152,7 @@ fn gpu_motion_extraction_emits_lod_chain_draws() {
     let paths: Vec<&str> = frame
         .drawables
         .iter()
-        .map(|drawable| drawable.mesh_path.as_str())
+        .map(|drawable| &*drawable.mesh_path)
         .collect();
     assert_eq!(
         paths,
@@ -275,7 +275,7 @@ fn gpu_motion_extraction_drops_bad_far_band_only() {
         let paths: Vec<&str> = frame
             .drawables
             .iter()
-            .map(|drawable| drawable.mesh_path.as_str())
+            .map(|drawable| &*drawable.mesh_path)
             .collect();
         assert_eq!(paths, expected_paths, "{label}");
         let staged = runtime.take_staged_motion_batches();

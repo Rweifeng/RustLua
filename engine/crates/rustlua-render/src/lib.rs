@@ -26,6 +26,7 @@ pub mod renderable_lua;
 pub mod runtime_gpu;
 pub mod scene_codec;
 pub mod spatial_index;
+pub mod spine_mesh;
 pub mod sprite;
 pub mod sprite_batch;
 pub mod terrain;

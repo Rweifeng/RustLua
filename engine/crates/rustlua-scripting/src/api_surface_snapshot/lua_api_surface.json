@@ -443,6 +443,7 @@
     },
     {
       "funcs": [
+        "play_effect",
         "set_clip_cap",
         "set_clip_cap_both_sides",
         "set_cloud_base",
@@ -463,7 +464,8 @@
         "set_surface_cover",
         "set_water_refract_steps",
         "set_water_tint",
-        "stats"
+        "stats",
+        "stop_effect"
       ],
       "name": "render"
     },
@@ -508,6 +510,19 @@
         "set_catalog"
       ],
       "name": "shop"
+    },
+    {
+      "funcs": [
+        "bounds",
+        "events",
+        "get_animation",
+        "list",
+        "set_animation",
+        "set_enabled",
+        "set_skin",
+        "set_speed"
+      ],
+      "name": "spine"
     },
     {
       "funcs": [

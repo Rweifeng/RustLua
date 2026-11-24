@@ -79,7 +79,7 @@ pub(crate) fn camera_scene(
     };
     let light_matrix = light_projection * light_view;
     let (shadow_sample_view, shadow_views) =
-        Renderer::create_shadow_view(&device, shadow_resolution);
+        Renderer::create_shadow_view(device, shadow_resolution);
     let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("rustlua-shadow-comparison-sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,

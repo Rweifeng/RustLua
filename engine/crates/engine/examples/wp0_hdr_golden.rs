@@ -187,6 +187,7 @@ fn main() -> ExitCode {
 /// 全屏世界 Sprite（线性 8.0）+ 居中 UI 纯红四边形。
 fn hdr_mesh() -> SceneMesh {
     let mut mesh = SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: ui_quad(),
         draws: vec![SceneDraw::screen_ui(0, 0, 6)],
         world_sprites: Vec::new(),

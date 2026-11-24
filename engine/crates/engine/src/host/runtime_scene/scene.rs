@@ -153,6 +153,15 @@ impl RuntimeScene {
         self.script.scene_entity_count()
     }
 
+    /// 启动场景声明的特效叠加层路径（`.scene` 的 `meta\teffect_overlay`）。
+    ///
+    /// 宿主建渲染器时用它把 `.sgraph` 挂上。读场景而不是 `project.toml [render]`：
+    /// 后者会让每个场景都带上同一个特效。
+    #[must_use]
+    pub fn effect_overlay(&self) -> Option<&str> {
+        self.effect_overlay.as_deref()
+    }
+
     /// 运行时 ECS 世界里的实体总数（含脚本运行期 spawn 的实体）。
     #[must_use]
     pub fn runtime_entity_count(&self) -> usize {
@@ -695,6 +704,9 @@ impl RuntimeScene {
         // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
         // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
         let spatial_mode = rustlua_scene::scene_space::spatial_mode(&scene);
+        // 特效叠加层是**场景**声明的：`Scene` 之后会被消费掉（实体进 ECS），但宿主建
+        // 渲染器时还要用它挂 `.sgraph`，所以先摘下来。见 `RuntimeScene::effect_overlay`。
+        let effect_overlay = scene.effect_overlay().map(str::to_owned);
         if let Some(issue) = rustlua_scene::scene_space::spatial_mode_issue(&scene) {
             tracing::warn!(target: "scene", scene = %scene.name, "{issue}");
         }
@@ -710,6 +722,7 @@ impl RuntimeScene {
         let handles = crate::host::script_packs::install(&mut script);
         let camera_state = handles.camera;
         let animation_state = handles.animation;
+        let spine_state = handles.spine;
         let physics_state = handles.physics;
         let ui_state = handles.ui;
         // 渲染覆盖参数与 `render.*` 绑定同一份（脚本层持有的句柄）。
@@ -806,6 +819,7 @@ impl RuntimeScene {
             input,
             camera_state,
             animation_state,
+            spine_state,
             physics_state,
             ui_state,
             render_overrides,
@@ -836,6 +850,8 @@ impl RuntimeScene {
             render_ui_overlay: true,
             project_root: project_root.map(|root| root.to_path_buf()),
             startup_scene: None,
+            effect_overlay,
+            spine_pose_snapped: false,
             environment,
             texture_dims: HashMap::new(),
             texture_paths: Vec::new(),

@@ -1,4 +1,4 @@
-//! 十个内置导入器（assets 层）+ 注册表组装。
+//! 十一个内置导入器（assets 层）+ 注册表组装。
 //!
 //! 每个 [`ResourceKind`] 恰好一个内置导入器：`Texture`（`image` 解码）、`Audio`（`rodio`
 //! 解码 + WAV 读头）、`LuaScript`（`mlua` 只编译不执行）、`Model`（`gltf`）、`Atlas`
@@ -14,7 +14,7 @@
 //! 用得上，而运行时 crate（`rustlua-assets`）是浏览器也要编的。拆分前实测
 //! `cargo tree -p game_web --target wasm32 -i rodio` 的唯一入口就是这里。
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use rustlua_animation::anim_asset::AnimClip;
 use rustlua_assets::atlas_format::AtlasDefinition;
@@ -35,6 +35,7 @@ struct EnvironmentImporter;
 struct MaterialImporter;
 struct AnimImporter;
 struct ShaderGraphImporter;
+struct SpineImporter;
 
 impl Importer for TextureImporter {
     fn version(&self) -> &'static str {
@@ -257,7 +258,217 @@ impl Importer for FontImporter {
     }
 }
 
-/// 进程级的九个内置导入器注册表（**不含** Scene/Prefab）。
+impl Importer for SpineImporter {
+    fn version(&self) -> &'static str {
+        "spine-1"
+    }
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::Spine
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["spine", "skel", "spineatlas"]
+    }
+    fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
+        reject_empty(source, bytes)?;
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("spine") {
+            // `.spine` 清单：版本冻结在 4.3.x，解析器与运行时同一份（`SpineManifest::parse`）。
+            reject_bom(source, bytes, "Spine 清单")?;
+            let text = std::str::from_utf8(bytes).map_err(|error| {
+                format!(
+                    "{}: Spine 清单编码非法（需 UTF-8）: {error}",
+                    source.display()
+                )
+            })?;
+            rustlua_spine::SpineManifest::parse(text).map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        if extension.eq_ignore_ascii_case("spineatlas") {
+            reject_bom(source, bytes, "Spine 图集")?;
+            let text = std::str::from_utf8(bytes).map_err(|error| {
+                format!(
+                    "{}: Spine 图集编码非法（需 UTF-8）: {error}",
+                    source.display()
+                )
+            })?;
+            // 用运行时的同一台解析器（经 `rustlua-spine` 的中性入口）：导入期放过的图集，
+            // 运行时也必须读得出来。导入层不直接依赖 `spine2d`，backend 隔离不外泄。
+            rustlua_spine::validate::atlas_text(text)
+                .map_err(|error| format!("{}: {error}", source.display()))?;
+            return Ok(());
+        }
+        // `.skel`：二进制骨骼。走运行时同一个 `from_skel_bytes`，脊柱数据格式不匹配会在
+        // 导入期就报出来，而不是等玩家进游戏才白屏。
+        rustlua_spine::validate::skeleton_bytes(bytes)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        // M84 P2-①：clipping 附件当前不实现（静默放行 = "该裁没裁"的画面错误）。
+        // 这一步必须在解析成功之后——解析器本身是支持 clipping 的，错的是渲染管线。
+        rustlua_spine::validate::reject_unsupported_features(bytes, true)
+            .map_err(|error| format!("{}: {error}", source.display()))
+    }
+
+    fn validate_project_context(
+        &self,
+        project_root: &Path,
+        source: &Path,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        if !source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("spine"))
+        {
+            return Ok(());
+        }
+        validate_spine_manifest_dependencies(project_root, source, bytes)
+    }
+}
+
+/// 以 `.spine` 清单为上下文校验 JSON skeleton；单独的 `.json` 仍保留通用 JSON/Scene 分类。
+fn validate_spine_manifest_dependencies(
+    project_root: &Path,
+    source: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        format!(
+            "{}: Spine 清单编码非法（需 UTF-8）: {error}",
+            source.display()
+        )
+    })?;
+    let manifest = rustlua_spine::SpineManifest::parse(text)
+        .map_err(|error| format!("{}: {error}", source.display()))?;
+
+    let skeleton_path =
+        resolve_spine_project_file(project_root, source, "skeleton", &manifest.skeleton)?;
+    let skeleton_extension = skeleton_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    let is_binary = if skeleton_extension.eq_ignore_ascii_case("skel") {
+        true
+    } else if skeleton_extension.eq_ignore_ascii_case("json") {
+        false
+    } else {
+        return Err(format!(
+            "{}: skeleton 仅支持 .skel 或 Spine JSON：{}",
+            source.display(),
+            manifest.skeleton
+        ));
+    };
+    let skeleton_bytes = std::fs::read(&skeleton_path).map_err(|error| {
+        format!(
+            "{}: 无法读取 skeleton {}：{error}",
+            source.display(),
+            skeleton_path.display()
+        )
+    })?;
+    if is_binary {
+        rustlua_spine::validate::skeleton_bytes(&skeleton_bytes)
+    } else {
+        rustlua_spine::validate::skeleton_json_bytes(&skeleton_bytes)
+    }
+    .map_err(|error| {
+        format!(
+            "{}: Spine skeleton {} 无效：{error}",
+            source.display(),
+            manifest.skeleton
+        )
+    })?;
+    rustlua_spine::validate::reject_unsupported_features(&skeleton_bytes, is_binary).map_err(
+        |error| {
+            format!(
+                "{}: Spine skeleton {}：{error}",
+                source.display(),
+                manifest.skeleton
+            )
+        },
+    )?;
+
+    let atlas_path = resolve_spine_project_file(project_root, source, "atlas", &manifest.atlas)?;
+    let atlas_bytes = std::fs::read(&atlas_path).map_err(|error| {
+        format!(
+            "{}: 无法读取 atlas {}：{error}",
+            source.display(),
+            atlas_path.display()
+        )
+    })?;
+    let atlas_text = std::str::from_utf8(&atlas_bytes).map_err(|error| {
+        format!(
+            "{}: Spine atlas {} 编码非法（需 UTF-8）：{error}",
+            source.display(),
+            manifest.atlas
+        )
+    })?;
+    rustlua_spine::validate::atlas_text(atlas_text).map_err(|error| {
+        format!(
+            "{}: Spine atlas {} 无效：{error}",
+            source.display(),
+            manifest.atlas
+        )
+    })?;
+
+    for page in &manifest.pages {
+        resolve_spine_project_file(project_root, source, "page", page)?;
+    }
+    Ok(())
+}
+
+fn resolve_spine_project_file(
+    project_root: &Path,
+    manifest_source: &Path,
+    label: &str,
+    value: &str,
+) -> Result<PathBuf, String> {
+    let relative = safe_project_relative_path(value).ok_or_else(|| {
+        format!(
+            "{}: {label} 必须是工程内相对路径（不得含绝对路径或 ..）：{value}",
+            manifest_source.display()
+        )
+    })?;
+    let canonical_root = std::fs::canonicalize(project_root).map_err(|error| {
+        format!(
+            "{}: 无法解析工程根目录 {}：{error}",
+            manifest_source.display(),
+            project_root.display()
+        )
+    })?;
+    let canonical_file =
+        std::fs::canonicalize(canonical_root.join(&relative)).map_err(|error| {
+            format!(
+                "{}: 无法解析 {label} 引用的资源 {}：{error}",
+                manifest_source.display(),
+                relative.display()
+            )
+        })?;
+    if !canonical_file.starts_with(&canonical_root) || !canonical_file.is_file() {
+        return Err(format!(
+            "{}: {label} 引用必须是工程内文件：{}",
+            manifest_source.display(),
+            relative.display()
+        ));
+    }
+    Ok(canonical_file)
+}
+
+fn safe_project_relative_path(value: &str) -> Option<PathBuf> {
+    let normalized = value.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if normalized.trim().is_empty()
+        || normalized.contains(':')
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        return None;
+    }
+    Some(path.to_path_buf())
+}
+
+/// 进程级的十个内置导入器注册表（**不含** Scene/Prefab）。
 ///
 /// 只导入普通资源（纹理/音频/脚本/模型/图集/字体/环境/材质/动画）时用它；要导入 `.scene` / `.prefab`
 /// 必须用 [`crate::full_registry`]，否则那两类会报"不支持的资源类型"。
@@ -268,9 +479,9 @@ pub fn builtin() -> &'static ImporterRegistry {
     REGISTRY.get_or_init(|| ImporterRegistry::from_importers(&core_importers()))
 }
 
-/// 九个核心导入器，顺序固定（注册表按 kind 建索引，顺序只影响可读性）。
+/// 十一个核心导入器，顺序固定（注册表按 kind 建索引，顺序只影响可读性）。
 #[must_use]
-pub fn core_importers() -> [&'static dyn Importer; 10] {
+pub fn core_importers() -> [&'static dyn Importer; 11] {
     [
         &TextureImporter,
         &AudioImporter,
@@ -282,6 +493,7 @@ pub fn core_importers() -> [&'static dyn Importer; 10] {
         &MaterialImporter,
         &AnimImporter,
         &ShaderGraphImporter,
+        &SpineImporter,
     ]
 }
 
@@ -756,6 +968,80 @@ mod tests {
                 .to_string_lossy()
                 .contains(&id.to_string())
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spine_manifest_context_validates_json_skeleton_and_dependencies_on_cache_hits() {
+        let root = root("spine-json-context");
+        let _ = fs::remove_dir_all(&root);
+        let manifest_path = write_source(
+            &root,
+            "assets/spine/hero.spine",
+            b"spine_version=4.3.75-beta\nskeleton=assets/spine/hero.json\natlas=assets/spine/hero.spineatlas\npage=assets/spine/page_a.png\npage=assets/spine/page_b.png\n",
+        );
+        write_source(
+            &root,
+            "assets/spine/hero.json",
+            include_bytes!("../../rustlua-spine/tests/fixtures/no_clipping_sample.json"),
+        );
+        write_source(
+            &root,
+            "assets/spine/hero.spineatlas",
+            include_bytes!("../../rustlua-spine/tests/fixtures/two_page.atlas"),
+        );
+        write_source(&root, "assets/spine/page_a.png", b"atlas page fixture");
+        write_source(&root, "assets/spine/page_b.png", b"atlas page fixture");
+
+        // Generic .json routing remains unchanged, while manifest context parses it as Spine JSON.
+        assert_eq!(
+            ResourceKind::from_path("assets/spine/hero.json"),
+            ResourceKind::Scene
+        );
+        let registry = crate::full_registry();
+        assert_eq!(
+            registry
+                .from_path(Path::new("assets/spine/hero.json"))
+                .map(|importer| importer.kind()),
+            Some(ResourceKind::Scene)
+        );
+        let manifest_importer = registry.get(ResourceKind::Spine).unwrap();
+        let manifest_bytes = fs::read(&manifest_path).unwrap();
+        manifest_importer
+            .validate_project_context(&root, &manifest_path, &manifest_bytes)
+            .expect("Spine JSON skeleton and referenced files validate");
+
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register("assets/spine/hero.spine", ResourceKind::Spine, "spine-1")
+            .unwrap();
+        let mut cache = ImportCache::open(&root).unwrap();
+        let cancel = AtomicBool::new(false);
+        let items = vec![(id, manifest_path.clone())];
+        let first = run_import_batch(&root, &mut db, &mut cache, &registry, &items, &cancel);
+        assert_eq!(first.failed, 0, "{:?}", first.results);
+        let cached = run_import_batch(&root, &mut db, &mut cache, &registry, &items, &cancel);
+        assert_eq!(
+            cached.reused, 1,
+            "valid unchanged manifest should hit cache"
+        );
+
+        fs::remove_file(root.join("assets/spine/page_b.png")).unwrap();
+        let missing_page = run_import_batch(&root, &mut db, &mut cache, &registry, &items, &cancel);
+        assert_eq!(missing_page.failed, 1);
+        assert!(
+            missing_page.results[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("page"))
+        );
+
+        let escaping_manifest = b"spine_version=4.3.75-beta\nskeleton=../outside.json\natlas=assets/spine/hero.spineatlas\npage=assets/spine/page_a.png\n";
+        let error = manifest_importer
+            .validate_project_context(&root, &manifest_path, escaping_manifest)
+            .expect_err("manifest paths must not escape the project root");
+        assert!(error.contains("工程内相对路径"), "{error}");
+
         let _ = fs::remove_dir_all(&root);
     }
 

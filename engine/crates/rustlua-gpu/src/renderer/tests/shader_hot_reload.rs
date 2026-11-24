@@ -398,6 +398,7 @@ fn ui_mesh() -> rustlua_render::frame::SceneMesh {
         corner(-0.8, 0.8, 0.0, 1.0),
     ];
     rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices,
         draws: vec![rustlua_render::frame::SceneDraw::screen_ui(0, 0, 6)],
         world_sprites: Vec::new(),

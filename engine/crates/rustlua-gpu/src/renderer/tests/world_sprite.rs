@@ -63,6 +63,7 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
         vertices
     };
     let mut mesh = SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         // 画家顺序：先远（红，z=+0.5）、后近（绿，z=-0.5）。
@@ -138,6 +139,7 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
     //    **不写深度**，顺序就是一切。这条把"排序是宿主的责任"钉成契约：哪天有人
     //    以为深度会兜底，这里立刻判红。
     let mut reversed = SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         // 反过来的顺序：先近（绿，z=-0.5）、后远（红，z=+0.5）。
@@ -250,8 +252,8 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
             material: None,
             // 测试手写场景：给一个本地句柄即可（渲染器只把它当缓存键）。
             mesh_handle: Some(AssetHandle::new(0, 1)),
@@ -287,6 +289,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         vertices
     };
     let mesh_with_sprite = |z: f32| SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: quad(z),

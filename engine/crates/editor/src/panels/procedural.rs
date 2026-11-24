@@ -573,9 +573,9 @@ impl EditorApp {
         let (min, max) = spec.bounds();
         let drawable = Scene3dDrawable {
             entity: rustlua_ecs::spatial_transform::SceneEntityId(1),
-            name: "ProceduralSolid".to_owned(),
-            mesh_path: spec.mesh_path(),
-            material: Some(SOLID_MATERIAL_KEY.to_owned()),
+            name: "ProceduralSolid".into(),
+            mesh_path: spec.mesh_path().into(),
+            material: Some(SOLID_MATERIAL_KEY.into()),
             mesh_handle: None,
             model: Mat4::identity(),
             palette: Vec::new(),
@@ -661,6 +661,7 @@ fn load_editor_font() -> Option<FontArc> {
 /// 编辑器手写空 2D 网格：立体预览只用 3D drawables，2D 侧留空。
 fn empty_scene_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

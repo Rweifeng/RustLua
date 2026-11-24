@@ -36,11 +36,13 @@ impl EditorApp {
                         };
                         Some(SceneView3dTypedEntity {
                             id: entity.id,
-                            name: entity.name.clone(),
+                            // P2：typed 缓存用 `Arc<str>`；这里从场景实体名转一次（缓存按 revision
+                            // 失效，不是每帧），换来每帧预览只做引用计数。
+                            name: entity.name.as_str().into(),
                             transform: *transform,
                             // mesh 路径由 render 的 codec 从载荷里报出来（P1 ④），
                             // 编辑器不自己再解析一遍 `MeshRenderer` 的文法。
-                            mesh_path: assets.first()?.0.clone(),
+                            mesh_path: assets.first()?.0.as_str().into(),
                         })
                     })
                     .collect::<Vec<_>>();

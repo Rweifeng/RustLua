@@ -615,15 +615,17 @@ function input.virtual_pressed(name) end
 --- interact：运行期 API 面基线里的 4 个函数
 interact = {}
 
+---@param ... any
 ---@return any
-function interact.clear_prompt() end
+function interact.clear_prompt(...) end
 
+---@param ... any
 ---@return any
-function interact.get_prompt() end
+function interact.get_prompt(...) end
 
----@param text string
+---@param ... any
 ---@return any
-function interact.prompt(text) end
+function interact.prompt(...) end
 
 ---@param x number
 ---@param y number
@@ -996,8 +998,34 @@ function quad.get(id) end
 ---@return any
 function quad.set(id, component) end
 
---- render：运行期 API 面基线里的 2 个函数
+--- render：运行期 API 面基线里的 7 个函数
 render = {}
+
+--- 按 `.prefab` **特效预设**加载并播放一层特效。预设里写好了引用哪张 `.sgraph`、以及
+---@param prefab string
+---@param name string?
+---@return any
+function render.play_effect(prefab, name) end
+
+--- 按**名字**改特效参数，不用记槽位号。名字来自 `.sgraph` 编译出的命名参数表
+---@param name string
+---@param value number
+---@return any
+function render.set_effect_param(name, value) end
+
+--- 按**槽位**整体写一个 `vec4`。给需要一次改四个分量、或名字表不可用时的场合；
+---@param slot integer
+---@param x number
+---@param y number
+---@param z number
+---@param w number
+---@return any
+function render.set_effect_params(slot, x, y, z, w) end
+
+--- 覆盖特效时钟。不调时宿主按自己的时钟推进；调了就以脚本为准，适合做招式起手/收招的
+---@param seconds number
+---@return any
+function render.set_effect_time(seconds) end
 
 --- 运行期画质档（1=低、2=中、3=高）。低档关 SSAO/SSR/接触阴影/泛光/点光阴影；
 ---@param level integer
@@ -1007,6 +1035,11 @@ function render.set_quality(level) end
 --- 返回上一帧渲染统计表：
 ---@return any
 function render.stats() end
+
+--- 撤掉脚本播放的特效层。
+---@param name string?
+---@return any
+function render.stop_effect(name) end
 
 --- 预测与回滚账本。它**不碰模拟**：快照是脚本自己序列化的字节串（整张世界表、场景状态都行），
 --- rollback：运行期 API 面基线里的 9 个函数
@@ -1120,6 +1153,54 @@ function shop.price(name, item_id) end
 ---@param spec any
 ---@return any
 function shop.set_catalog(name, spec) end
+
+--- `spine` 是 **Spine 2D 骨骼动画**的运行期接口（M84 P1）。实体上挂 `SpineSkeleton` 组件后，
+--- spine：运行期 API 面基线里的 8 个函数
+spine = {}
+
+--- 取本帧骨架网格在**世界空间**的轴对齐包围盒，用于点选、裁剪或血条对齐。
+---@param id integer
+---@return any
+function spine.bounds(id) end
+
+--- 取走本帧新触发的动画事件（轮询式，取走即清）。
+---@return any
+function spine.events() end
+
+--- 读实体当前播放的动画名。
+---@param id integer
+---@return any
+function spine.get_animation(id) end
+
+--- 列出这份骨架里**所有**可用的动画名，用于菜单、调试或做动画存在性判断。
+---@param id integer
+---@return any
+function spine.list(id) end
+
+--- 切换实体正在播放的动画。
+---@param id integer
+---@param name string
+---@param looped boolean?
+---@return any
+function spine.set_animation(id, name, looped) end
+
+--- 开关这个实体的 Spine 推进与更新。
+---@param id integer
+---@param enabled boolean
+---@return any
+function spine.set_enabled(id, enabled) end
+
+--- 切换骨架皮肤（换装 / 换武器外观）。
+---@param id integer
+---@param name string
+---@return any
+function spine.set_skin(id, name) end
+
+--- 设置动画播放速度倍率。
+---@param id integer
+---@param speed number
+---@return any
+function spine.set_speed(id, speed) end
 
 --- sprite：运行期 API 面基线里的 3 个函数
 sprite = {}

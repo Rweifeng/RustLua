@@ -57,7 +57,7 @@ pub(crate) fn pipeline_layouts(
 ) -> PipelineLayouts {
     let mesh_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("rustlua-mesh3d-pipeline-layout"),
-        bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
+        bind_group_layouts: &[camera_bind_group_layout, material_bind_group_layout],
         push_constant_ranges: &[],
     });
     // 回滚档（Legacy）保持两组布局：多一组会让旧着色器绑定不上，也会让 `pbr=off`
@@ -65,15 +65,15 @@ pub(crate) fn pipeline_layouts(
     let pbr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("rustlua-mesh3d-pbr-pipeline-layout"),
         bind_group_layouts: &[
-            &camera_bind_group_layout,
-            &material_bind_group_layout,
-            &environment_bind_group_layout,
+            camera_bind_group_layout,
+            material_bind_group_layout,
+            environment_bind_group_layout,
         ],
         push_constant_ranges: &[],
     });
     let shadow_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("rustlua-shadow-pipeline-layout"),
-        bind_group_layouts: &[&shadow_bind_group_layout, &material_bind_group_layout],
+        bind_group_layouts: &[shadow_bind_group_layout, material_bind_group_layout],
         push_constant_ranges: &[],
     });
     PipelineLayouts {

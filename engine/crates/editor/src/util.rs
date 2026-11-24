@@ -310,7 +310,9 @@ pub(crate) fn save_hierarchy_collapsed(
     });
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    if std::fs::create_dir_all(parent).is_err() {
+    // 目录已存在时不调 `create_dir_all`：它是幂等的，但每次仍要走一遍系统调用，
+    // 在开着实时防护的 Windows 上实测 2.5–7 ms，而 `exists()` 只要 14 µs（省 ~3 ms/次保存）。
+    if !parent.exists() && std::fs::create_dir_all(parent).is_err() {
         return;
     }
     let token = std::time::SystemTime::now()

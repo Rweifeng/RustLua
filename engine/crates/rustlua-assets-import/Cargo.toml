@@ -39,6 +39,9 @@ rustlua-assets = { path = "../rustlua-assets" }
 # `.anim` 导入器用运行时同一台解析器（`AnimClip::from_text`）；scene 本来就依赖 animation，
 # 这条边不新增方向、也不把任何重型依赖带进导入层。
 rustlua-animation = { path = "../rustlua-animation" }
+# M84：`.spine` / `.skel` / `.spineatlas` 的导入期校验要用运行时的同一台解析器。
+# 只取它的 core（不含 wgpu 后端），因此不会把渲染器拖进导入层。
+rustlua-spine = { path = "../rustlua-spine" }
 rustlua-infra = { path = "../rustlua-infra" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-scene = { path = "../rustlua-scene" }

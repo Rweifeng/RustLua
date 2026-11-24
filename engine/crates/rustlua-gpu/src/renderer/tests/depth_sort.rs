@@ -16,30 +16,28 @@ use rustlua_render::mesh3d::GROUND_PLANE_SENTINEL;
 const SIZE: u32 = 32;
 
 fn test_device(tag: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-        label: Some(tag),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request test device");
-    Some((device, queue))
+    // 适配器选择走共享策略（`RUSTLUA_TEST_GPU`），不再各写一份
+    // `force_fallback_adapter: true`——那样会把每个测试都推到软件光栅化上。
+    let (adapter, _mode) = crate::test_adapter::request_test_adapter();
+    let adapter = adapter?;
+    Some(
+        pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some(tag),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device"),
+    )
 }
 
 fn drawable(entity: u64, x: f32) -> rustlua_render::frame::Scene3dDrawable {
     rustlua_render::frame::Scene3dDrawable {
         entity: rustlua_scene::scene::SceneEntityId(entity),
-        name: format!("plane-{entity}"),
-        mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+        name: format!("plane-{entity}").into(),
+        mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::translation(Vec3::new(x, 0.0, -1.0)),
@@ -123,11 +121,11 @@ fn instanced_groups_sort_by_nearest_instance() {
     // 不同 material 覆盖键 ⇒ 两个合批组（覆盖解析失败回退内嵌材质，不影响分组键）。
     // 远组两个实例 x=30/29，最近也是 29 ⇒ 键仍比近组 x=0 远，近组先画。
     let mut far_a = drawable(1, 30.0);
-    far_a.material = Some("materials/far.rmat".to_owned());
+    far_a.material = Some("materials/far.rmat".into());
     let mut far_b = drawable(2, 29.0);
-    far_b.material = Some("materials/far.rmat".to_owned());
+    far_b.material = Some("materials/far.rmat".into());
     let mut near = drawable(3, 0.0);
-    near.material = Some("materials/near.rmat".to_owned());
+    near.material = Some("materials/near.rmat".into());
     let scene = scene_with(vec![far_a, far_b, near]);
 
     let draws = renderer.frame_3d_draws(&scene);

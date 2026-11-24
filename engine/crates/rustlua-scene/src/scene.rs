@@ -15,6 +15,16 @@ use std::{
 /// render components. Older and future versions are rejected.
 pub const CURRENT_SCENE_VERSION: u32 = 2;
 
+/// 场景级特效叠加层的元数据键（`meta\teffect_overlay\t<工程内 .sgraph 路径>`）。
+///
+/// 为什么在场景这里而不在 `project.toml [render]`：叠加层是**场景语义**——"这一关的
+/// 刀光颜色/强度"属于这一关，不该让所有场景共用一套。放在工程级时，配置一个特效后
+/// 切到任何场景都会带上它（包括纯 2D 的 api_spine、纯音频的 api_audio），那是个
+/// 设计错误而非使用问题。
+///
+/// 缺省（键不存在）表示该场景没有叠加层，像素与旧版相同。
+pub const EFFECT_OVERLAY_META_KEY: &str = "effect_overlay";
+
 /// 稳定实体标识。
 ///
 /// 权威定义在 `rustlua_ecs::spatial_transform`（层级传播 `propagate_all` 等按它建表）；
@@ -54,6 +64,31 @@ impl Scene {
             name: name.into(),
             entities: BTreeMap::new(),
             metadata: BTreeMap::new(),
+        }
+    }
+
+    /// 本场景的特效叠加层路径（工程内 `.sgraph`）。`None` = 该场景不带叠加层。
+    ///
+    /// 空白值与缺键同义，都是"没有"：编辑器里清空输入框就等于关闭，
+    /// 不必额外写一个 `false` 或手动删键。
+    #[must_use]
+    pub fn effect_overlay(&self) -> Option<&str> {
+        self.metadata
+            .get(EFFECT_OVERLAY_META_KEY)
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+    }
+
+    /// 设置本场景的特效叠加层；传 `None` 或空白串表示清除。
+    pub fn set_effect_overlay(&mut self, path: Option<&str>) {
+        match path.map(str::trim).filter(|path| !path.is_empty()) {
+            Some(path) => {
+                self.metadata
+                    .insert(EFFECT_OVERLAY_META_KEY.to_owned(), path.to_owned());
+            }
+            None => {
+                self.metadata.remove(EFFECT_OVERLAY_META_KEY);
+            }
         }
     }
 
@@ -488,6 +523,45 @@ mod tests {
             Scene::from_text("scene_version=3\nname=x\n"),
             Err(SceneError::UnsupportedVersion(3))
         ));
+    }
+
+    /// 转义/反转义必须严格对称：字段里含分隔符、反斜杠、换行、多字节字符时，
+    /// `to_text` → `from_text` 之后每个字段都要原样回来。
+    ///
+    /// 这条门补的是一个**真实存在的缺口**：`atomic_write_scene` 写完临时文件会
+    /// `Scene::load` 一遍再替换正式文件（见 `rustlua-editor-core` 的 `document.rs`），
+    /// 但那条校验本身没有专门的测试——`invalid_scene_does_not_modify_original_or_clear_dirty`
+    /// 走的 `version=999` 在更早的 `validate()` 就被拒了，到不了那里。
+    /// 与其造一个人工失配去"测"那道防线，不如把它的**前提**钉死：
+    /// 只要序列化是自洽的，回读就不会失败。
+    #[test]
+    fn escape_roundtrip_preserves_separators_and_multibyte_text() {
+        // 每个都是"如果转义写错就会把一行拆坏"的字符：
+        // Tab 是本格式的分隔符，换行是记录分隔符，反斜杠是转义前缀本身。
+        let nasty = "a\tb\nc\\d\u{000}\\t中文😀";
+        let mut s = Scene::new("main");
+        s.add_entity(SceneEntityId(1), nasty, None).unwrap();
+        s.entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .components
+            .insert(nasty.to_owned(), nasty.to_owned());
+        s.metadata.insert(nasty.to_owned(), nasty.to_owned());
+
+        let text = s.to_text();
+        let back = Scene::from_text(&text).expect("自己写出的文本必须自己能读回");
+        assert_eq!(back, s, "round-trip 后场景必须逐字段相等");
+
+        // 顺带确认没把分隔符原样写进文本（否则记录结构早就坏了，
+        // 上面的相等断言只是碰巧成立）。
+        let entity_line = text
+            .lines()
+            .find(|line| line.starts_with("entity\t1\t"))
+            .expect("实体行必须存在");
+        assert!(
+            !entity_line.contains('\t') || entity_line.matches('\t').count() == 2,
+            "一行里 Tab 只能作为字段分隔符出现（entity\t<id>\t<name>），             载荷里的 Tab 必须被转义成 \\t：{entity_line:?}"
+        );
     }
 
     #[test]

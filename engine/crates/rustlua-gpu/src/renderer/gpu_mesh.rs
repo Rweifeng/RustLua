@@ -77,8 +77,7 @@ impl Renderer {
                 && self.mesh_cache.contains_key(mapped.as_str())
             {
                 self.mesh_identity_hits += 1;
-                let key = mapped.clone();
-                return self.mesh_cache.get(&key);
+                return self.mesh_cache.get(mapped.as_str());
             }
             self.mesh_identity_misses += 1;
             if !self.mesh_cache.contains_key(path) {

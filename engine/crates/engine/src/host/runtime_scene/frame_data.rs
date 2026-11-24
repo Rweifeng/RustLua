@@ -97,6 +97,25 @@ impl RuntimeScene {
             });
         let mut drawables = self.script.with_world(|world| {
             let mut drawables = Vec::new();
+            // P2：网格路径与材质路径的**每帧复用表**。场景里通常只有几十种网格/材质，
+            // 却有上万个实体引用它们；过去每个实体各克隆一次 `String`（10k 实体 = 每帧
+            // 两万次分配）。这里按源字符串去重，同一路径整帧只转一次 `Arc<str>`。
+            // 表本身每帧重建（不能跨帧持有可能失效的路径），但条目数 = 种类数，代价极小。
+            let mut path_pool: std::collections::HashMap<String, std::sync::Arc<str>> =
+                std::collections::HashMap::new();
+            // P2：给一个源字符串取整帧共享的 `Arc<str>` —— 首次为它分配，之后只 +1 引用。
+            // 键用 `&str` 查、命中就返回；未命中才 clone 一次进表。
+            fn intern_path(
+                pool: &mut std::collections::HashMap<String, std::sync::Arc<str>>,
+                path: &str,
+            ) -> std::sync::Arc<str> {
+                if let Some(existing) = pool.get(path) {
+                    return std::sync::Arc::clone(existing);
+                }
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(path);
+                pool.insert(path.to_owned(), std::sync::Arc::clone(&arc));
+                arc
+            }
             // WP2：与 2D 精灵同一条约定——开关每帧选定一次遍历用的组件（开启继承时是
             // `WorldTransform3D`，此时每个有 `Transform3D` 的实体都已拿到世界变换），
             // 因此不必逐实体"先试世界再退回局部"而多付一次 `get`。
@@ -105,10 +124,12 @@ impl RuntimeScene {
                     filtered += 1;
                     return;
                 }
+                // P2：走 `entity_name_arc`（零分配）而不是 `entity_name`（每帧克隆 String）。
+                // 无名字时才 `format!` 一次——10k 实体默认无名字的场景因此整帧零字符串分配。
                 let name = self
                     .script
-                    .entity_name(id)
-                    .unwrap_or_else(|| format!("Entity {}", id.index()));
+                    .entity_name_arc(id)
+                    .unwrap_or_else(|| format!("Entity {}", id.index()).into());
                 let palette = world
                     .get::<Animation3D>(id)
                     .ok()
@@ -219,16 +240,16 @@ impl RuntimeScene {
                             model.columns[3][2],
                         );
                         let distance = (model_pos - camera_pos).length();
-                        group.select(distance).to_owned()
+                        intern_path(&mut path_pool, group.select(distance))
                     }
-                    _ => renderer.mesh.clone(),
+                    _ => intern_path(&mut path_pool, renderer.mesh.as_str()),
                 };
                 // WP6：3D 提取不再每帧克隆 mesh 路径（数量级 ≤13 mesh，但同类分配问题
                 // 一并消除）。先借用身份表做零分配的 `handle_of` 查找，未注册时才走
                 // intern（首帧/换网格各一次）；`mesh_path` 直接 move 进 drawable。
                 let mesh_handle = {
                     let assets = self.assets.borrow();
-                    assets.handle_of(mesh_path.as_str())
+                    assets.handle_of(&mesh_path)
                 };
                 let mesh_handle = Some(match mesh_handle {
                     Some(handle) => handle,
@@ -236,20 +257,27 @@ impl RuntimeScene {
                         self.assets
                             .borrow_mut()
                             .intern(
-                                mesh_path.as_str(),
+                                &mesh_path as &str,
                                 AssetRecord {
-                                    path: mesh_path.clone(),
+                                    // 身份表要一份自有的 `String`（它跨帧存活）；
+                                    // 只在**首次登记**这个网格时才付这一次克隆。
+                                    path: mesh_path.to_string(),
                                     kind: rustlua_assets::resource_kind::ResourceKind::Model,
                                 },
                             )
                             .0
                     }
                 });
+                // P2：材质路径同样走整帧复用表（同一材质的多个实体共享一个 Arc）。
+                let material = renderer
+                    .material
+                    .as_deref()
+                    .map(|path| intern_path(&mut path_pool, path));
                 drawables.push(Scene3dDrawable {
                     entity: SceneEntityId(id.index() as u64),
                     name,
                     mesh_path,
-                    material: renderer.material.clone(),
+                    material,
                     // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
                     // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
                     // O(1) 的网格缓存查找并认出失效引用。
@@ -379,15 +407,15 @@ impl RuntimeScene {
                 };
                 let name = self
                     .script
-                    .entity_name(id)
-                    .unwrap_or_else(|| format!("Batch {}", id.index()));
-                let mut emit = |mesh_path: String| {
-                    let mesh_handle = self.model_handle_for(mesh_path.as_str());
+                    .entity_name_arc(id)
+                    .unwrap_or_else(|| format!("Batch {}", id.index()).into());
+                let mut emit = |mesh_path: std::sync::Arc<str>| {
+                    let mesh_handle = self.model_handle_for(&mesh_path);
                     batches.push(Scene3dDrawable {
                         entity: SceneEntityId(id.index() as u64),
                         name: name.clone(),
                         mesh_path,
-                        material: batch.material.clone(),
+                        material: batch.material.as_deref().map(std::sync::Arc::from),
                         mesh_handle: Some(mesh_handle),
                         // 实例坐标是**世界坐标**：批次实体自身的变换不参与（口径见 `instance_batch`）。
                         model: Mat4::identity(),
@@ -405,21 +433,21 @@ impl RuntimeScene {
                 if gpu_path {
                     // 近侧主网格 + （可选）中档/远档 LOD 网格：2~3 条 draw 两两互斥且完备，
                     // 各自只画自己那一档的实例。
-                    emit(batch.mesh.clone());
+                    emit(batch.mesh.as_str().into());
                     if let Some(lod) = &lod {
-                        emit(lod.mesh.clone());
+                        emit(lod.mesh.as_str().into());
                         if let Some(far_mesh) = &lod.far_mesh {
-                            emit(far_mesh.clone());
+                            emit(far_mesh.as_str().into());
                         }
                     }
                 } else {
-                    let mesh_path = batch.mesh.clone();
-                    let mesh_handle = self.model_handle_for(mesh_path.as_str());
+                    let mesh_path: std::sync::Arc<str> = batch.mesh.as_str().into();
+                    let mesh_handle = self.model_handle_for(&mesh_path);
                     batches.push(Scene3dDrawable {
                         entity: SceneEntityId(id.index() as u64),
                         name,
                         mesh_path,
-                        material: batch.material.clone(),
+                        material: batch.material.as_deref().map(std::sync::Arc::from),
                         mesh_handle: Some(mesh_handle),
                         model: Mat4::identity(),
                         palette: Vec::new(),
@@ -1352,7 +1380,12 @@ impl RuntimeScene {
         // 因此在交给渲染器之前按"先层、再 z 从远到近、最后原有先后"整体重排一次，
         // 让半透明走画家算法正确叠加。
         sort_world_ranges(&mut world_sprites, &mut world_sprite_draws);
+        // M84 P1：Spine 三角网格。与 world sprite 共用相机/深度/视口，但保留自己的索引
+        // 与 draw order（不能塞进 SpriteBatch 的按纹理合批里）。纹理路径在这里登记进
+        // 本帧的 `texture_paths`，于是 `texture_id_of` 与 Sprite 走同一套身份表。
+        let spines = self.collect_spine_mesh();
         Ok(SceneMesh {
+            spines,
             vertices,
             draws,
             world_sprites,
@@ -1366,6 +1399,234 @@ impl RuntimeScene {
             vector_glyphs,
             vector_segments,
         })
+    }
+
+    /// 把本帧所有 `SpinePlayer` 的采样网格折成一份 [`SpineMesh`]（M84 P1）。
+    ///
+    /// 三条不变量：
+    /// 1. **不重排、不合批**：同一实体内的 draw 顺序就是 Spine 的 slot draw order，
+    ///    按纹理重排会让部件互相遮挡错位。
+    /// 2. **跨实体按 `(sorting_layer, order, z, 实体 id)` 排序**：与精灵的画家顺序同源，
+    ///    但只排序"实体之间"，实体内部的 draw 原样保留。
+    /// 3. 顶点先由实体世界矩阵变换，再作为世界空间几何提交；u32 索引偏移前严格校验。
+    fn collect_spine_mesh(&mut self) -> rustlua_render::spine_mesh::SpineMesh {
+        use rustlua_render::spine_mesh::{SpineBlendMode, SpineDraw, SpineMesh, SpineVertex};
+
+        /// 待排序的一行：实体 id、当帧采样网格、`(sorting_layer, order, z)`、实体世界矩阵。
+        type SpineEntityFrame = (
+            EntityId,
+            rustlua_spine::SpineRenderOutput,
+            (String, i32, f32),
+            Mat4,
+        );
+
+        let mut mesh = SpineMesh::default();
+        let mut entities: Vec<SpineEntityFrame> = Vec::new();
+
+        // 编辑态（`from_scene_edit` / 不跑调度）不会执行 `spine_advance`，于是 `output`
+        // 一直是 `instantiate` 留下的空值——场景视图里 Spine 实体什么都不显示。
+        // 这里给"还没被采过样的骨架"补一次静态采样（`dt = 0`，不推进动画），
+        // 画的是 setup / 声明动画的首帧姿态。运行时不受影响：那时 `spine_advance`
+        // 每步都会产出非空 output，`spine_pose_snapped` 也就不会被用到。
+        let snap_pose = !self.spine_pose_snapped;
+        self.script.with_world_mut(|world| {
+            world.for_each_mut::<rustlua_spine::SpinePlayer>(|_id, player| {
+                if snap_pose
+                    && player.output().is_empty()
+                    && let Err(error) = player.snap_pose()
+                {
+                    // 采样失败：本实体本帧缺席，而不是让整个提取失败。
+                    tracing::warn!(
+                        target: "render",
+                        "[spine] setup-pose 采样失败：{error}"
+                    );
+                }
+                let output = player.output();
+                if output.is_empty() {
+                    return;
+                }
+                let component = player.component();
+                entities.push((
+                    _id,
+                    output.clone(),
+                    (
+                        component.sorting_layer.clone(),
+                        component.order,
+                        component.z,
+                    ),
+                    Mat4::identity(),
+                ));
+            });
+        });
+        if snap_pose {
+            self.spine_pose_snapped = true;
+        }
+
+        // 玩家必须先完成可变采样，再从 ECS 读取其空间矩阵，避免在同一遍历中
+        // 对 World 同时持有可变与不可变借用。
+        let inherit = self.spatial_active;
+        self.script.with_world(|world| {
+            for (id, _, _, entity_transform) in &mut entities {
+                *entity_transform = if inherit {
+                    world
+                        .get::<GlobalTransform>(*id)
+                        .ok()
+                        .flatten()
+                        .map(|global| global.matrix())
+                } else {
+                    world
+                        .get::<Transform>(*id)
+                        .ok()
+                        .flatten()
+                        .and_then(|transform| transform.to_3d().model_matrix().ok())
+                }
+                .unwrap_or_else(Mat4::identity);
+            }
+        });
+
+        if entities.is_empty() {
+            return mesh;
+        }
+        // 实体间排序：层 → order → z 远到近 → 实体 id（确定性兜底）。
+        entities.sort_by(|(lhs_id, _, lhs, _), (rhs_id, _, rhs, _)| {
+            lhs.0
+                .cmp(&rhs.0)
+                .then(lhs.1.cmp(&rhs.1))
+                .then(
+                    rhs.2
+                        .partial_cmp(&lhs.2)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(lhs_id.cmp(rhs_id))
+        });
+
+        for (id, output, (_, _, z), entity_transform) in entities {
+            let base_vertex_usize = mesh.vertices.len();
+            let Some(base_vertex) = u32::try_from(base_vertex_usize).ok() else {
+                tracing::error!(
+                    target: "render",
+                    entity = %id,
+                    vertices = base_vertex_usize,
+                    "[spine] merged vertex count exceeds u32 index range"
+                );
+                continue;
+            };
+            let Some(base_index) = u32::try_from(mesh.indices.len()).ok() else {
+                tracing::error!(
+                    target: "render",
+                    entity = %id,
+                    indices = mesh.indices.len(),
+                    "[spine] merged index count exceeds u32 draw range"
+                );
+                continue;
+            };
+            let transformed_vertices: Option<Vec<SpineVertex>> = output
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    let world = entity_transform
+                        .transform_point(Vec3::new(
+                            vertex.position[0],
+                            vertex.position[1],
+                            vertex.position[2],
+                        ))
+                        .ok()?;
+                    Some(SpineVertex {
+                        position: [world.x, world.y, world.z],
+                        uv: vertex.uv,
+                        color: vertex.color,
+                    })
+                })
+                .collect();
+            let Some(transformed_vertices) = transformed_vertices else {
+                tracing::warn!(
+                    target: "render",
+                    entity = %id,
+                    "[spine] entity transform produced an invalid homogeneous vertex; entity skipped"
+                );
+                continue;
+            };
+            let Some(merged_indices) = SpineMesh::offset_indices(
+                &output.indices,
+                output.vertices.len(),
+                usize::try_from(base_vertex).expect("base vertex was checked as u32"),
+            ) else {
+                tracing::warn!(
+                    target: "render",
+                    entity = %id,
+                    vertices = output.vertices.len(),
+                    indices = output.indices.len(),
+                    "[spine] invalid or overflowing local indices; entity skipped"
+                );
+                continue;
+            };
+            let Some(merged_vertex_count) =
+                mesh.vertices.len().checked_add(transformed_vertices.len())
+            else {
+                tracing::error!(
+                    target: "render",
+                    entity = %id,
+                    "[spine] merged vertex count overflowed usize"
+                );
+                continue;
+            };
+            if u32::try_from(merged_vertex_count).is_err() {
+                tracing::error!(
+                    target: "render",
+                    entity = %id,
+                    vertices = merged_vertex_count,
+                    "[spine] merged vertex count exceeds u32 index range"
+                );
+                continue;
+            }
+            let Some(merged_draw_ranges): Option<Vec<(u32, u32)>> = output
+                .draws
+                .iter()
+                .map(|draw| {
+                    let local_end = draw.first_index.checked_add(draw.index_count)?;
+                    if usize::try_from(local_end).ok()? > output.indices.len() {
+                        return None;
+                    }
+                    let first_index = draw.first_index.checked_add(base_index)?;
+                    let end_index = first_index.checked_add(draw.index_count)?;
+                    Some((first_index, end_index))
+                })
+                .collect()
+            else {
+                tracing::warn!(
+                    target: "render",
+                    entity = %id,
+                    "[spine] invalid or overflowing draw range; entity skipped"
+                );
+                continue;
+            };
+            mesh.vertices.extend(transformed_vertices);
+            mesh.indices.extend(merged_indices);
+            for (draw, (first_index, _)) in output.draws.iter().zip(merged_draw_ranges) {
+                // Spine 的 texture 是图集页路径：登记进本帧纹理表，渲染器按同一套身份表解析。
+                let texture = texture_id_of(
+                    &draw.texture,
+                    &self.assets,
+                    &mut self.texture_paths,
+                    &mut self.texture_lookup,
+                    &mut self.texture_handles,
+                );
+                mesh.draws.push(SpineDraw {
+                    texture,
+                    first_index,
+                    index_count: draw.index_count,
+                    blend: match draw.blend {
+                        rustlua_spine::SpineBlend::Normal => SpineBlendMode::Normal,
+                        rustlua_spine::SpineBlend::Additive => SpineBlendMode::Additive,
+                        rustlua_spine::SpineBlend::Multiply => SpineBlendMode::Multiply,
+                        rustlua_spine::SpineBlend::Screen => SpineBlendMode::Screen,
+                    },
+                    premultiplied_alpha: draw.premultiplied_alpha,
+                    z,
+                });
+            }
+        }
+        mesh
     }
 
     /// 生成本帧用到（且自上次上报后版本变化）的自定义字体图集像素，随 SceneMesh

@@ -384,6 +384,51 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             })?,
         )?;
     }
+    // M96：按预设播特效。`effect.play("assets/fx/炎刃斩击.prefab")` 之后宿主当帧加载并挂层，
+    // 逻辑里不必再关心 `.sgraph` 路径、参数槽位或工程配置——那些都封在预设里。
+    {
+        let play_state = state.clone();
+        table.set(
+            "play_effect",
+            lua.create_function(move |_, (prefab, name): (String, Option<String>)| {
+                if prefab.is_empty() || prefab.trim() != prefab {
+                    return Ok((
+                        false,
+                        "effect prefab path must be a non-empty project-relative path".to_owned(),
+                    ));
+                }
+                if !prefab.ends_with(".prefab") {
+                    return Ok((
+                        false,
+                        format!("effect presets are .prefab files, got {prefab}"),
+                    ));
+                }
+                overrides_mut(&play_state, |o| {
+                    o.effect_command = Some(
+                        crate::script::domain::render::render_overrides::EffectCommand::Play {
+                            prefab,
+                            name: name.unwrap_or_default(),
+                        },
+                    )
+                });
+                Ok((true, String::new()))
+            })?,
+        )?;
+        let stop_state = state.clone();
+        table.set(
+            "stop_effect",
+            lua.create_function(move |_, name: Option<String>| {
+                overrides_mut(&stop_state, |o| {
+                    o.effect_command = Some(
+                        crate::script::domain::render::render_overrides::EffectCommand::Stop {
+                            name: name.unwrap_or_default(),
+                        },
+                    )
+                });
+                Ok((true, String::new()))
+            })?,
+        )?;
+    }
     let stats_state = state.clone();
     table.set(
         "stats",

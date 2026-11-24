@@ -1,0 +1,32 @@
+{
+ "skeleton": {
+  "hash": "ZIYEf9zI8T0",
+  "spine": "4.3.75-beta",
+  "x": -221.2667,
+  "y": -8.566437,
+  "width": 470.7179,
+  "height": 731.5727,
+  "images": "./images/",
+  "audio": null
+ },
+ "bones": [
+  {
+   "name": "root"
+  }
+ ],
+ "slots": [
+  {
+   "name": "clip_slot",
+   "bone": "root"
+  }
+ ],
+ "skins": [
+  {
+   "name": "default",
+   "attachments": {
+    "clip_slot": {}
+   }
+  }
+ ],
+ "animations": {}
+}

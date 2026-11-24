@@ -11,7 +11,7 @@
 //!
 //! | 模块 | 职责 | 依赖的重东西 |
 //! |---|---|---|
-//! | [`importers`] | 九个内置 [`Importer`](rustlua_assets::importer::Importer) 实现 + 注册表组装 | `image` / `rodio` / `ab_glyph` / `mlua` |
+//! | [`importers`] | 十一个内置 [`Importer`](rustlua_assets::importer::Importer) 实现 + 注册表组装 | `image` / `rodio` / `ab_glyph` / `mlua` |
 //! | `batch` | 批量导入驱动（逐项状态写回资源库，一项坏不打断整批） | — |
 //! | `atlas_plan` | 图集规划：配置 → 任务 → 装箱 | `image` |
 //! | `atlas_pack` | 装箱器本体（矩形打包 + 页面合成） | `image` |
@@ -96,6 +96,7 @@ mod tests {
             ResourceKind::Material,
             ResourceKind::Animation,
             ResourceKind::ShaderGraph,
+            ResourceKind::Spine,
         ] {
             let importer = registry.get(kind).expect("full importer exists");
             assert_eq!(importer.kind(), kind);

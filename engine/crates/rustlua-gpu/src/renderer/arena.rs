@@ -151,12 +151,22 @@ impl Renderer {
         // 没有存储缓冲的设备（WebGL2）：binding 2 是 64 字节 uniform，每条 draw 只装一个
         // 模型矩阵。实例化合批在构造期已按能力关掉，`frame_3d_draws` 因此不会产出多条
         // 实例合批（每条 draw 的 `models.len()` 恒为 1）——这里取首个模型就是全部。
+        // P2-2b：实例数据不再每条 draw 新建 `Vec` —— 复用 `instance_scratch`
+        // （稳态容量够就不分配）。数据只是中转进帧级 arena，中转缓冲本身留不留没意义。
+        //
+        // 借用顺序：先 `mem::take` 把 scratch 取出来（只留空 Vec 在字段里），填好后
+        // 直接把它交给 `push_frame_storage`（要 `&mut self`），最后放回字段复用容量。
+        // 这样全程零分配（除首次扩容）。
         let instance = if self.storage_capable {
-            let mut instance_data = Vec::with_capacity(models.len() * 4);
+            let mut scratch = std::mem::take(&mut self.instance_scratch);
+            scratch.clear();
+            scratch.reserve(models.len().saturating_mul(4));
             for model in models {
-                instance_data.extend_from_slice(&model.columns);
+                scratch.extend_from_slice(&model.columns);
             }
-            self.push_frame_storage(bytemuck::cast_slice(&instance_data))
+            let instance = self.push_frame_storage(bytemuck::cast_slice(&scratch));
+            self.instance_scratch = scratch;
+            instance
         } else {
             debug_assert_eq!(models.len(), 1, "无存储缓冲时每条 3D draw 只该有一个模型");
             self.push_frame_uniform(&single_instance_uniform(models))
@@ -166,12 +176,16 @@ impl Renderer {
         // 因此仍逐字节一致。走顶点缓冲而不是新增存储绑定：多一个布局条目会明显拉长启动期
         // 管线编译。
         let normal_slice = if normals {
-            let mut normal_data = Vec::with_capacity(models.len() * 16);
+            // P2-2b：法线数据同样复用 `instance_scratch`（此时实例数据已写完 arena，
+            // 中转缓冲空闲，直接借用同一块，省掉每 draw 第二个 `Vec` 分配）。
+            let mut scratch = std::mem::take(&mut self.instance_scratch);
+            scratch.clear();
+            scratch.reserve(models.len().saturating_mul(16));
             for model in models {
-                normal_data.extend_from_slice(&super::pbr::normal_matrix(*model).columns);
+                scratch.extend_from_slice(&super::pbr::normal_matrix(*model).columns);
             }
-            let (buffer, offset, size) =
-                self.push_frame_storage(bytemuck::cast_slice(&normal_data));
+            let (buffer, offset, size) = self.push_frame_storage(bytemuck::cast_slice(&scratch));
+            self.instance_scratch = scratch;
             Some(NormalMatrixSlice {
                 buffer,
                 offset,

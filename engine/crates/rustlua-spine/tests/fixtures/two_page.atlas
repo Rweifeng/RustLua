@@ -1,0 +1,11 @@
+page_a.png
+size: 64, 64
+filter: Linear, Linear
+region_a
+	bounds: 0, 0, 32, 32
+
+page_b.png
+size: 64, 64
+filter: Linear, Linear
+region_b
+	bounds: 0, 0, 32, 32

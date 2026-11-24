@@ -51,6 +51,7 @@ fn quad() -> Vec<OverlayVertex> {
 
 fn overlay_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: quad(),
         draws: vec![SceneDraw::screen_ui(0, 0, 6)],
         world_sprites: Vec::new(),

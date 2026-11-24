@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "comment": "P4-02 wasm/native compile cells. Every wasm cfg site's crate must be covered by a wasm cell (direct package or its dependency closure); every not-wasm site's crate by the native cell. gpu-web-probe is an independent wasm probe and MUST stay in wasm-default (it is not in game_web's closure). Design-native crates go in exclusions with owner/review_by.",
+  "comment": "P4-02 wasm/native compile cells. Every wasm cfg site's crate must be covered by a wasm cell (direct package or its dependency closure); every not-wasm site's crate by the native cell. gpu-web-probe and rustlua-ui-host-harness are independent wasm entries (cdylib/none in game_web's closure) and MUST stay in wasm-default, listed explicitly; forgetting one means its wasm branch is never compiled by any gate. Design-native crates go in exclusions with owner/review_by.",
   "cells": [
     {
       "id": "wasm-default",
-      "cmd": "cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown",
-      "packages": ["game_web", "gpu-web-probe"],
+      "cmd": "cargo check -p game_web -p gpu-web-probe -p rustlua-ui-host-harness --target wasm32-unknown-unknown",
+      "packages": ["game_web", "gpu-web-probe", "rustlua-ui-host-harness"],
       "role": "blocking"
     },
     {

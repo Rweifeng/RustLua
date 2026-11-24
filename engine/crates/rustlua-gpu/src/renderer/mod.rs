@@ -33,6 +33,7 @@ pub use effect_overlay::EffectOverlayError;
 pub use environment::EnvironmentMapError;
 
 mod arena;
+pub mod async_readback;
 mod batch_motion_gpu;
 mod capabilities;
 mod compute;
@@ -68,9 +69,9 @@ pub use gpu_particles::{
 pub use pbr::{DirectBrdf, direct_brdf, normal_matrix};
 use pipeline_cache::PipelineCache;
 pub use pipeline_cache::PipelineCacheStats;
-pub use readback::{
-    ReadbackMetrics, ReadbackStatus, SceneColorReadback, write_capture_placeholder,
-};
+pub use readback::{ReadbackMetrics, SceneColorReadback, write_capture_placeholder};
+// 对外路径不变：`ReadbackStatus` 虽定义在 `async_readback`，仍从 `readback` 接回。
+pub use async_readback::ReadbackStatus;
 use timestamp::{GpuTimestampState, TimestampSlot};
 
 /// 需要深度附件的那几条管线（WP6）。把"要不要写深度"从散落的字段字面量收成一处**类型化**
@@ -390,27 +391,6 @@ struct StaticGroup {
     /// P3-R275：整组是否进平面反射 pass。组是跨实体合并的，只有**组内每个实体**都被
     /// 排除档点名时才为 false（任何一条没被排除的 drawable 都要照旧反射）。
     cast_planar: bool,
-}
-
-/// 一个可复用的非阻塞回读槽：GPU 拷贝目标 buffer + 提交序号 + 映射完成标志。
-///
-/// M11-03：`map_result` 记录 `map_async` 的结果（0=未就绪 / 1=映射成功 / 2=映射失败），
-/// 失败的映射不再被当作"已就绪"返回脏数据（R-04），而是上报错误并让槽可重试。
-struct ReadbackSlot {
-    buffer: wgpu::Buffer,
-    submission: Option<wgpu::SubmissionIndex>,
-    /// `map_async` 回调完成标志：0=未就绪，1=映射成功，2=映射失败。
-    map_result: std::sync::Arc<std::sync::atomic::AtomicU8>,
-    /// `map_async` 失败时的错误消息（仅 `map_result == 2` 时有意义）。
-    map_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    width: u32,
-    height: u32,
-    row_bytes: u32,
-    bytes_per_row: u32,
-    /// Reusable compact CPU output storage retained by the slot.
-    pixels: Vec<u8>,
-    /// Monotonic slot generation incremented when its staging buffer is rebuilt.
-    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -766,6 +746,17 @@ pub struct RendererResourceStats {
     pub pipeline_compile_ms: f64,
     /// 非阻塞回读账本（槽数 / 丢弃 / CPU 缓冲字节等）。
     pub readback: ReadbackMetrics,
+    /// P1-3：CPU 侧**矢量字形 / 线段缓冲**的容量字节数。
+    ///
+    /// 这两块是「上一帧矢量文字数据」的 CPU 副本，用来避免每帧重传。它们进的是
+    /// **进程 RSS**，之前的资源账本只统计 GPU 侧字节，于是"资源面板显示很小、
+    /// 但进程内存不小"的那部分缺口里就有它们。
+    pub cpu_vector_cache_bytes: u64,
+    /// P1-3：**已解码、等主线程取走**的资源字节数（贴图像素 + 网格顶点/索引）。
+    ///
+    /// 它和 `texture_bytes` / `mesh_bytes` 是两回事：后者是已上传到 GPU 的缓存，
+    /// 这里是还在 CPU 队列里等上传的那一份。两者之和才接近"资源加载相关"的进程占用。
+    pub async_cpu_buffered_bytes: u64,
 }
 
 /// 把声明的 [`Viewport`]（浮点、世界无关）换算成目标附件内的**等比居中矩形**。
@@ -1211,6 +1202,14 @@ pub struct Renderer {
     frame_bind_build_us: u64,
     /// P3-R268：上述循环里 `bake_batch_motion_*`（compute 烘焙）那一段的 CPU µs。
     frame_bind_bake_us: u64,
+    /// P2-2b：`material_bind_group` 的实例/法线数据中转缓冲，**跨 draw 与跨帧复用**。
+    ///
+    /// 此前每条 draw 都新建两个 `Vec`（`instance_data`、`normal_data`），再经
+    /// `bytemuck::cast_slice` 拷进帧级 arena——中转用的 `Vec` 本身纯属浪费。
+    /// 10k 档 `render` 段约 1 万次分配，这里是其中"每 draw 至少 1 次"的那部分。
+    /// 复用一块缓冲后，稳态下这两个 `Vec` 不再分配（容量够就不扩容）。
+    /// 只在本结构体内使用，不参与任何对外状态。
+    instance_scratch: Vec<[f32; 4]>,
     /// P3-R270：本帧共享的 compute 编码器。绑定组循环里的烘焙攒在这里，循环收尾
     /// （`note_material_bind_frame`）封好，随图形一次提交。`None` = 没有待封的。
     pending_compute: Option<wgpu::CommandEncoder>,
@@ -1315,13 +1314,9 @@ pub struct Renderer {
     /// 任意两帧逐像素可比（生产路径恒为 `None` = 渲染钟）。
     clock_frozen_secs: Option<f32>,
     _material_bind_group_layout: wgpu::BindGroupLayout,
-    /// 非阻塞回读槽（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
-    readback_slots: Vec<ReadbackSlot>,
-    readback_submitted: u64,
-    readback_completed: u64,
-    readback_dropped: u64,
-    readback_pending_count: u64,
-    readback_buffer_rebuilds: u64,
+    /// 非阻塞回读器（离屏纹理 → CPU），避免主线程阻塞等待 GPU。
+    /// P3 起与 Shader 预览共用 [`async_readback::AsyncReadback`] 的实现。
+    readback: async_readback::AsyncReadback,
     timestamp_query_set: Option<wgpu::QuerySet>,
     timestamp_slots: Vec<TimestampSlot>,
     timestamp_period_ns: f32,
@@ -1347,6 +1342,8 @@ pub struct Renderer {
     /// [`DepthPass::WorldSpriteOpaque`] 的遮挡契约。
     world_sprite_pipeline: wgpu::RenderPipeline,
     world_sprite_opaque_pipeline: wgpu::RenderPipeline,
+    /// M84 P2-③：Spine additive 混合变体（深度策略同半透明主管线，只有混合方程不同）。
+    world_sprite_additive_pipeline: wgpu::RenderPipeline,
     world_sprite_camera_buffer: wgpu::Buffer,
     world_sprite_camera_bind_group: wgpu::BindGroup,
     world_sprite_buffer: wgpu::Buffer,
@@ -1356,6 +1353,12 @@ pub struct Renderer {
     world_sprite_depth_size: (u32, u32),
     /// 世界 Sprite 的投影（宿主每帧写入；已声明主视图时它与主视图同一份矩阵）。
     world_sprite_view_projection: Mat4,
+    /// M84 P1 Spine 索引三角网格。懒创建：空帧不分配设备资源，也不改变构造期
+    /// `create_*` 序列（构造顺序门无需为新通道重签基线）。
+    spine_vertex_buffer: Option<wgpu::Buffer>,
+    spine_vertex_capacity: u64,
+    spine_index_buffer: Option<wgpu::Buffer>,
+    spine_index_capacity: u64,
     /// docs/54 §4.3 后处理：宿主声明（`None` = 关闭，也就是回滚档）。
     post_process: Option<PostProcess>,
     post_process_pipeline: wgpu::RenderPipeline,
@@ -1379,6 +1382,7 @@ pub struct Renderer {
     hdr_scene_size: (u32, u32),
     hdr_world_sprite_pipeline: Option<wgpu::RenderPipeline>,
     hdr_world_sprite_opaque_pipeline: Option<wgpu::RenderPipeline>,
+    hdr_world_sprite_additive_pipeline: Option<wgpu::RenderPipeline>,
     /// Tonemap 全屏管线（输入 HDR 场景、输出 LDR 目标）。能力不足时为 `None`。
     tonemap_pipeline: Option<wgpu::RenderPipeline>,
     tonemap_params: wgpu::Buffer,
@@ -1422,6 +1426,9 @@ pub struct Renderer {
     planar_camera_bind_group: wgpu::BindGroup,
     /// M91/M92：特效叠加层（场景色/深度输入；空 = 关档，渲染路径与旧版相同）。
     effect_overlays: Vec<EffectOverlay>,
+    /// M96：按名字挂的叠加层（`.prefab` 特效预设）。与上面的 `effect_overlays` 分开存：
+    /// 工程级常驻特效不该被逻辑里的 `effect.stop` 撤掉，两者的生命周期本就不同。
+    named_effect_overlays: Vec<(String, EffectOverlay)>,
     effect_scene_texture: Option<wgpu::Texture>,
     effect_scene_view: Option<wgpu::TextureView>,
     effect_scene_size: (u32, u32),
@@ -1952,7 +1959,9 @@ impl Renderer {
 
     /// M86：设置自定义特效叠加层 —— Shader Graph 生成 WGSL 的运行时入口。
     ///
-    /// 契约见 [`effect_overlay`] 模块注释（`vs_main` / `fs_main` + `EffectParams` uniform）。
+    /// 契约见 `effect_overlay` 模块注释（`vs_main` / `fs_main` + `EffectParams` uniform）。
+    /// 这里**不**写成 intra-doc 链接：那个模块是私有的，公开文档链接私有项会被
+    /// `rustdoc::private_intra_doc_links` 拒（`cargo doc -D warnings` 因此判红）。
     /// - `None` ⇒ 关闭，渲染路径与以前逐字节相同；
     /// - `Some(source)` ⇒ 编译失败返回错误并**保留旧叠加层**（不会把画面整块弄黑）。
     pub fn set_effect_overlay(&mut self, source: Option<&str>) -> Result<(), EffectOverlayError> {
@@ -1975,9 +1984,12 @@ impl Renderer {
     }
 
     /// 当前是否有自定义特效叠加层（诊断/验收用）。
+    ///
+    /// 含按名字挂的层：`effect.play` 之后 `effect_overlay_active()` 必须为真，
+    /// 否则宿主会以为没挂上而跳过整条离屏路径。
     #[must_use]
     pub fn effect_overlay_active(&self) -> bool {
-        !self.effect_overlays.is_empty()
+        !self.effect_overlays.is_empty() || !self.named_effect_overlays.is_empty()
     }
 
     /// 任一叠加层依赖场景色/深度时才需要离屏渲染 + 回拷。
@@ -1985,13 +1997,18 @@ impl Renderer {
     pub fn effect_overlays_need_scene(&self) -> bool {
         self.effect_overlays
             .iter()
+            .chain(
+                self.named_effect_overlays
+                    .iter()
+                    .map(|(_, overlay)| overlay),
+            )
             .any(|overlay| overlay.needs_scene())
     }
 
-    /// 当前叠加层数量（诊断/验收用）。
+    /// 当前叠加层数量（诊断/验收用；含命名层）。
     #[must_use]
     pub fn effect_overlay_count(&self) -> usize {
-        self.effect_overlays.len()
+        self.effect_overlays.len() + self.named_effect_overlays.len()
     }
 
     /// 追加一层特效叠加（不清掉已有的层）——同一帧多个 `.sgraph` 按 push 顺序叠加。
@@ -2013,8 +2030,87 @@ impl Renderer {
         self.effect_overlays.clear();
     }
 
+    /// 按名字设置/替换一层特效叠加（M96：`.prefab` 特效预设的运行时入口）。
+    ///
+    /// 与 [`Self::set_effect_overlay`] 的分工：
+    /// - 后者是"整层替换"，服务于 `project.toml [render] effect_overlay` 这个**工程级**常驻特效；
+    /// - 后者按名字管理，同一名字再次 `play` 时**替换**而不是叠加，因此逻辑里可以放心地
+    ///   每帧调 `effect.play("炎刃斩击")` 而不必先判断是否已在播（也顺带解决"重放要等上一
+    ///   次播完"的时序问题）。
+    ///
+    /// 名字用 `String` 而不是枚举：特效是资产，脚本里写的是资产名。
+    ///
+    /// 编译失败返回错误且**不改动已有层**——调用方可以安全地继续用旧画面。
+    pub fn set_named_effect_overlay(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<(), EffectOverlayError> {
+        self.set_named_effect_overlay_with_params(name, source, &[])
+    }
+
+    /// 同上，并在挂载的**同一步**写入该层参数槽（`.prefab` 预设的默认取值）。
+    ///
+    /// 为什么必须在这一步给：`EffectOverlay` 的槽位初值全是 0，而 0 在大多数模板里意味着
+    /// "半径 0 / 宽度 0"，画面结果就是**什么都不画**。分成两步（先挂、下一帧再 set_params）
+    /// 会让刚播的那一帧是空白的——招式起手那一帧恰好最显眼。
+    pub fn set_named_effect_overlay_with_params(
+        &mut self,
+        name: &str,
+        source: &str,
+        params: &[[f32; 4]],
+    ) -> Result<(), EffectOverlayError> {
+        let mut overlay = effect_overlay::EffectOverlay::new(
+            &self.device,
+            &self.queue,
+            self.config.format,
+            source,
+        )?;
+        // 传空 = 显式清零。重挂一层若沿用旧槽位，上一套预设的参数会"粘"在新画面上，
+        // 表现为换预设没换干净（比如颜色变了、半径还是旧的）。
+        overlay.set_params(params);
+        if let Some(existing) = self
+            .named_effect_overlays
+            .iter_mut()
+            .find(|(existing, _)| existing == name)
+        {
+            existing.1 = overlay;
+        } else {
+            self.named_effect_overlays.push((name.to_owned(), overlay));
+        }
+        Ok(())
+    }
+
+    /// 撤掉一层按名字挂的叠加；返回是否真的撤掉了（未知名字返回 `false`）。
+    pub fn remove_named_effect_overlay(&mut self, name: &str) -> bool {
+        let before = self.named_effect_overlays.len();
+        self.named_effect_overlays
+            .retain(|(existing, _)| existing != name);
+        self.named_effect_overlays.len() != before
+    }
+
+    /// 当前按名字挂着的叠加层名字（按挂载顺序）。
+    #[must_use]
+    pub fn named_effect_overlay_names(&self) -> Vec<String> {
+        self.named_effect_overlays
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// 按名字挂的叠加层数量（诊断/验收用）。
+    #[must_use]
+    pub fn named_effect_overlay_count(&self) -> usize {
+        self.named_effect_overlays.len()
+    }
+
     pub fn set_effect_time(&mut self, time: f32) {
         for overlay in &mut self.effect_overlays {
+            overlay.set_time(time);
+        }
+        // M96：命名层共用同一个时钟。单层引擎里"每层一个时钟"没有意义，
+        // 而分层时钟会让 `effect.stop` 里的 `set_effect_time` 静默丢失。
+        for (_, overlay) in &mut self.named_effect_overlays {
             overlay.set_time(time);
         }
     }
@@ -2023,8 +2119,14 @@ impl Renderer {
     ///
     /// 关键收益：**改参数不重编管线**——面板拖动滑杆只是重写这块 uniform，
     /// 运行时也可以逐帧调（将来接 Lua 时就是这一条路径）。
+    ///
+    /// 命名层同样接收这份参数：逻辑里 `effect.play` 之后直接 `render.set_effect_param`
+    /// 就能调它，不必区分"这层是工程挂的还是脚本挂的"。
     pub fn set_effect_params(&mut self, params: &[[f32; 4]]) {
         for overlay in &mut self.effect_overlays {
+            overlay.set_params(params);
+        }
+        for (_, overlay) in &mut self.named_effect_overlays {
             overlay.set_params(params);
         }
     }
@@ -2609,6 +2711,40 @@ impl Renderer {
         self.mesh_cache.len()
     }
 
+    /// 释放**所有可重建的缓存**，把常驻内存还给系统。
+    ///
+    /// 用途是编辑器"关闭工程 / 长时间空闲"这类"我暂时不画了"的时刻：网格、材质覆盖、
+    /// 生成的贴图、字体图集、矢量字形缓冲全部丢弃。它们都是**从资源文件重建的派生物**，
+    /// 下一次绘制会按需重新加载，所以释放不改变任何像素——只是让下次首帧慢一点。
+    ///
+    /// 不释放的东西（有意为之）：
+    /// - 管线缓存（重编要几百毫秒，且体积稳定不随场景增长）；
+    /// - `vertex_buffer`（容量复用正是它的价值，清掉反而要重新增长）；
+    /// - `readback` 槽（两个小 staging buffer，清掉会打断在途帧）。
+    ///
+    /// 返回释放掉的**估算字节数**（网格缓冲 + 贴图 + 字体），供调用方打印一行读数。
+    pub fn release_cached_resources(&mut self) -> u64 {
+        let before = self.resource_stats();
+
+        self.mesh_cache.clear();
+        self.mesh_slots.clear();
+        self.material_cache.clear();
+        // `textures` 是按索引被材质引用的，清空后索引全失效——材质缓存已经一起清了，
+        // 下一次绘制会按路径重新注册，索引从头分配。
+        self.textures.clear();
+        self.texture_slots.clear();
+        self.albedo_textures.clear();
+        self.custom_fonts.clear();
+        self.font_atlas_texture = None;
+        self.vector_glyph_cache.clear();
+
+        let after = self.resource_stats();
+        before
+            .mesh_bytes
+            .saturating_add(before.texture_bytes)
+            .saturating_sub(after.mesh_bytes.saturating_add(after.texture_bytes))
+    }
+
     /// P3-R206 读数补全：本帧被最大绘制距离档剔掉的实例数（已含在 `frame_cull_frustum` 里）。
     #[must_use]
     pub fn frame_cull_distance(&self) -> u64 {
@@ -2702,6 +2838,9 @@ impl Renderer {
             pipeline_variant_misses: variant_stats.misses,
             pipeline_compile_ms: variant_stats.compile_ms(),
             readback: self.readback_metrics(),
+            cpu_vector_cache_bytes: (self.vector_glyph_cache.capacity()
+                + self.vector_segment_cache.capacity()) as u64,
+            async_cpu_buffered_bytes: self.async_loader.cpu_buffered_bytes(),
         }
     }
 }

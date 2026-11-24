@@ -352,8 +352,29 @@ impl CommandService {
         Ok(changed)
     }
 
-    /// Service-level undo that reports an outcome instead of the command label. `undo` and
-    /// `redo` themselves resolve to `CommandHistory` through `Deref`, so call sites that
+    /// 定向组件字段写入，**同样走预算裁剪**。
+    ///
+    /// 必须在这个类型上再包一层：`CommandHistory::execute_component_field` 通过 `Deref`
+    /// 也能调到，但那条路**不带** `enforce_budget()`——曾经因此让 undo 栈突破上限
+    /// （基线 `schema_field_edit_1k` 期望 200/800，实际 1000/0）。任何新增的写入入口
+    /// 都要在这里对齐，否则"上限"就只对其中一部分路径生效。
+    pub fn execute_component_field(
+        &mut self,
+        document: &mut SceneDocument,
+        entity: rustlua_scene::scene::SceneEntityId,
+        component: &str,
+        before: Option<String>,
+        after: String,
+        label: impl Into<String>,
+    ) -> bool {
+        let changed = self
+            .history
+            .execute_component_field(document, entity, component, before, after, label);
+        self.enforce_budget();
+        changed
+    }
+
+    /// Service-level undo that reports an outcome instead of the command label. `undo` and    /// `redo` themselves resolve to `CommandHistory` through `Deref`, so call sites that
     /// need the label keep working unchanged.
     pub fn undo_applied(&mut self, document: &mut SceneDocument) -> CommandResult {
         match self.history.undo(document) {

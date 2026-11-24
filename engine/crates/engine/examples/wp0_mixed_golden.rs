@@ -54,7 +54,7 @@ fn main() {
     );
     assert_eq!(scene3d.drawables.len(), 1, "网格墙应恰好一个 drawable");
     assert_eq!(
-        scene3d.drawables[0].name, "Wall",
+        &*scene3d.drawables[0].name, "Wall",
         "网格墙的名字变了：采样点基于它覆盖全屏"
     );
 

@@ -331,10 +331,16 @@ impl ProjectDocument {
 
 fn atomic_write_scene(path: &Path, scene: &Scene) -> Result<(), DocumentError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|error| DocumentError::Io {
-        path: parent.to_path_buf(),
-        message: error.to_string(),
-    })?;
+    // 目录已存在时**不调** `create_dir_all`：它虽然幂等，但每次仍要走一遍路径解析与系统调用。
+    // 在开着实时防护的 Windows 上这一下实测 2.5–7 ms，而 `exists()` 只要 ~14 µs
+    // （P0-5 在 96 字节的折叠状态文件上量的：exists 39.6 µs vs create_dir_all 2,472 µs）。
+    // 判定结果完全等价——`create_dir_all` 本来就是幂等的。
+    if !parent.exists() {
+        fs::create_dir_all(parent).map_err(|error| DocumentError::Io {
+            path: parent.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    }
     let token = unique_token();
     let temp = parent.join(format!(".{}.{}.tmp", file_name(path), token));
     let backup = parent.join(format!(".{}.{}.bak", file_name(path), token));
@@ -344,6 +350,29 @@ fn atomic_write_scene(path: &Path, scene: &Scene) -> Result<(), DocumentError> {
         message: error.to_string(),
     })?;
     // 替换正式文件前重新加载临时文件，确保落盘内容可被引擎解析。
+    //
+    // **P0-5 结论（2026-11-19）：这一步保留，不要为了性能删掉。**
+    // 它是纯 CPU 的完整反序列化，10,000 实体档实测 24 ms（`to_text` 6.9 ms +
+    // 回读 24.3 ms ≈ 写盘段全部），确实贵。但保存是**低频**操作（用户按 Ctrl+S，
+    // 不是每帧），32 ms 与 8 ms 在人的感知上没有区别；而它拦的是"序列化器写出了
+    // 引擎自己都读不回来的文件"——那种情况下如果不拦，好文件已经被 rename 覆盖掉了。
+    //
+    // 已经评估过的替代方案，都**不采用**：
+    // - 加个 `--skip-save-verify` 开关：给防线开了个默认以外的口子，实践中一定会被打开；
+    // - 内容哈希相同才跳过：哈希判定本身要遍历整棵场景，省不下多少，还多一份状态要维护。
+    //
+    // 如果将来保存真的变成高频路径（例如带自动保存且工程达数十万实体），
+    // 正确的方向是**让序列化器自身可证明正确**（round-trip property test 覆盖所有组件类型），
+    // 而不是在每次保存时现场验一遍。
+    //
+    // 诚实记录：**没有测试专门守这一行**。`invalid_scene_does_not_modify_original_or_clear_dirty`
+    // 验的是 `version=999` 被拒，但那个错误由 `save_to` 开头的 `scene.validate()` 更早报出，
+    // 走不到这里（实测：把本行改成 `if false`，那条测试仍然是绿的）。
+    //
+    // 所以保的是它的**前提**：`rustlua-scene` 的
+    // `escape_roundtrip_preserves_separators_and_multibyte_text` 把"自己写出的文本自己
+    // 一定读得回来"钉住了（含 Tab/换行/反斜杠/多字节字符）。只要序列化自洽，本行就不会失败；
+    // 一旦有人把转义改坏，那条测试会先红，而不是等到用户保存时才发现文件废了。
     if let Err(error) = Scene::load(&temp) {
         let _ = fs::remove_file(&temp);
         return Err(DocumentError::Scene(error));

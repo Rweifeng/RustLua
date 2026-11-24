@@ -38,10 +38,10 @@ fn main() {
     let warrior_baseline = baseline
         .drawables
         .iter()
-        .find(|d| d.name == "SkeletonWarrior")
+        .find(|d| &*d.name == "SkeletonWarrior")
         .expect("SkeletonWarrior drawable");
     assert_eq!(
-        warrior_baseline.mesh_path, HI_MESH,
+        &*warrior_baseline.mesh_path, HI_MESH,
         "基线网格应为 warrior（LOD 未注入时用 renderer.mesh）"
     );
 
@@ -85,10 +85,10 @@ fn main() {
     let warrior_near = near
         .drawables
         .iter()
-        .find(|d| d.name == "SkeletonWarrior")
+        .find(|d| &*d.name == "SkeletonWarrior")
         .expect("SkeletonWarrior near");
     assert_eq!(
-        warrior_near.mesh_path, HI_MESH,
+        &*warrior_near.mesh_path, HI_MESH,
         "近相机（距离 < {LOD_THRESHOLD}）应保持基础级网格 warrior，实际 {}",
         warrior_near.mesh_path
     );
@@ -111,10 +111,10 @@ fn main() {
     let warrior_far = far
         .drawables
         .iter()
-        .find(|d| d.name == "SkeletonWarrior")
+        .find(|d| &*d.name == "SkeletonWarrior")
         .expect("SkeletonWarrior far");
     assert_eq!(
-        warrior_far.mesh_path, LO_MESH,
+        &*warrior_far.mesh_path, LO_MESH,
         "远相机（距离 > {LOD_THRESHOLD}）应切到低细节 triangle，实际 {}",
         warrior_far.mesh_path
     );
@@ -171,14 +171,14 @@ fn main() {
         "target": {"width": WIDTH, "height": HEIGHT},
         "adapter": {"name": info.name, "backend": format!("{:?}", info.backend)},
         "semantic": {
-            "baseline_mesh": warrior_baseline.mesh_path,
-            "near_camera_mesh": warrior_near.mesh_path,
-            "far_camera_mesh": warrior_far.mesh_path,
+            "baseline_mesh": &*warrior_baseline.mesh_path,
+            "near_camera_mesh": &*warrior_near.mesh_path,
+            "far_camera_mesh": &*warrior_far.mesh_path,
             "lod_threshold": LOD_THRESHOLD,
             "near_distance": 3.0,
             "far_distance": 19.9,
-            "near_keeps_hi": warrior_near.mesh_path == HI_MESH,
-            "far_switches_lo": warrior_far.mesh_path == LO_MESH,
+            "near_keeps_hi": &*warrior_near.mesh_path == HI_MESH,
+            "far_switches_lo": &*warrior_far.mesh_path == LO_MESH,
             "pixels_differ": diff,
             "near_content": near_content,
             "far_content": far_content,

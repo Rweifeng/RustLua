@@ -127,6 +127,7 @@ impl Splash {
 
     pub fn mesh(&self, width: u32, height: u32) -> SceneMesh {
         SceneMesh {
+            spines: rustlua_render::spine_mesh::SpineMesh::default(),
             vertices: quad(self.width, self.height, width, height).to_vec(),
             draws: vec![SceneDraw::screen_ui(1, 0, 6)],
             paths: vec![TEXTURE_KEY.to_owned()],

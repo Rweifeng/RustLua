@@ -159,14 +159,23 @@ pub struct GameApp {
     /// P3-R05-4：开发期 shader 覆盖目录（`--shader-dir`/`RUSTLUA_SHADER_DIR`）。
     /// `None` = 不监听，`Renderer` 只用编译期内嵌的源。
     shader_dir: Option<PathBuf>,
-    /// M88：`project.toml [render] effect_overlay` 指向的工程内 `.sgraph`。
-    effect_overlay: Option<String>,
+    /// M88：**启动场景**声明的特效叠加层（`.scene` 的 `meta\teffect_overlay`）。
+    ///
+    /// 不再从 `project.toml [render]` 注入：那是工程级配置，会让每个场景都带上同一个
+    /// 特效（切到纯 2D / 纯音频场景也有刀光）。现在由 `attach_effect_overlay` 现读
+    /// `runtime_scene`，来源是场景本身。
+    effect_overlay_applied: bool,
     /// 已挂载叠加层的参数槽值（每帧写回 uniform）与挂载时刻（推进 `time`）。
     effect_overlay_slots: Option<Vec<[f32; 4]>>,
     effect_clock_start: Option<Instant>,
     /// M95：`.sgraph` 命名参数表与默认值（挂载叠加层时缓存，运行时场景建好后推给脚本层）。
     effect_param_names: Option<Vec<(String, usize, usize)>>,
     effect_param_defaults: Option<Vec<[f32; 4]>>,
+    /// M96：`effect.play` 挂上的每层特效各自的起始时刻。
+    ///
+    /// 为什么不是共用 `effect_clock_start`：招式特效必须**从 0 开始**一次。共用宿主时钟
+    /// 会让第二刀接着第一刀的相位扫出去，看起来像"卡住不动"。
+    effect_layer_clocks: std::collections::BTreeMap<String, Instant>,
     /// 下一次检查覆盖目录的时刻（`None` = 不检查）。每次检查都往后推一个去抖窗口。
     shader_reload_due: Option<Instant>,
     /// 已经打过的重载失败文本：同一条坏源每 150ms 重复报一次会把日志刷废。
@@ -279,11 +288,12 @@ impl GameApp {
             exit_after_frames: None,
             presented_frames: 0,
             shader_dir: None,
-            effect_overlay: None,
+            effect_overlay_applied: false,
             effect_overlay_slots: None,
             effect_clock_start: None,
             effect_param_names: None,
             effect_param_defaults: None,
+            effect_layer_clocks: std::collections::BTreeMap::new(),
             shader_reload_due: None,
             shader_error_shown: None,
             script_cadence: rustlua_infra::hot_reload::ReloadCadence::script_default(),
@@ -495,13 +505,6 @@ impl GameApp {
     #[must_use]
     pub fn with_clip_cap_both_sides(mut self, enabled: bool) -> Self {
         self.clip_cap_both_sides = enabled;
-        self
-    }
-
-    /// M88：`project.toml [render] effect_overlay` 的工程内 `.sgraph` 路径。
-    #[must_use]
-    pub fn with_effect_overlay(mut self, path: Option<String>) -> Self {
-        self.effect_overlay = path;
         self
     }
 
@@ -941,11 +944,25 @@ impl GameApp {
         }
     }
 
-    /// M88：把 `[render] effect_overlay` 指向的 `.sgraph` 编译成叠加层挂到渲染器上。
+    /// M88：把**启动场景**声明的 `.sgraph` 编译成叠加层挂到渲染器上。
+    ///
+    /// 来源是 `runtime_scene`（读自 `.scene` 的 `meta\teffect_overlay`），不是
+    /// `project.toml [render]`：后者是工程级配置，会让每个场景都带上同一个特效。
     ///
     /// 失败只记日志、不阻止启动：坏资产应该表现为"没有特效"，而不是游戏起不来。
     fn attach_effect_overlay(&mut self, renderer: &mut Renderer) {
-        let Some(relative) = self.effect_overlay.clone() else {
+        if self.effect_overlay_applied {
+            return;
+        }
+        self.effect_overlay_applied = true;
+        let relative = self
+            .runtime_scene
+            .as_ref()
+            .and_then(|scene| scene.effect_overlay())
+            .map(str::to_owned);
+        let Some(relative) = relative else {
+            // 场景没声明：显式撤掉，别沿用渲染器里可能残留的上一层。
+            let _ = renderer.set_effect_overlay(None);
             return;
         };
         let Some(root) = self.project_root.clone() else {
@@ -990,6 +1007,13 @@ impl GameApp {
         }
     }
 
+    /// M96：执行脚本的 `effect.play` / `effect.stop`——按 `.prefab` 特效预设挂/撤叠加层。
+    ///
+    /// 与启动期 `attach_effect_overlay` 的分工：那条读 `project.toml` 的工程级常驻特效，
+    /// 这条服务逻辑里"打一下"的招式/受击特效。两者存在不同的层里，所以 `effect.stop`
+    /// 撤不掉工程级那一层（那是配置的意图，不该被脚本改写）。
+    ///
+    /// 失败只记日志：一次播放失败应该表现为"这一下没有特效"，而不是把整帧渲染断掉。
     /// P3-R05-4：把覆盖目录接到刚建好的渲染器上（只有显式开启时才做一次）。
     ///
     /// 失败**不**阻止启动，也**不**关监听：项目里一份坏 `.wgsl` 只该让画面停在旧管线上并
@@ -1244,6 +1268,7 @@ impl GameApp {
                 .vertices(design_w, design_h)
                 .map_err(|error| error.to_string()),
             None => Ok(SceneMesh {
+                spines: rustlua_render::spine_mesh::SpineMesh::default(),
                 vertices: Vec::new(),
                 draws: Vec::new(),
                 world_sprites: Vec::new(),
@@ -1530,6 +1555,17 @@ impl GameApp {
                 renderer.set_effect_params(slots);
             }
         }
+        // M96：脚本触发的多层特效各自计时，取**最年轻**的那层作为本帧的统一时间。
+        // 单层时钟是引擎现状（`set_effect_time` 写给所有层），所以这里只在有脚本层时覆盖；
+        // 没脚本层就保持上面工程级常驻特效的时钟，行为与旧版逐字节相同。
+        if let Some(time) = self
+            .effect_layer_clocks
+            .values()
+            .max()
+            .map(|start| start.elapsed().as_secs_f32())
+        {
+            renderer.set_effect_time(time);
+        }
         // M94：脚本逐帧覆盖时间与参数（`render.set_effect_time` / `render.set_effect_params`）。
         // 优先级高于宿主默认值：脚本写了就听脚本的，没写就保持宿主时钟/模板默认参数。
         if let Some(seconds) = self
@@ -1545,6 +1581,23 @@ impl GameApp {
             .and_then(|scene| scene.render_effect_params())
         {
             renderer.set_effect_params(&slots);
+        }
+        // M96：脚本 `effect.play` / `effect.stop`。意图在提交前消费——加载失败的报错要落在
+        // 这一帧的日志里，而不是攒到下一帧。
+        // 这里**先**把意图取出来再调用：`apply_effect_command` 还要动 `self.runtime_scene`
+        // 与计时表，而 `renderer` 已经借了 `self`，所以命令的消费不能放在它的参数位置上。
+        let effect_command = self
+            .runtime_scene
+            .as_mut()
+            .and_then(|scene| scene.take_effect_command());
+        if let Some(command) = effect_command {
+            apply_effect_command(
+                &self.project_root,
+                self.runtime_scene.as_mut(),
+                &mut self.effect_layer_clocks,
+                renderer,
+                command,
+            );
         }
         let outcome = renderer.render(&mesh, scene3d.as_ref());
         host_phases.submit = submit_started.elapsed();
@@ -1714,6 +1767,95 @@ impl GameApp {
         }
         if snapshot.frames.is_multiple_of(60) {
             tracing::info!(target: "engine", "[perf] fps={:.1} frame_ms={:.3} update_ms={:.3} lua_ms={:.3} frames={} overlay={}", snapshot.fps, snapshot.frame_ms, snapshot.update_ms, snapshot.lua_ms, snapshot.frames, self.overlay_enabled);
+        }
+    }
+}
+
+/// M96：执行脚本的 `effect.play` / `effect.stop`——按 `.prefab` 特效预设挂/撤叠加层。
+///
+/// 写成自由函数而不是 `GameApp` 的方法：调用点上 `renderer` 已经借走了 `self`，
+/// 再拿 `&mut self` 会撞两次可变借用；这里只接收真正要动的四件东西，借用关系一目了然。
+///
+/// 与启动期 `attach_effect_overlay` 的分工：那条读 `project.toml` 的工程级常驻特效，
+/// 这条服务逻辑里"打一下"的招式/受击特效。两者存在不同的层里，所以 `effect.stop`
+/// 撤不掉工程级那一层（那是配置的意图，不该被脚本改写）。
+///
+/// 失败只记日志：一次播放失败应该表现为"这一下没有特效"，而不是把整帧渲染断掉。
+fn apply_effect_command(
+    project_root: &Option<PathBuf>,
+    runtime_scene: Option<&mut RuntimeScene>,
+    clocks: &mut std::collections::BTreeMap<String, Instant>,
+    renderer: &mut Renderer,
+    command: rustlua_render::render_overrides::EffectCommand,
+) {
+    use rustlua_render::render_overrides::EffectCommand;
+    match command {
+        EffectCommand::Play { prefab, name } => {
+            let Some(root) = project_root.clone() else {
+                tracing::warn!(
+                    target: "render",
+                    preset = %prefab,
+                    "effect.play 需要工程根目录才能解析预设路径，已跳过"
+                );
+                return;
+            };
+            let preset = match rustlua_visual_script::effect_prefab::EffectPrefab::load(
+                &root, &prefab,
+            ) {
+                Ok(preset) => preset,
+                Err(error) => {
+                    tracing::error!(target: "render", preset = %prefab, "特效预设加载失败：{error}");
+                    return;
+                }
+            };
+            // 实例名：脚本给了就用它的（同一名字重播 = 替换），否则用预设自己的名字。
+            let layer_name = if name.is_empty() {
+                preset.name.clone()
+            } else {
+                name
+            };
+            // 参数与挂载**同一步**写入：预设的覆盖值已经合进 slots，晚一帧就是"起手那一帧空白"。
+            if let Err(error) = renderer.set_named_effect_overlay_with_params(
+                &layer_name,
+                &preset.source,
+                &preset.compiled.slots,
+            ) {
+                tracing::error!(
+                    target: "render",
+                    preset = %prefab,
+                    name = %layer_name,
+                    "特效预设编译失败：{error}"
+                );
+                return;
+            }
+            // 参数表紧跟挂载推送：预设的覆盖值已合并进 slots，脚本后续只写它要改的那几个。
+            if let Some(scene) = runtime_scene {
+                scene.set_effect_param_names(preset.param_names(), preset.compiled.slots.clone());
+            }
+            // 新挂的层从 0 开始计时——重播一次刀光，弧要从头扫而不是接上一次的相位。
+            clocks.insert(layer_name.clone(), Instant::now());
+            tracing::info!(
+                target: "render",
+                preset = %prefab,
+                name = %layer_name,
+                params = preset.compiled.params.len(),
+                "特效预设已播放"
+            );
+        }
+        EffectCommand::Stop { name } => {
+            if name.is_empty() {
+                let layers = renderer.named_effect_overlay_names();
+                for layer in &layers {
+                    renderer.remove_named_effect_overlay(layer);
+                    clocks.remove(layer);
+                }
+                tracing::info!(target: "render", count = layers.len(), "特效预设已全部停止");
+            } else if renderer.remove_named_effect_overlay(&name) {
+                clocks.remove(&name);
+                tracing::info!(target: "render", name = %name, "特效预设已停止");
+            } else {
+                tracing::warn!(target: "render", name = %name, "effect.stop 找不到该特效层");
+            }
         }
     }
 }

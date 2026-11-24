@@ -25,6 +25,7 @@ fn soft_edge_renderer() -> Option<(wgpu::Device, wgpu::Queue, Renderer)> {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -51,8 +52,8 @@ fn ground_scene(camera: Camera3D, viewport: Viewport) -> Scene3d {
         point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
             material: None,
             mesh_handle: Some(AssetHandle::new(0, 1)),
             model,

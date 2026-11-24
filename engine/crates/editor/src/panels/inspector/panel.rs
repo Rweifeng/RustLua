@@ -74,6 +74,14 @@ impl EditorApp {
                             let rel = entry.path_string();
                             self.draw_model_preview(ui, &rel);
                         }
+                        // Shader Graph（.sgraph）：就地跑一次真实 GPU 渲染，看到的就是这份图的效果。
+                        // 与 Shader Graph 面板的预览共用同一台离屏渲染器与同一份包装着色器，
+                        // 所以"属性面板看到的"不会和面板里长得不一样。
+                        if entry.kind == rustlua_assets::resource_kind::ResourceKind::ShaderGraph {
+                            ui.separator();
+                            let rel = entry.path_string();
+                            self.draw_shader_asset_preview(ui, &rel);
+                        }
                         // 导入设置（模型缩放 / 音频音量 / 字体字重）：写 `resources.meta`。
                         let rel = entry.path_string();
                         self.draw_import_settings(ui, entry.kind, &rel);
@@ -1173,6 +1181,68 @@ impl EditorApp {
             } else {
                 self.mark_inspector_edit();
             }
+        }
+    }
+
+    /// 属性面板里的 `.sgraph` 预览（M99）。
+    ///
+    /// 三条约束决定了这里的样子：
+    /// 1. **只在选中 `.sgraph` 时出现**——属性面板是"看当前选中项"的地方，没选中图就不该
+    ///    常驻一块空预览；
+    /// 2. **真实 GPU 渲染**，不是缩略图：坏图要能立刻看到错误（红字），而不是一张占位图；
+    /// 3. **预览器按路径复用**：选中不同文件时重编管线，同一个文件反复选中不重建。
+    pub(crate) fn draw_shader_asset_preview(&mut self, ui: &mut egui::Ui, relative: &str) {
+        ui.label(egui::RichText::new("特效预览").strong());
+        let Some((device, queue)) = self.gpu.clone() else {
+            ui.label(
+                egui::RichText::new("实时预览需要 GPU 设备（当前是软件渲染路径）")
+                    .small()
+                    .color(egui::Color32::from_gray(170)),
+            );
+            return;
+        };
+        let preview = self.shader_asset_preview.get_or_insert_with(|| {
+            crate::panels::shader_graph_preview::AssetShaderPreview::new(&device, &queue, relative)
+        });
+        preview.retarget(relative);
+
+        let dt = ui.input(|input| input.stable_dt);
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        preview.render_async(ui.ctx(), &root, 1.0, dt);
+        preview.draw(ui);
+
+        // 模板说明：按图名反查内置模板（面板里同一份文案来源）。
+        //
+        // 注意：匹配不到**不是错误**——示例工程的炎刃斩击就是手工合成的图。所以措辞要
+        // 说明"它是自定义图"，而不是让人以为模板识别失败了。
+        let graph_name = preview.graph.as_ref().map(|graph| graph.name.clone());
+        let template_name = graph_name.as_deref().and_then(|name| {
+            rustlua_visual_script::shader_graph::ShaderTemplate::ALL
+                .iter()
+                .find(|template| template.id() == name || template.graph().name == name)
+                .map(|template| template.name_zh())
+        });
+        match template_name {
+            Some(template) => {
+                ui.label(
+                    egui::RichText::new(format!("模板：{template}"))
+                        .small()
+                        .weak(),
+                );
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "自定义图：{}（手工合成的节点图，不对应单个内置模板）",
+                        graph_name.unwrap_or_else(|| "未命名".to_owned())
+                    ))
+                    .small()
+                    .weak(),
+                );
+            }
+        }
+        if ui.button("在 Shader Graph 面板中打开").clicked() {
+            self.pending_open_shader_graph = Some(relative.to_owned());
         }
     }
 }

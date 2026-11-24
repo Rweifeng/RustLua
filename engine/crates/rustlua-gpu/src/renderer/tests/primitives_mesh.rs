@@ -80,8 +80,8 @@ fn primitive_drawable(spec: &PrimitiveSpec) -> Scene3dDrawable {
     let (min, max) = spec.bounds();
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "Primitive".to_owned(),
-        mesh_path: spec.mesh_path(),
+        name: "Primitive".to_owned().into(),
+        mesh_path: spec.mesh_path().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),
@@ -99,6 +99,7 @@ fn primitive_drawable(spec: &PrimitiveSpec) -> Scene3dDrawable {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -297,7 +298,7 @@ fn invalid_primitive_spec_is_skipped_not_dropped() {
     // 先用一张合法 plane 确认夹具能画，再换坏串。
     assert!(frame.draw_calls >= 1, "夹具本身必须能画");
     let mut drawable = primitive_drawable(&PrimitiveSpec::Plane { w: 1.0, h: 1.0 });
-    drawable.mesh_path = bogus;
+    drawable.mesh_path = bogus.into();
     let bad = fixture.render(vec![drawable]);
     println!(
         "primitive_bogus draws={} triangles={} dropped={}",

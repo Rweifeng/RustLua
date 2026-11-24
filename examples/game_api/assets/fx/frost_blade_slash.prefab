@@ -1,0 +1,17 @@
+# 特效预设：冷蓝斩击——同一张 .sgraph，只换参数（转速更慢、色相偏冷、弧更细）。
+# 这条预设就是"预设的价值在参数"的示范：改画面不需要改图、不需要改代码。
+prefab_version=1
+kind=effect
+name=冷蓝斩击
+graph=assets/fx/flame_blade_slash.sgraph
+overlay=true
+param	spin	1.4
+param	center_x	0.46
+param	center_y	0.50
+param	radius	0.16
+param	speed	1.5
+param	frequency	5.0
+param	thickness	0.05
+param	color_r	0.35
+param	color_g	0.72
+param	color_b	1.0

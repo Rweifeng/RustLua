@@ -13,12 +13,13 @@ use rustlua_math::math3d::{Aabb3, Mat4, Vec3};
 use rustlua_render::frame::{Scene3d, SceneMesh};
 use rustlua_render::instance_batch::InstanceBatch3D;
 use rustlua_render::mesh3d::MaterialAlphaMode;
+use rustlua_render::spine_mesh::{SpineBlendMode, SpineMesh};
 use rustlua_render::water::WaterSpec;
 
 use super::{
     DepthPass, FrameDraw, FrameGpuMotion, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
-    apply_declared_viewport, max_model_scale, record_dropped_draw, record_set_pass,
-    record_vertex_draw, scaled_model,
+    apply_declared_viewport, max_model_scale, record_draw_call, record_dropped_draw,
+    record_set_pass, record_vertex_draw, scaled_model,
 };
 use rustlua_render::frame::WorldSpriteVertex;
 
@@ -84,7 +85,53 @@ pub(super) fn resolve_world_sprite_view(
 pub(super) const WORLD_SPRITE_BUFFER_BYTES: u64 =
     4096 * std::mem::size_of::<WorldSpriteVertex>() as u64;
 
+/// M84 P1：Spine 索引绘制单独记账，不套用 mesh3d 的 `record_indexed_draw`
+/// （那条会污染 `mesh3d_draw_calls` 读数）。
+fn record_spine_draw(metrics: &mut RenderFrameMetrics, index_count: u32) {
+    record_draw_call(metrics);
+    metrics.triangles += u64::from(index_count) / 3;
+}
+
 impl Renderer {
+    /// M84 P1：上传 Spine 顶点/索引。缓冲懒创建，空帧不碰设备资源。
+    ///
+    /// 索引使用 u32，与引擎的 mesh3d GPU 路径一致；其字节长度天然满足 `write_buffer` 的 4 字节对齐。
+    fn upload_spine_geometry(&mut self, spine: &SpineMesh) {
+        if spine.is_empty() {
+            return;
+        }
+        let vertex_bytes = bytemuck::cast_slice(&spine.vertices);
+        let index_bytes = bytemuck::cast_slice(&spine.indices);
+        let vlen = vertex_bytes.len() as u64;
+        let ilen = index_bytes.len() as u64;
+        if self.spine_vertex_buffer.is_none() || self.spine_vertex_capacity < vlen {
+            let size = vlen.max(4096).next_power_of_two();
+            self.spine_vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-spine-vertices"),
+                size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.spine_vertex_capacity = size;
+        }
+        if self.spine_index_buffer.is_none() || self.spine_index_capacity < ilen {
+            let size = ilen.max(4096).next_power_of_two();
+            self.spine_index_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rustlua-spine-indices"),
+                size,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.spine_index_capacity = size;
+        }
+        if let Some(buffer) = self.spine_vertex_buffer.as_ref() {
+            self.queue.write_buffer(buffer, 0, vertex_bytes);
+        }
+        if let Some(buffer) = self.spine_index_buffer.as_ref() {
+            self.queue.write_buffer(buffer, 0, index_bytes);
+        }
+    }
+
     /// 决定本帧世界 Sprite 用哪个视图/深度附件，并把顶点与相机 uniform 准备好。
     ///
     /// 视图来源优先级（docs/54 §8-③/④）：
@@ -101,6 +148,8 @@ impl Renderer {
         let bytes = bytemuck::cast_slice(&mesh.world_sprites);
         self.ensure_world_sprite_capacity(bytes.len() as u64);
         self.queue.write_buffer(&self.world_sprite_buffer, 0, bytes);
+        // M84 P1：Spine 几何与世界 Sprite 共用相机/深度，但顶点/索引单独上传。
+        self.upload_spine_geometry(&mesh.spines);
         let view = resolve_world_sprite_view(
             self.frame_views.main,
             self.frame_views.overlay,
@@ -143,6 +192,7 @@ impl Renderer {
         pass_kind: DepthPass,
         hdr: bool,
         draws: &[rustlua_render::sprite_batch::SpriteDrawBatch],
+        spines: &SpineMesh,
         paths: &[String],
         handles: &[AssetHandle],
         filter: SpritePassFilter,
@@ -157,7 +207,13 @@ impl Renderer {
                 SpritePassFilter::All => true,
             })
             .collect();
-        if selected.is_empty() {
+        // Spine 只在半透明/全量段画一次（Opaque 段是共享深度时的不透明精灵预通道）。
+        let spine_active = !spines.is_empty()
+            && matches!(
+                filter,
+                SpritePassFilter::Translucent | SpritePassFilter::All
+            );
+        if selected.is_empty() && !spine_active {
             return;
         }
         let pipeline = if hdr {
@@ -248,6 +304,109 @@ impl Renderer {
                 0..1,
             );
             record_vertex_draw(metrics, draw.vertex_count as u32);
+        }
+
+        // M84 P1：Spine 索引三角网格。与 world sprite 共用同一 render pass、相机与深度附件，
+        // 但换成独立的顶点/索引缓冲；draw order 原序提交，绝不按纹理合批。
+        if spine_active {
+            if let (Some(vertex_buffer), Some(index_buffer)) =
+                (&self.spine_vertex_buffer, &self.spine_index_buffer)
+            {
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            } else {
+                record_dropped_draw(metrics);
+                tracing::warn!(
+                    target: "render",
+                    "[runtime] spine draw dropped: geometry buffers unavailable"
+                );
+            }
+            // M84 P2-③：按 blend 切管线。Normal 用半透明主管线，Additive 用 additive 变体。
+            // 管线切换只在"混合模式变了"时发生——同一实体的 draw 通常同 blend，因此
+            // 一份骨架一般只切一次。
+            let mut current_blend: Option<SpineBlendMode> = None;
+            let mut spine_pipeline_failed = false;
+            for draw in &spines.draws {
+                if draw.premultiplied_alpha {
+                    // PMA 需要预乘变体 shader（颜色通道已预乘，混合方程要换成 ONE/ONE_MINUS_SRC_ALPHA）。
+                    // P2-③ 只放开 blend，PMA 仍明确拒绝并计数——不静默错色。
+                    record_dropped_draw(metrics);
+                    tracing::warn!(
+                        target: "render",
+                        blend = draw.blend.as_str(),
+                        "[runtime] spine draw skipped: PMA (premultiplied alpha) not implemented yet"
+                    );
+                    continue;
+                }
+                let blend = match draw.blend {
+                    SpineBlendMode::Normal => SpineBlendMode::Normal,
+                    SpineBlendMode::Additive => SpineBlendMode::Additive,
+                    other => {
+                        // Multiply / Screen 需要不同的混合方程；P2-③ 先只做 additive。
+                        record_dropped_draw(metrics);
+                        tracing::warn!(
+                            target: "render",
+                            blend = other.as_str(),
+                            "[runtime] spine draw skipped: only Normal and Additive are implemented"
+                        );
+                        continue;
+                    }
+                };
+                if current_blend != Some(blend) {
+                    let Some(pipeline) = self.spine_pipeline_for(blend, hdr) else {
+                        record_dropped_draw(metrics);
+                        if !spine_pipeline_failed {
+                            spine_pipeline_failed = true;
+                            tracing::warn!(
+                                target: "render",
+                                blend = blend.as_str(),
+                                hdr,
+                                "[runtime] spine draw dropped: no pipeline for blend"
+                            );
+                        }
+                        continue;
+                    };
+                    pass.set_pipeline(pipeline);
+                    current_blend = Some(blend);
+                }
+                let texture = draw.texture + 1;
+                let Some(bind) = self.bind_group_for(texture, paths, handles) else {
+                    record_dropped_draw(metrics);
+                    tracing::warn!(
+                        target: "render",
+                        texture,
+                        "[runtime] spine draw dropped: bind group unavailable"
+                    );
+                    continue;
+                };
+                pass.set_bind_group(1, &bind, &[]);
+                pass.draw_indexed(
+                    draw.first_index..draw.first_index + draw.index_count,
+                    0,
+                    0..1,
+                );
+                record_spine_draw(metrics, draw.index_count);
+            }
+        }
+    }
+
+    /// 按 blend 与是否 HDR 选 Spine 用的管线（M84 P2-③）。
+    ///
+    /// 返回 `None` 表示这条变体没建出来——HDR 变体只在 `capabilities.hdr_usable()` 时存在，
+    /// 此时调用方按 dropped 计数，不静默空转。
+    fn spine_pipeline_for(
+        &self,
+        blend: SpineBlendMode,
+        hdr: bool,
+    ) -> Option<&wgpu::RenderPipeline> {
+        match (hdr, blend) {
+            (true, SpineBlendMode::Normal) => self.hdr_world_sprite_pipeline.as_ref(),
+            (true, SpineBlendMode::Additive) => self.hdr_world_sprite_additive_pipeline.as_ref(),
+            // Multiply/Screen 在绘制循环里已被拦下，不会走到这里；落到 None 也算 dropped。
+            (true, _) => None,
+            (false, SpineBlendMode::Normal) => Some(&self.world_sprite_pipeline),
+            (false, SpineBlendMode::Additive) => Some(&self.world_sprite_additive_pipeline),
+            (false, _) => None,
         }
     }
 
@@ -373,9 +532,9 @@ impl Renderer {
                     // 认不出路径时按近档处理（与"没有 LOD 时全画"等价，不会重复画）。
                     let lod_side = lod.as_ref().map(|lod| {
                         let far_distance = lod.far_distance.unwrap_or(0.0);
-                        let side = if lod.mesh == drawable.mesh_path {
+                        let side = if lod.mesh.as_str() == &*drawable.mesh_path {
                             2
-                        } else if lod.far_mesh.as_deref() == Some(drawable.mesh_path.as_str()) {
+                        } else if lod.far_mesh.as_deref() == Some(&*drawable.mesh_path) {
                             3
                         } else {
                             1
@@ -526,7 +685,7 @@ impl Renderer {
                     {
                         let group = groups
                             .entry((
-                                drawable.mesh_path.as_str(),
+                                &drawable.mesh_path,
                                 prim_index,
                                 drawable.material.as_deref(),
                             ))
@@ -597,18 +756,28 @@ impl Renderer {
                 }
             }
         }
-        let mut largest_groups: Vec<(usize, String)> = groups
-            .iter()
-            .map(|((path, primitive, material), group)| {
-                (
-                    group.models.len(),
-                    format!("{}#{}@{}", path, primitive, material.unwrap_or("<default>")),
-                )
-            })
-            .collect();
-        largest_groups.sort_by_key(|group| std::cmp::Reverse(group.0));
-        largest_groups.truncate(6);
         let instanced_group_count = groups.len();
+        // P2-2a：`largest_groups` 只服务每 120 帧一次的基线日志（本函数末尾），但过去
+        // **每帧都构造**：按每个组一次 `format!`（堆分配）+ Vec + sort。10k 档的组数虽少，
+        // 但这是纯为日志付的固定脚手架税，且分配计数进 M83-07 的红线。这里改成
+        // 仅在"本帧真的会打日志"时才算——日志内容逐字节不变。
+        let will_log_baseline = self.frame_count.wrapping_add(1).is_multiple_of(120);
+        let largest_groups: Vec<(usize, String)> = if will_log_baseline {
+            let mut groups_by_size: Vec<(usize, String)> = groups
+                .iter()
+                .map(|((path, primitive, material), group)| {
+                    (
+                        group.models.len(),
+                        format!("{}#{}@{}", path, primitive, material.unwrap_or("<default>")),
+                    )
+                })
+                .collect();
+            groups_by_size.sort_by_key(|group| std::cmp::Reverse(group.0));
+            groups_by_size.truncate(6);
+            groups_by_size
+        } else {
+            Vec::new()
+        };
         for group in groups.into_values() {
             draws.push(FrameDraw {
                 geometry: group.geometry,

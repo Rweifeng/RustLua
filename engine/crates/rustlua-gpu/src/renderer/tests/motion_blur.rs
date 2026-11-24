@@ -106,6 +106,7 @@ fn tonemap_reprojects_with_the_previous_frame_and_skips_zero_motion() {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -123,8 +124,8 @@ fn empty_mesh() -> SceneMesh {
 fn ground_drawable() -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(7),
-        name: "Ground".to_owned(),
-        mesh_path: "__ground_plane__".to_owned(),
+        name: "Ground".to_owned().into(),
+        mesh_path: "__ground_plane__".to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::scale(Vec3::new(4.0, 1.0, 4.0)),

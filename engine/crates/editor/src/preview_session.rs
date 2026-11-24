@@ -331,20 +331,21 @@ impl PreviewSession {
             effect_clock_start: std::time::Instant::now(),
         };
         session.sync_native_texture(device);
-        // M95：Play 也按 `project.toml [render] effect_overlay` 挂载叠加层，并把命名参数表
+        // M95：Play 也按**场景**声明的 `meta\teffect_overlay` 挂载叠加层，并把命名参数表
         // 推给运行时，`render.set_effect_param` 在编辑器 Play 里同样可用。
-        session.apply_project_effect_overlay();
+        session.apply_scene_effect_overlay(scene);
         Ok(session)
     }
 
-    /// M95：按工程配置把 `.sgraph` 挂到 Play 的渲染器上，并推送命名参数表 + 默认值。
-    fn apply_project_effect_overlay(&mut self) {
-        let Ok(Some(config)) =
-            rustlua_render::render_config::RenderConfig::load_from(&self.project_root)
-        else {
-            return;
-        };
-        let Some(relative) = config.effect_overlay else {
+    /// M95：按**场景配置**把 `.sgraph` 挂到 Play 的渲染器上，并推送命名参数表 + 默认值。
+    ///
+    /// 读 `.scene` 的 `meta\teffect_overlay` 而不是 `project.toml [render]`：后者会让
+    /// 所有场景共用同一个特效（切到 api_audio 也有刀光）。
+    fn apply_scene_effect_overlay(&mut self, scene: &Scene) {
+        let Some(relative) = scene.effect_overlay().map(str::to_owned) else {
+            // 场景没声明：显式撤掉，避免沿用上一次 Play 遗留的叠加层。
+            let _ = self.renderer.set_effect_overlay(None);
+            self.effect_overlay_slots = None;
             return;
         };
         match rustlua_visual_script::shader_graph::ShaderGraph::load_runtime_overlay(
@@ -712,6 +713,8 @@ impl PreviewSession {
             vertex_buffer_capacity: resources.vertex_buffer_capacity,
             vertex_buffer_growths: resources.vertex_buffer_growths,
             vertex_bytes_peak: resources.vertex_bytes_peak,
+            cpu_vector_cache_bytes: resources.cpu_vector_cache_bytes,
+            async_cpu_buffered_bytes: resources.async_cpu_buffered_bytes,
             pipeline_variants: resources.pipeline_variants,
             pipeline_variant_hits: resources.pipeline_variant_hits,
             pipeline_variant_misses: resources.pipeline_variant_misses,

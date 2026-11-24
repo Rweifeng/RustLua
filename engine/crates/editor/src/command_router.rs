@@ -12,8 +12,21 @@ use rustlua_scene::scene::SceneEntityId;
 #[cfg(test)]
 use editor::PlaySession;
 
-/// Prefab action 需要目标是什么（用于统一前置条件检查）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `EditorCommand` 的变体名（`Save`、`DeleteSelected` …），用于 trace 的 span 名。
+///
+/// 只用 `Debug` 取首段：`Debug` 保证以变体名开头，后续是 ` {` 或 `(` 或 `,` 或结尾。
+/// 这样不必为 52 个变体手写一遍 `match`（那会随命令增删而失同步）。
+fn kind_name(command: &EditorCommand) -> String {
+    let debug = format!("{command:?}");
+    let variant = debug
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Unknown");
+    format!("dispatch:{variant}")
+}
+
+/// Prefab action 需要目标是什么（用于统一前置条件检查）。#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrefabTarget {
     /// 任意实例（字段级 Apply/Revert、整体 Revert）。
     Instance,
@@ -29,8 +42,22 @@ impl EditorApp {
     /// so this is a routing layer rather than a second implementation.
     pub(crate) fn dispatch(&mut self, command: EditorCommand) -> CommandResult {
         let started = std::time::Instant::now();
+        // P0-3：span 名带上**命令种类**，否则 trace 里上千条 `dispatch` 全长一个样，
+        // 看不出"到底是哪个命令贵"。
+        //
+        // 只在**真的在采集 trace** 时才拼这个名字：`record_command` 的耗时会被写进
+        // 命令耗时统计，若这里无条件 `format!`，为了测量而引入的分配就会污染被测量的数字。
+        let kind = if self.profiler.span_capture_level().allows_fine() {
+            Some(kind_name(&command))
+        } else {
+            None
+        };
         let result = self.dispatch_inner(command);
-        self.profiler.record_command("dispatch", started.elapsed());
+        let elapsed = started.elapsed();
+        match kind {
+            Some(kind) => self.profiler.record_command(&kind, elapsed),
+            None => self.profiler.record_command("dispatch", elapsed),
+        }
         result
     }
 
@@ -47,8 +74,18 @@ impl EditorApp {
                 self.document.current_scene = Some(SceneDocument::new_scene(name.clone()));
                 self.history.clear();
                 self.selection.clear(editor::SelectionSource::Command);
+                // P1-4：换文档是释放旧场景派生物的天然时机——新场景多半用不到旧网格/贴图，
+                // 留着只是占内存。释放不影响任何像素（下次绘制按需重建），代价只是首帧变慢。
+                let released = self.release_all_resources();
                 self.on_document_changed(crate::actions::DocumentChange::Created);
-                self.status = format!("已新建场景：{name}（未保存）");
+                self.status = if released > 0 {
+                    format!(
+                        "已新建场景：{name}（未保存，释放缓存 {}）",
+                        crate::panels::performance::format_bytes(released)
+                    )
+                } else {
+                    format!("已新建场景：{name}（未保存）")
+                };
                 CommandResult::Applied
             }
             EditorCommand::OpenDocument { path } => {

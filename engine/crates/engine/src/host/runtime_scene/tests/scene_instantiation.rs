@@ -164,7 +164,7 @@ fn runtime_drawables_use_scene_names() {
     let scene3d = runtime
         .scene_3d(Viewport::new(16.0, 9.0).unwrap())
         .expect("3d scene");
-    let mut names: Vec<&str> = scene3d.drawables.iter().map(|d| d.name.as_str()).collect();
+    let mut names: Vec<&str> = scene3d.drawables.iter().map(|d| &*d.name).collect();
     names.sort_unstable();
     assert_eq!(names, ["Ground", "ShadowTriangle", "SkeletonWarrior"]);
     assert!(

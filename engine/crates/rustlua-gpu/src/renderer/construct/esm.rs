@@ -89,7 +89,7 @@ pub(crate) fn esm_shadow(device: &Device, shadow_sample_view: &TextureView) -> E
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
+                    resource: wgpu::BindingResource::TextureView(shadow_sample_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,

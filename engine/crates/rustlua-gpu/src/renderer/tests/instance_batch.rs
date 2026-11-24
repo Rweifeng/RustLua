@@ -42,8 +42,8 @@ fn ant_model(x: f32) -> Mat4 {
 fn batch_drawable(models: &[Mat4]) -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_scene::scene::SceneEntityId(1),
-        name: "Crowd".to_owned(),
-        mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+        name: "Crowd".to_owned().into(),
+        mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
         material: None,
         mesh_handle: None,
         // 批次实体自身的变换不参与（实例坐标是世界坐标）。
@@ -68,7 +68,7 @@ fn separate_drawables(models: &[Mat4]) -> Vec<Scene3dDrawable> {
         .map(|(index, model)| {
             let mut drawable = batch_drawable(&[]);
             drawable.entity = rustlua_scene::scene::SceneEntityId(index as u64 + 1);
-            drawable.name = format!("Ant-{index}");
+            drawable.name = format!("Ant-{index}").into();
             drawable.model = *model;
             drawable
         })
@@ -139,6 +139,7 @@ impl Fixture {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

@@ -1064,6 +1064,10 @@ mod tests {
                 // M80-04：运行时值控件。
                 "Scrollbar",
                 "Slider",
+                // M84 P3：Spine 2D 骨骼动画（`SPINE_SKELETON_FIELDS` 十个字段已在
+                // `rustlua-ecs/component_schema.rs` 注册）——注册 schema 即自动接管，
+                // 与上面所有条目同一机制。
+                "SpineSkeleton",
                 "Sprite",
                 "Text",
                 // M80-04：运行时值控件。

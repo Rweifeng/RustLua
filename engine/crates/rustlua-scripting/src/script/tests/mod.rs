@@ -341,6 +341,16 @@ fn install_ui_bindings(
             Ok(())
         }))
         .expect("UI 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 ui.* / prefab / world_text");
+
+    // M84：Spine 2D 的 `spine` 表（镜像生产组合根）。快照门比对的是 `_G` 上的模块表，
+    // 少装这一块，基线里的 `spine` 就会整块报"消失"。
+    let spine = rustlua_spine::SpineState::handle();
+    let spine_installer = spine.clone();
+    runtime
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            rustlua_spine::spine_lua::install(lua, &spine_installer, world)
+        }))
+        .expect("spine 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 spine.*");
 }
 
 /// 15 类 UI 组件装配器（测试版，镜像 `engine::host::script_packs::install` 的 UI 段）。

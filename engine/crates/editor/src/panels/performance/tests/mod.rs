@@ -514,6 +514,8 @@ fn runtime_sections_cover_frame_render_resource_and_memory() {
         vertex_buffer_capacity: 1024 * 1024,
         vertex_buffer_growths: 1,
         vertex_bytes_peak: 900 * 1024,
+        cpu_vector_cache_bytes: 64 * 1024,
+        async_cpu_buffered_bytes: 128 * 1024,
         pipeline_variants: 6,
         pipeline_variant_hits: 0,
         pipeline_variant_misses: 6,

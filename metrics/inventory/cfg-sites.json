@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-15T23:18:23.480Z",
+  "generated_at": "2026-11-20T07:02:57.346Z",
   "counts": {
     "wasm_attrs": 70,
     "wasm_macros": 4,
     "not_wasm_attrs": 88,
     "platform": 69,
-    "feature": 90,
-    "test": 418,
+    "feature": 94,
+    "test": 431,
     "other": 6,
-    "total": 745
+    "total": 762
   },
   "sites": [
     {
@@ -1083,9 +1083,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "editor|crates/editor/src/panels/hierarchy.rs|test||1",
+      "key": "editor|crates/editor/src/panels/hierarchy/mod.rs|test||1",
       "crate": "editor",
-      "file": "crates/editor/src/panels/hierarchy.rs",
+      "file": "crates/editor/src/panels/hierarchy/mod.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -1093,12 +1093,12 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "editor|crates/editor/src/panels/hierarchy.rs|test||2",
+      "key": "editor|crates/editor/src/panels/hierarchy/panel.rs|test||1",
       "crate": "editor",
-      "file": "crates/editor/src/panels/hierarchy.rs",
+      "file": "crates/editor/src/panels/hierarchy/panel.rs",
       "predicate": "test",
       "item": "(none)",
-      "occurrence": 2,
+      "occurrence": 1,
       "kind": "test",
       "attr_or_macro": "attr"
     },
@@ -1133,9 +1133,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "editor|crates/editor/src/panels/inspector/mod.rs|not(test), allow(dead_code)||1",
+      "key": "editor|crates/editor/src/panels/inspector/actions.rs|not(test), allow(dead_code)||1",
       "crate": "editor",
-      "file": "crates/editor/src/panels/inspector/mod.rs",
+      "file": "crates/editor/src/panels/inspector/actions.rs",
       "predicate": "not(test), allow(dead_code)",
       "item": "(none)",
       "occurrence": 1,
@@ -1326,6 +1326,46 @@
       "key": "editor|crates/editor/src/panels/schema_inspector/mod.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/panels/schema_inspector/mod.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/shader_graph_preview.rs|not(test), allow(dead_code)||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/shader_graph_preview.rs",
+      "predicate": "not(test), allow(dead_code)",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/shader_graph_preview.rs|not(test), allow(dead_code)||2",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/shader_graph_preview.rs",
+      "predicate": "not(test), allow(dead_code)",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/shader_graph_preview.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/shader_graph_preview.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/shader_graph.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/shader_graph.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -2133,6 +2173,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "engine|crates/engine/src/host/sample_project.rs|feature = \"3d\"||2",
+      "crate": "engine",
+      "file": "crates/engine/src/host/sample_project.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "engine|crates/engine/src/host/sample_project.rs|not(feature = \"3d\")||1",
       "crate": "engine",
       "file": "crates/engine/src/host/sample_project.rs",
@@ -2160,6 +2210,36 @@
       "item": "(none)",
       "occurrence": 1,
       "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "engine|crates/engine/src/host/script_packs.rs|feature = \"3d\"||1",
+      "crate": "engine",
+      "file": "crates/engine/src/host/script_packs.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "engine|crates/engine/src/host/script_packs.rs|feature = \"3d\"||2",
+      "crate": "engine",
+      "file": "crates/engine/src/host/script_packs.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "engine|crates/engine/src/host/script_packs.rs|feature = \"3d\"||3",
+      "crate": "engine",
+      "file": "crates/engine/src/host/script_packs.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "feature",
       "attr_or_macro": "attr"
     },
     {
@@ -3953,6 +4033,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-editor-core|crates/rustlua-editor-core/src/shader_graph_ops.rs|test||1",
+      "crate": "rustlua-editor-core",
+      "file": "crates/rustlua-editor-core/src/shader_graph_ops.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-editor-core|crates/rustlua-editor-core/src/shortcuts.rs|test||1",
       "crate": "rustlua-editor-core",
       "file": "crates/rustlua-editor-core/src/shortcuts.rs",
@@ -4733,6 +4823,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/async_readback.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/async_readback.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|not(target_arch = \"wasm32\")||1",
       "crate": "rustlua-gpu",
       "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
@@ -4853,9 +4953,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||1",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||1",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 1,
@@ -4863,9 +4963,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||2",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||2",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 2,
@@ -4873,9 +4973,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||3",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||3",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 3,
@@ -4883,9 +4983,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||4",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||4",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 4,
@@ -4893,9 +4993,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||5",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||5",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 5,
@@ -4903,9 +5003,9 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||6",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|not(target_arch = \"wasm32\")||6",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 6,
@@ -4913,13 +5013,23 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|target_arch = \"wasm32\"||1",
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|target_arch = \"wasm32\"||1",
       "crate": "rustlua-gpu",
-      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
       "predicate": "target_arch = \"wasm32\"",
       "item": "(none)",
       "occurrence": 1,
       "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct/mod.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct/mod.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
       "attr_or_macro": "attr"
     },
     {
@@ -5053,6 +5163,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/readback.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/readback.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/shader_hot_reload.rs|test||1",
       "crate": "rustlua-gpu",
       "file": "crates/rustlua-gpu/src/renderer/shader_hot_reload.rs",
@@ -5126,6 +5246,16 @@
       "key": "rustlua-gpu|crates/rustlua-gpu/src/shader.rs|test||1",
       "crate": "rustlua-gpu",
       "file": "crates/rustlua-gpu/src/shader.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/test_adapter.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/test_adapter.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -6243,6 +6373,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-render|crates/rustlua-render/src/render_overrides.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/render_overrides.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-render|crates/rustlua-render/src/render_plan.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/render_plan.rs",
@@ -6296,6 +6436,16 @@
       "key": "rustlua-render|crates/rustlua-render/src/spatial_index.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/spatial_index.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-render|crates/rustlua-render/src/spine_mesh.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/spine_mesh.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -6579,36 +6729,6 @@
       "predicate": "feature = \"3d\"",
       "item": "(none)",
       "occurrence": 2,
-      "kind": "feature",
-      "attr_or_macro": "attr"
-    },
-    {
-      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/api/mod.rs|feature = \"3d\"||3",
-      "crate": "rustlua-scripting",
-      "file": "crates/rustlua-scripting/src/script/api/mod.rs",
-      "predicate": "feature = \"3d\"",
-      "item": "(none)",
-      "occurrence": 3,
-      "kind": "feature",
-      "attr_or_macro": "attr"
-    },
-    {
-      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/api/mod.rs|feature = \"3d\"||4",
-      "crate": "rustlua-scripting",
-      "file": "crates/rustlua-scripting/src/script/api/mod.rs",
-      "predicate": "feature = \"3d\"",
-      "item": "(none)",
-      "occurrence": 4,
-      "kind": "feature",
-      "attr_or_macro": "attr"
-    },
-    {
-      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/api/mod.rs|feature = \"3d\"||5",
-      "crate": "rustlua-scripting",
-      "file": "crates/rustlua-scripting/src/script/api/mod.rs",
-      "predicate": "feature = \"3d\"",
-      "item": "(none)",
-      "occurrence": 5,
       "kind": "feature",
       "attr_or_macro": "attr"
     },
@@ -6983,6 +7103,36 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/tests/mod.rs|feature = \"3d\"||1",
+      "crate": "rustlua-scripting",
+      "file": "crates/rustlua-scripting/src/script/tests/mod.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/tests/mod.rs|feature = \"3d\"||2",
+      "crate": "rustlua-scripting",
+      "file": "crates/rustlua-scripting/src/script/tests/mod.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/tests/mod.rs|feature = \"3d\"||3",
+      "crate": "rustlua-scripting",
+      "file": "crates/rustlua-scripting/src/script/tests/mod.rs",
+      "predicate": "feature = \"3d\"",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-scripting|crates/rustlua-scripting/src/script/tests/particles.rs|feature = \"3d\"||1",
       "crate": "rustlua-scripting",
       "file": "crates/rustlua-scripting/src/script/tests/particles.rs",
@@ -7006,6 +7156,16 @@
       "key": "rustlua-scripting|crates/rustlua-scripting/src/script/values.rs|test||1",
       "crate": "rustlua-scripting",
       "file": "crates/rustlua-scripting/src/script/values.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-spine|crates/rustlua-spine/src/scene_codec.rs|test||1",
+      "crate": "rustlua-spine",
+      "file": "crates/rustlua-spine/src/scene_codec.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -7436,6 +7596,16 @@
       "key": "rustlua-visual-script|crates/rustlua-visual-script/src/codegen.rs|test||1",
       "crate": "rustlua-visual-script",
       "file": "crates/rustlua-visual-script/src/codegen.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-visual-script|crates/rustlua-visual-script/src/effect_prefab.rs|test||1",
+      "crate": "rustlua-visual-script",
+      "file": "crates/rustlua-visual-script/src/effect_prefab.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,

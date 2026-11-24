@@ -157,6 +157,18 @@ impl CompiledShader {
         }
         named
     }
+
+    /// 按名字读一个参数的当前取值（用于「生成预设」把滑块上的值写进预设文件）。
+    ///
+    /// 与 [`Self::named_params`] 走同一张名字表，所以面板里看到的名字、预设文件里的名字、
+    /// 脚本 `render.set_effect_param` 用的名字三处必然一致——不会出现"预设写的名字运行时找不到"。
+    #[must_use]
+    pub fn find_named_param_value(&self, name: &str) -> Option<f32> {
+        self.named_params()
+            .into_iter()
+            .find(|param| param.name == name)
+            .map(|param| param.default)
+    }
 }
 
 /// 一个命名参数：名字 → `vec4` 槽号 + 分量 + 默认值。
@@ -1880,6 +1892,9 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                 "radius" => 0.35,
                 "thickness" => 0.15,
                 "spin" => 1.2,
+                // 扇形圆心：默认屏幕正中。叠加层是全屏坐标，3D 视口只占一侧时要给偏移。
+                "center_x" => 0.5,
+                "center_y" => 0.5,
                 "amount" => 0.05,
                 "wave_speed" => 1.2,
                 "direction" => 0.0,
@@ -1952,6 +1967,9 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                     next_slot(&mut params, &n.id, "radius", 1);
                     next_slot(&mut params, &n.id, "thickness", 1);
                     next_slot(&mut params, &n.id, "spin", 1);
+                    // 圆心偏移：叠加层是全屏坐标，3D 视口只占一侧时靠它把弧挪过去。
+                    next_slot(&mut params, &n.id, "center_x", 1);
+                    next_slot(&mut params, &n.id, "center_y", 1);
                 }
                 ShaderNodeKind::VerticalStretch => {
                     next_slot(&mut params, &n.id, "amount", 1);
@@ -2155,7 +2173,15 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
                     let radius = scalar("radius", 0.35);
                     let thickness = scalar("thickness", 0.15);
                     let spin = scalar("spin", 1.2);
-                    lines.push(format!("    let {v}_c = ({uv}) - vec2<f32>(0.5, 0.5);"));
+                    // 圆心偏移：叠加层是**全屏**坐标系，而 3D 视口在编辑器/演示里往往只占屏幕
+                    // 一侧（lab 分栏左右各 296/312px）。不给偏移的话，刀光永远画在屏幕正中，
+                    // 和镜头里的角色对不上。偏移以 UV 为单位（0.5 = 半屏），预设里按视口调。
+                    let center = {
+                        let cx = scalar("center_x", 0.5);
+                        let cy = scalar("center_y", 0.5);
+                        format!("vec2<f32>({cx}, {cy})")
+                    };
+                    lines.push(format!("    let {v}_c = ({uv}) - {center};"));
                     lines.push(format!("    let {v}_r = length({v}_c);"));
                     lines.push(format!(
                         "    let {v}_a = atan2(({v}_c).y, ({v}_c).x) / 6.2831853 + 0.5;"

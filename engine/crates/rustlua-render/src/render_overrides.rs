@@ -24,6 +24,19 @@
 
 use rustlua_lua_api::Handle;
 
+/// M96：脚本对特效层的意图（`effect.play` / `effect.stop`）。
+///
+/// 为什么是"意图队列的一条"而不是直接改渲染器：脚本运行在 VM 里，碰不到 `Renderer`；
+/// 这条意图与其它 `render.*` 调参走同一条路——脚本写、宿主每帧读一次再应用。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectCommand {
+    /// 加载并播放一个特效预设（`.prefab` 工程内相对路径）；`name` 是脚本给的实例名，
+    /// 空串 = 用预设自己的名字。
+    Play { prefab: String, name: String },
+    /// 停掉一个实例（名字为空 = 停掉全部脚本触发的特效）。
+    Stop { name: String },
+}
+
 /// 脚本可改的渲染参数。字段含义见模块文档。
 #[derive(Debug, Default)]
 pub struct RenderOverrides {
@@ -59,6 +72,11 @@ pub struct RenderOverrides {
     pub effect_time: Option<f32>,
     /// 命名参数表（名字 → 槽号 + 分量数），宿主加载 `.sgraph` 后推来。
     pub effect_param_names: Option<Vec<(String, usize, usize)>>,
+    /// M96：逻辑里 `effect.play` / `effect.stop` 的最后一次意图。
+    ///
+    /// 存"意图"而不是"当前状态"：脚本可能一帧里 play 好几次，宿主只需要最终结果；
+    /// 宿主消费后置回 `None`，下一次 play 才会再被看见。
+    pub effect_command: Option<EffectCommand>,
     /// 剖切口的实体封口深度（米，0 = 关）。
     pub clip_cap: Option<f32>,
     /// 封口是否也吃到单面网格；`None` = 保持宿主启动档。

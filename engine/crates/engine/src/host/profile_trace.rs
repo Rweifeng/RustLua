@@ -288,6 +288,41 @@ impl SpanTrace {
         self.push_span_ns(name, category, start_ns, nanos(elapsed), depth, args)
     }
 
+    /// 把另一段采集到的 span 追加进来，`time_offset_ns` 是它相对本 trace 起点的偏移。
+    ///
+    /// 用途：一次运行里会有**多个** `Profiler`（编辑器每个场景一个 `EditorApp`），
+    /// 各自从 0 开始计时。要把它们的 span 合成一份可读的 Chrome trace，就得把后一段
+    /// 整体平移到前一段之后，否则时间轴上会互相叠压。
+    ///
+    /// 返回实际追加的数量（`capacity` 满时会丢最旧的，`dropped` 同步累加）。
+    pub fn push_records(&mut self, records: &[SpanRecord], time_offset_ns: u64) -> usize {
+        let mut added = 0;
+        for record in records {
+            let start = record.start_ns.saturating_add(time_offset_ns);
+            if self.push_span_ns(
+                &record.name,
+                record.category,
+                start,
+                record.dur_ns,
+                record.depth,
+                record.args.clone(),
+            ) {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// 本 trace 里最晚的结束时刻（纳秒，相对起点）。合并下一段时用它当偏移量。
+    #[must_use]
+    pub fn end_ns(&self) -> u64 {
+        self.spans
+            .iter()
+            .map(|span| span.start_ns.saturating_add(span.dur_ns))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// 以捕获起点的相对纳秒登记 span（测试与确定性证据用，避免依赖墙钟）。
     pub fn push_span_ns(
         &mut self,

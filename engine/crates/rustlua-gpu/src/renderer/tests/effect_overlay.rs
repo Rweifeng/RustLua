@@ -31,6 +31,7 @@ fn overlay_renderer() -> Option<(wgpu::Device, wgpu::Queue, Renderer)> {
 
 fn empty_mesh() -> rustlua_render::frame::SceneMesh {
     rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -522,5 +523,111 @@ fn scene_sampling_overlay_costs_one_extra_fullscreen_draw() {
         scene_draws,
         fast_draws + 1,
         "场景色路径应只多一次恒等回拷 draw（快={fast_draws}，场景={scene_draws}）"
+    );
+}
+
+/// M96：按名字挂的叠加层（`.prefab` 特效预设的运行时落点）必须真的参与渲染。
+///
+/// 三道断言各自拦一类假绿：
+/// 1. 挂上之后像素变了 —— 拦"名字进了表但 draw 循环没遍历命名层"；
+/// 2. 同名再挂是**替换**而不是叠加 —— 拦"重复 play 会叠出两层越来越浓的残影"；
+/// 3. 撤掉之后像素回到基线 —— 拦"remove 只清了名字表、管线还在画"。
+#[test]
+fn named_effect_overlay_draws_replaces_and_removes() {
+    let Some((device, queue, mut renderer)) = overlay_renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    let baseline = render_frame(&device, &mut renderer, &queue);
+
+    renderer
+        .set_named_effect_overlay("炎刃斩击", RED_OVERLAY)
+        .expect("compile named overlay");
+    assert_eq!(renderer.named_effect_overlay_count(), 1);
+    assert!(renderer.effect_overlay_active(), "命名层也要算作激活");
+    let with_layer = render_frame(&device, &mut renderer, &queue);
+    assert_ne!(baseline, with_layer, "命名层必须真的改变像素");
+
+    // 同名重播：层数不变，且像素与只画一次时逐字节相同（没叠成两层）。
+    renderer
+        .set_named_effect_overlay("炎刃斩击", RED_OVERLAY)
+        .expect("replace named overlay");
+    assert_eq!(renderer.named_effect_overlay_count(), 1, "同名必须替换");
+    let replay = render_frame(&device, &mut renderer, &queue);
+    assert_eq!(with_layer, replay, "重播一次不能叠出第二层");
+
+    assert!(renderer.remove_named_effect_overlay("炎刃斩击"));
+    assert!(
+        !renderer.remove_named_effect_overlay("炎刃斩击"),
+        "重复撤掉返回 false"
+    );
+    let restored = render_frame(&device, &mut renderer, &queue);
+    assert_eq!(baseline, restored, "撤掉后像素必须回到基线");
+}
+
+/// M96：脚本特效层与工程级常驻层是两套生命周期。
+///
+/// `project.toml` 的 `effect_overlay` 是**配置的意思**，逻辑里 `effect.stop` 不该把它撤掉；
+/// 反过来，工程级那一层的存在也不能让 `effect.play` 变成"替换掉它"。这条用例同时钉住
+/// 两件事：层数可叠加、顺序是先常驻后脚本（脚本特效盖在上面）。
+#[test]
+fn named_layers_stack_on_top_of_the_project_overlay() {
+    let Some((device, queue, mut renderer)) = overlay_renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    renderer
+        .set_effect_overlay(Some(RED_OVERLAY))
+        .expect("compile project overlay");
+    let project_only = render_frame(&device, &mut renderer, &queue);
+
+    renderer
+        .set_named_effect_overlay("冷蓝斩击", BLUE_OVERLAY)
+        .expect("compile named overlay");
+    assert_eq!(renderer.effect_overlay_count(), 2, "两层并存");
+    let stacked = render_frame(&device, &mut renderer, &queue);
+    assert_ne!(project_only, stacked, "上层必须真的画出来");
+
+    renderer.remove_named_effect_overlay("冷蓝斩击");
+    let back = render_frame(&device, &mut renderer, &queue);
+    assert_eq!(project_only, back, "撤掉脚本层不影响工程级那一层");
+    assert!(renderer.effect_overlay_active(), "工程级层仍在");
+}
+
+/// M96：参数必须在**挂载那一步**就写进去，否则第一帧是空白。
+///
+/// 真实故障是这样发生的：`EffectOverlay` 的槽位初值全是 0，而模板里 0 往往意味着
+/// "半径 0 / 厚度 0"，画出来什么都不剩。宿主若先 `set_named_effect_overlay` 再等下一帧
+/// `set_effect_params`，起手那一帧（最显眼的那一帧）就是空的。
+///
+/// 这条用例直接对比"挂载时带参数"与"只挂不带参数"，必须不同。
+#[test]
+fn named_effect_overlay_applies_params_at_mount_time() {
+    let Some((device, queue, mut renderer)) = overlay_renderer() else {
+        return gpu_skipped("request_adapter");
+    };
+    let mut slots = [[0.0_f32; 4]; 16];
+    // 槽 0 是 1 → 蓝；0 → 绿（见 PARAMS_OVERLAY）。
+    slots[0] = [0.0, 0.0, 0.0, 0.0];
+    renderer
+        .set_named_effect_overlay_with_params("零参", PARAMS_OVERLAY, &slots)
+        .expect("compile params overlay");
+    let zero = render_frame(&device, &mut renderer, &queue);
+
+    slots[0] = [1.0, 0.0, 0.0, 0.0];
+    renderer
+        .set_named_effect_overlay_with_params("满参", PARAMS_OVERLAY, &slots)
+        .expect("recompile with params");
+    let full = render_frame(&device, &mut renderer, &queue);
+    assert_ne!(zero, full, "挂载时带的参数没有进 uniform");
+
+    // 不带参数重挂同一层 → 回到槽位零值，证明参数确实来自挂载那一步而非残留。
+    // 先把带参数那层撤掉：像素是**所有层叠加**的结果，留着"满参"会把零值层盖住。
+    assert!(renderer.remove_named_effect_overlay("满参"));
+    renderer
+        .set_named_effect_overlay("零参", PARAMS_OVERLAY)
+        .expect("remount without params");
+    let remounted = render_frame(&device, &mut renderer, &queue);
+    assert_eq!(
+        zero, remounted,
+        "重挂不带参数应当回到槽位零值（上一套预设的参数不能粘住新层）"
     );
 }

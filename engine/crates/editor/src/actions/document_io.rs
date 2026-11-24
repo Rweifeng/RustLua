@@ -76,7 +76,11 @@ impl EditorApp {
         self.save_scene_with_policy(false)
     }
 
-    /// 强制保存：明知磁盘被外部改过也覆盖（菜单里的显式动作）。
+    /// 强制保存：明知磁盘被外部改过也覆盖（显式动作，不绑快捷键）。
+    ///
+    /// 文件菜单里的「强制保存（覆盖外部修改）」项已撤（菜单收敛），此出口目前只剩
+    /// `actions/tests/document_gate.rs` 在用；保留它是为了将来把出口接回 UI 或命令面板。
+    #[cfg_attr(not(test), allow(dead_code, reason = "出口保留给测试与后续 UI 接线"))]
     pub(crate) fn save_scene_force(&mut self) -> bool {
         self.save_scene_with_policy(true)
     }

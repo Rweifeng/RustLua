@@ -131,17 +131,58 @@ pub(crate) fn write_dependency_index(project: &Path, destination: &Path) -> anyh
         sources.push((relative, path));
     }
 
+    let spine_json_skeletons: HashSet<String> = sources
+        .iter()
+        .filter(|(_, path)| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("spine"))
+        })
+        .filter_map(|(_, path)| fs::read_to_string(path).ok())
+        .flat_map(|text| extract_refs(&text, ResourceKind::Spine))
+        .filter_map(|reference| match reference {
+            DependencyRef::Asset(path)
+                if path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json")) =>
+            {
+                Some(
+                    path.to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                )
+            }
+            _ => None,
+        })
+        .collect();
+
     let mut edges = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
     let mut opaque = std::collections::BTreeSet::new();
     for (source, path) in sources {
         let kind = ResourceKind::from_path(&path);
+        let is_spine_json_skeleton = kind == ResourceKind::Scene
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            && spine_json_skeletons.contains(&source.to_ascii_lowercase());
+        if is_spine_json_skeleton {
+            continue;
+        }
+        let is_spine_manifest = kind == ResourceKind::Spine
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("spine"));
         if !matches!(
             kind,
             ResourceKind::Scene
                 | ResourceKind::Prefab
                 | ResourceKind::Atlas
                 | ResourceKind::LuaScript
-        ) {
+        ) && !is_spine_manifest
+        {
             continue;
         }
         let text = match fs::read_to_string(&path) {

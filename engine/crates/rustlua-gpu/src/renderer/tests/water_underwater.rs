@@ -79,6 +79,7 @@ fn tonemap_applies_underwater_only_between_the_cut_and_the_flash() {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -96,8 +97,8 @@ fn empty_mesh() -> SceneMesh {
 fn water_drawable() -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "Water".to_owned(),
-        mesh_path: format!("__water__?size=64&res=8&y={LEVEL}"),
+        name: "Water".to_owned().into(),
+        mesh_path: format!("__water__?size=64&res=8&y={LEVEL}").into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),
@@ -117,8 +118,8 @@ fn water_drawable() -> Scene3dDrawable {
 fn bed_drawable() -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(3),
-        name: "Bed".to_owned(),
-        mesh_path: "__ground_plane__".to_owned(),
+        name: "Bed".to_owned().into(),
+        mesh_path: "__ground_plane__".to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::translation(Vec3::new(0.0, BED_Y, 0.0))

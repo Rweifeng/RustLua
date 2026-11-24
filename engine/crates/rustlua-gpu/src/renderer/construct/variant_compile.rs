@@ -59,7 +59,7 @@ pub(crate) fn compile_variants(
         .then_some(wgpu::TextureFormat::Rgba16Float);
     for skin in [SkinMode::Off, SkinMode::On] {
         let shader = variant_shader_module(
-            &device,
+            device,
             &MESH3D,
             skin,
             IblMode::Off,
@@ -77,8 +77,8 @@ pub(crate) fn compile_variants(
             pipelines
                 .get_or_create(key, || {
                     Ok::<_, std::convert::Infallible>(Arc::new(create_mesh_pipeline(
-                        &device,
-                        &mesh_pipeline_layout,
+                        device,
+                        mesh_pipeline_layout,
                         &shader,
                         target_format,
                         &label,
@@ -92,7 +92,7 @@ pub(crate) fn compile_variants(
     }
     for skin in [SkinMode::Off, SkinMode::On] {
         let shader = variant_shader_module(
-            &device,
+            device,
             &SHADOW,
             skin,
             IblMode::Off,
@@ -104,8 +104,8 @@ pub(crate) fn compile_variants(
         pipelines
             .get_or_create(key, || {
                 Ok::<_, std::convert::Infallible>(Arc::new(create_shadow_pipeline(
-                    &device,
-                    &shadow_pipeline_layout,
+                    device,
+                    shadow_pipeline_layout,
                     &shader,
                     &label,
                     false,

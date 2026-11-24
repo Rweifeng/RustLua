@@ -376,6 +376,41 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
+        // M84 P1：Spine 2D 骨架推进。与 `animation_state_advance` 同格、同样的"取走即清"
+        // 事件口径，但对象是 `SpinePlayer` 组件（CPU 每帧采样成三角网格）。
+        // 挂在 `Animation` 阶段：几何必须在提取（`vertices()`）之前算好，而提取在
+        // `run_script_steps` 返回之后发生，因此本格是这个固定步里最后一次安全推进点。
+        self.add_builtin_frame_system(System::new(
+            "spine_advance",
+            ScheduleStage::Animation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                // 借用顺序与 `animation_state_advance` 一致：先在 world 借用内推进并收集
+                // 事件，借用结束后再写进组合根持有的 `SpineState`。
+                let fired = scene.script.with_world_mut(|world| {
+                    let mut fired: Vec<(EntityId, rustlua_spine::SpineEvent)> = Vec::new();
+                    let mut failure: Option<String> = None;
+                    world.for_each_mut::<rustlua_spine::SpinePlayer>(|id, player| {
+                        if failure.is_some() {
+                            return;
+                        }
+                        if let Err(error) = player.advance(delta_seconds) {
+                            failure = Some(error.to_string());
+                            return;
+                        }
+                        for event in player.drain_events() {
+                            fired.push((id, event));
+                        }
+                    });
+                    if let Some(error) = failure {
+                        return Err(SystemError::new(error));
+                    }
+                    Ok(fired)
+                })?;
+                scene.spine_state.with_mut(|state| state.push_events(fired));
+                Ok(())
+            },
+        ));
         self.add_builtin_frame_system(System::new(
             "animation3d_advance",
             ScheduleStage::Animation,

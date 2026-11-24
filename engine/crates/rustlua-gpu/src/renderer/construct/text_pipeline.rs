@@ -71,8 +71,8 @@ pub(crate) fn text_pipeline(
         source: wgpu::ShaderSource::Wgsl(TEXTURED_SHADER.into()),
     });
     let pipeline = build_textured_pipeline(
-        &device,
-        &pipeline_layout,
+        device,
+        pipeline_layout,
         &shader,
         format,
         "rustlua-textured-pipeline",
@@ -86,7 +86,7 @@ pub(crate) fn text_pipeline(
     });
     // 逐纹理采样器表：拆分批 2 搬到 `construct/texture.rs`。
     // 这一段自包含（只吃 device + 两个静态方法），是按**依赖关系**而非行号切分的样板。
-    let texture_samplers = super::texture::texture_samplers(&device);
+    let texture_samplers = super::texture::texture_samplers(device);
     // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
     let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("rustlua-sdf-sampler"),
@@ -96,8 +96,8 @@ pub(crate) fn text_pipeline(
         ..Default::default()
     });
     let pipeline_sdf = build_textured_pipeline(
-        &device,
-        &pipeline_layout,
+        device,
+        pipeline_layout,
         &shader,
         format,
         "rustlua-textured-sdf-pipeline",
@@ -145,14 +145,14 @@ pub(crate) fn text_pipeline(
     });
     let vector_pipeline = if storage_capable {
         build_vector_text_pipeline(
-            &device,
+            device,
             &vector_layout,
             &vector_shader,
             format,
             "rustlua-vector-text-pipeline",
         )
     } else {
-        placeholder_pipeline(&device, format, "rustlua-vector-text-placeholder-pipeline")
+        placeholder_pipeline(device, format, "rustlua-vector-text-placeholder-pipeline")
     };
     let vector_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("rustlua-vector-text-vertex-buffer"),

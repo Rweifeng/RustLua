@@ -68,6 +68,7 @@ fn target(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgp
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -288,10 +289,13 @@ fn ssr_misses_fall_back_to_the_procedural_sky() {
     );
     // `construct.rs` 在 Windows 的 autocrlf 检出里是 CRLF，多行 `contains` 只写 `\n` 会在本机假红
     // （CI 的 checkout 是 LF）。归一化换行，让本地与 CI 判据一致。
-    let construct = include_str!("../construct/mod.rs").replace("\r\n", "\n");
+    //
+    // SSR 的参数缓冲在拆分批之后住在 `construct/post_process.rs`，不再在 `construct/mod.rs`。
+    // 断言必须跟着搬——否则这条门会**恒定失败**（软件/硬件档都一样），失去判据价值。
+    let post_process = include_str!("../construct/post_process.rs").replace("\r\n", "\n");
     assert!(
-        construct.contains("min_binding_size: wgpu::BufferSize::new(176),")
-            && construct.contains("label: Some(\"rustlua-ssr-params\"),\n            size: 176,"),
+        post_process.contains("min_binding_size: wgpu::BufferSize::new(176),")
+            && post_process.contains("label: Some(\"rustlua-ssr-params\"),\n        size: 176,"),
         "uniform 缓冲与布局下限都要跟着 44 个 f32（176 B）走"
     );
 }
@@ -965,8 +969,8 @@ fn render_terrain_probe(
         point_lights: Vec::new(),
         drawables: vec![Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Terrain".to_owned(),
-            mesh_path: path.to_owned(),
+            name: "Terrain".to_owned().into(),
+            mesh_path: path.to_owned().into(),
             material: None,
             mesh_handle: None,
             model: Mat4::identity(),
@@ -1115,8 +1119,8 @@ fn terrain_cheap_skips_near_detail_pixels() {
             point_lights: Vec::new(),
             drawables: vec![Scene3dDrawable {
                 entity: rustlua_scene::scene::SceneEntityId(1),
-                name: "Terrain".to_owned(),
-                mesh_path: path.to_owned(),
+                name: "Terrain".to_owned().into(),
+                mesh_path: path.to_owned().into(),
                 material: None,
                 mesh_handle: None,
                 model: Mat4::identity(),
@@ -1198,8 +1202,10 @@ fn crowd_cheap_override_changes_generic_mesh_pixels() {
         }],
         drawables: vec![Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL
+                .to_owned()
+                .into(),
             material: None,
             mesh_handle: None,
             model: rustlua_math::math3d::Mat4::identity(),

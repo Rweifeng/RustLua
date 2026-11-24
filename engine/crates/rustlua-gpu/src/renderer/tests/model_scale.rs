@@ -122,8 +122,8 @@ fn the_documented_scale_reaches_the_model_matrix() {
         point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
             material: None,
             mesh_handle: None,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
@@ -206,8 +206,8 @@ fn an_undocumented_model_keeps_its_size() {
         point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
             material: None,
             mesh_handle: None,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),

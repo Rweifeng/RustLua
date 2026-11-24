@@ -67,10 +67,40 @@ impl Importer for PrefabImporter {
         reject_empty(source, bytes)?;
         let text = std::str::from_utf8(bytes)
             .map_err(|error| format!("{}: 预制体编码非法: {error}", source.display()))?;
+        // `.prefab` 这一个扩展名承载了**两种不同的东西**：
+        //
+        // * 实体预制体（缺省）：`entity` / `component` 记录，解析成 `Prefab`；
+        // * 特效预设（`kind=effect`）：`graph=` / `overlay=` / `param<TAB>名<TAB>值`，
+        //   由 `rustlua-visual-script::effect_prefab` 解析，运行时走 `EffectPrefab::load`
+        //   （`engine::host::sample_project`），**完全不经过本模块**。
+        //
+        // 之前这里无条件按实体预制体解析，于是每个特效预设都在导入期报
+        // "unknown record"——而它其实从来没打算被 `Prefab` 认识。判据只能是内容里的
+        // `kind=`，因为扩展名区分不了。
+        //
+        // 这里**不**做 effect 的语义校验：那需要 `rustlua-visual-script`，而本 crate 是
+        // 运行时也编译的（见模块文档），不能反向依赖它。effect 的格式错误由加载
+        // `EffectPrefab` 的那一侧点名（`effect_prefab::from_text` 的诊断带行号）。
+        if declares_effect_kind(text) {
+            return Ok(());
+        }
         Prefab::from_text(text)
             .map_err(|error| format!("{}: 预制体解析失败: {error}", source.display()))?;
         Ok(())
     }
+}
+
+/// 判断这份 `.prefab` 是否自称特效预设（`kind=effect`）。
+///
+/// 只看**第一个非注释、非空行之后**的 `kind=` 声明之前的部分不够稳；这里逐行找
+/// `kind=`，与 `effect_prefab::from_text` 的口径一致（它也是整篇扫描）。
+/// 注释行以 `#` 开头，与两种格式的约定相同。
+fn declares_effect_kind(text: &str) -> bool {
+    text.lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .find_map(|line| line.strip_prefix("kind="))
+        .is_some_and(|value| value.trim() == "effect")
 }
 
 /// 场景层的内置导入器，固定顺序。
@@ -333,6 +363,32 @@ mod tests {
                 .is_err()
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `.prefab` 承载两种格式；`kind=effect` 的必须在实体预制体校验里**放行**。
+    ///
+    /// 这条门防的是回归：这段分流曾经缺失，于是每个特效预设在导入期都报
+    /// "unknown record"，而它根本没打算被 `Prefab` 认识（运行时走 `EffectPrefab::load`）。
+    /// assetc 的两条用例因此长期判红——一个"看起来像资产有问题"的假信号。
+    #[test]
+    fn prefab_importer_lets_effect_presets_through() {
+        let importer = scene_registry().get(ResourceKind::Prefab).unwrap();
+        let path = Path::new("assets/fx/slash.prefab");
+
+        // 真实格式：注释 + kind=effect + graph/overlay/param（制表符分隔）。
+        let effect = "# 特效预设\nprefab_version=1\nkind=effect\nname=炎刃斩击\n\
+                      graph=assets/fx/slash.sgraph\noverlay=true\nparam\tspin\t2.4\n";
+        importer
+            .validate(path, effect.as_bytes())
+            .expect("特效预设不该被实体预制体的解析器拦下");
+
+        // 反向：普通实体预制体仍然必须通过实体校验（分流不能把两种格式混为一谈）。
+        // `kind=` 不是 `effect` 时按实体预制体处理，这里缺 entity 记录，必须报错。
+        let not_effect = "prefab_version=1\nkind=entity\nname=x\n";
+        assert!(
+            importer.validate(path, not_effect.as_bytes()).is_err(),
+            "kind 不是 effect 时应走实体预制体校验"
+        );
     }
 
     /// 完整注册表（六个核心导入器 + 本 crate 两个）的装配测试**搬到了导入层**

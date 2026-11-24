@@ -673,7 +673,9 @@ impl LuaRuntime {
         state.prefab_rect_writer = Some(PrefabRectPort(Box::new(rect_writer)));
     }
 
-    /// 运行期 spawn 实例的「活实体槽位号 → 实体名」，键空间与 [`Self::prefab_ui_nodes`] 一致。
+    /// 运行期 spawn 实例的「活实体槽位号 → 实体名」，键空间与预制体 UI 节点表一致。
+    /// （原先链到 `Self::prefab_ui_nodes`，该字段已随预制体 UI 重构改名/移除，
+    /// 链接随之失效——`cargo doc -D warnings` 会判红，所以这里改用文字描述。）
     /// 宿主把解算出的矩形报回给调用方时用它换名——槽位号还原不出 `EntityId`（缺 generation），
     /// 因此这里直接给名字，而不是让宿主反查。
     #[must_use]
@@ -924,6 +926,19 @@ impl LuaRuntime {
         });
     }
 
+    /// M96：取走脚本最后一次 `effect.play` / `effect.stop` 的意图（取走即清空）。
+    ///
+    /// 用"取走"而不是"读取"：意图要被执行一次就消失，否则宿主每帧都会重复加载同一个预设
+    /// （重建管线，白烧帧时间）。
+    pub fn take_effect_command(
+        &self,
+    ) -> Option<crate::script::domain::render::render_overrides::EffectCommand> {
+        self.state
+            .borrow()
+            .render_overrides
+            .with_mut(|overrides| overrides.effect_command.take())
+    }
+
     /// 脚本设置的剖面封口深度（米，0 = 关）；`None` = 渲染器默认。
     pub fn render_clip_cap(&self) -> Option<f32> {
         self.state.borrow().render_overrides.with(|o| o.clip_cap)
@@ -1152,6 +1167,17 @@ impl LuaRuntime {
     /// `iter().find(...)` 的结果逐字相同；变的只是复杂度（O(n) 线性扫 → O(1) 反查）。
     #[must_use]
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| entities.names.first_name(id).map(|name| name.to_string()))
+    }
+
+    /// 与 [`Self::entity_name`] 同源同结果，但以 `Arc<str>` 返回：**读取期零分配**。
+    ///
+    /// P2：3D 提取每帧每实体都要名字（10k 实体 = 每帧 1 万次），旧路径每次
+    /// `first_name` 克隆一个 `String`。名字表本身已按 `Arc<str>` 存，这里只是 +1 引用。
+    /// 调用方若只需要 `&str`，用 `&**name` 即可。
+    #[must_use]
+    pub fn entity_name_arc(&self, id: EntityId) -> Option<std::sync::Arc<str>> {
         let entities = self.state.borrow().entity_state.clone();
         entities.with(|entities| entities.names.first_name(id))
     }

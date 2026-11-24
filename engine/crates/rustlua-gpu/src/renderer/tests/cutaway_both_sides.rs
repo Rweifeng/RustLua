@@ -55,6 +55,7 @@ const DEEP_CAP: f32 = 3.0;
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -74,8 +75,8 @@ fn empty_mesh() -> SceneMesh {
 fn ground_drawable() -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "Ground".to_owned(),
-        mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+        name: "Ground".to_owned().into(),
+        mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),

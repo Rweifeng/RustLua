@@ -101,6 +101,7 @@ fn quad_mesh(key: &str, uv_scale: f32) -> rustlua_render::frame::SceneMesh {
         sdf: 0,
     };
     rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: vec![
             corner(-1.0, -1.0, 0.0, 0.0),
             corner(1.0, -1.0, uv_scale, 0.0),

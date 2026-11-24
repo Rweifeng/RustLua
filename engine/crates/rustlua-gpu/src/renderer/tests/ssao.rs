@@ -53,6 +53,7 @@ fn quad(half: f32, z: f32) -> Vec<WorldSpriteVertex> {
 
 fn scene_mesh() -> SceneMesh {
     let mut mesh = SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

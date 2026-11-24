@@ -1,0 +1,49 @@
+{
+ "skeleton": {
+  "hash": "t",
+  "spine": "4.3.75-beta",
+  "x": 0,
+  "y": 0,
+  "width": 64,
+  "height": 64
+ },
+ "bones": [
+  {
+   "name": "root"
+  }
+ ],
+ "slots": [
+  {
+   "name": "a",
+   "bone": "root",
+   "attachment": "region_a"
+  },
+  {
+   "name": "b",
+   "bone": "root",
+   "attachment": "region_b"
+  }
+ ],
+ "skins": [
+  {
+   "name": "default",
+   "attachments": {
+    "a": {
+     "region_a": {
+      "type": "region",
+      "width": 32,
+      "height": 32
+     }
+    },
+    "b": {
+     "region_b": {
+      "type": "region",
+      "width": 32,
+      "height": 32
+     }
+    }
+   }
+  }
+ ],
+ "animations": {}
+}

@@ -17,6 +17,7 @@ use rustlua_infra::ids::AssetId;
 use rustlua_lua_api::Handle;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 thread_local! {
     /// 观测点：反向索引重建次数（两个 crate 的契约测试都读它：改名才重建、稳态零重建）。
@@ -48,7 +49,12 @@ pub struct EntityNames {
     by_name: BTreeMap<String, EntityId>,
     /// 实体 → 它登记过的名字，按 `by_name` 的键序收集：`first_name` 取第一个，与改造前
     /// `iter().find` 的结果**逐字相同**（同一实体挂多个名字时这一点尤其重要）。
-    by_entity: RefCell<HashMap<EntityId, Vec<String>>>,
+    ///
+    /// P2：元素是 `Arc<str>` 而不是 `String` —— `first_name` 是 3D 提取里**每实体每帧**
+    /// 调用的（10k 实体 = 每帧 1 万次），旧实现 `.cloned()` 每帧复制一万个字符串。
+    /// 名字表只在改名时重建（`reverse_dirty`），所以这层 `Arc` 的额外成本只付在重建期，
+    /// 换取读取期 O(1) 克隆、零分配。顺序与内容与旧实现逐字相同。
+    by_entity: RefCell<HashMap<EntityId, Vec<Arc<str>>>>,
     reverse_dirty: Cell<bool>,
 }
 
@@ -105,17 +111,20 @@ impl EntityNames {
             return;
         }
         ENTITY_NAME_REBUILDS.with(|count| count.set(count.get() + 1));
-        let mut built: HashMap<EntityId, Vec<String>> = HashMap::new();
+        // P2：每个名字只转一次 `Arc<str>`，同一实体挂多个名字时共享各自的 Arc。
+        let mut built: HashMap<EntityId, Vec<Arc<str>>> = HashMap::new();
         for (name, id) in &self.by_name {
-            built.entry(*id).or_default().push(name.clone());
+            built.entry(*id).or_default().push(Arc::from(name.as_str()));
         }
         *self.by_entity.borrow_mut() = built;
         self.reverse_dirty.set(false);
     }
 
     /// `entity_name` 的实现：与旧 `iter().find` **同结果**（BTreeMap 键序里的第一个）。
+    ///
+    /// P2 起返回 `Arc<str>`：读取期 O(1) 克隆、零分配（旧实现每帧克隆一万个字符串）。
     #[must_use]
-    pub fn first_name(&self, id: EntityId) -> Option<String> {
+    pub fn first_name(&self, id: EntityId) -> Option<Arc<str>> {
         self.ensure_reverse();
         self.by_entity
             .borrow()

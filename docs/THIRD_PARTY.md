@@ -61,3 +61,35 @@ py -3 examples/game_jhyt/tools/gen_audio.py     # 输出 gen_audio_ok files=15
 
 生成脚本自带自检（RIFF 头 / 声道 / 采样率 / 位深 / 帧数 / 非静音 / 时长与体积上限），
 任一文件不合规即 `exit 1`。资产为确定性输出：重复运行字节一致（脚本内打印 SHA256）。
+
+## Spine 2D 运行时与示例骨骼（M84，**许可证边界必读**）
+
+### 运行时库
+
+| 组件 | 来源 | 许可证 | 用途 |
+|---|---|---|---|
+| `spine2d` 0.5 | [crates.io](https://crates.io/crates/spine2d) / [docs.rs](https://docs.rs/spine2d/0.5.0/spine2d/) | 见 crate 元数据（Spine Runtimes License） | Spine 4.3.x 骨架解析与采样；只启用 `json` + `binary`，**不含**其 wgpu 后端 |
+
+**Spine Runtimes License 的关键约束**（比 MIT/Apache 严格，必须遵守）：
+
+1. **允许**：在游戏/应用中加载并渲染用 Spine 编辑器导出的数据。
+2. **禁止**：用本运行时去**构建骨骼编辑/动画创作工具**。因此本引擎的编辑器**不做**
+   骨骼编辑、关键帧编辑或 `.spine` 导出——只做**只读**的静态姿势预览（P3 决策）。
+3. 再分发时须随附许可证文本。
+
+这条约束直接决定了两处实现边界，改动前请先读本节：
+- `editor` 侧不得出现任何"写回 `.skel`/`.spineatlas`/`.spine`"的路径；
+- 运行时（`rustlua-spine`）只读数据，不提供序列化导出 API。
+
+### 示例骨骼资产
+
+| 资产 | 来源 | 许可证 | 位置 |
+|---|---|---|---|
+| spineboy（**essence** 版：`.skel` + `.atlas` + `.png`） | [spine-runtimes 官方示例](https://github.com/EsotericSoftware/spine-runtimes)（`examples/spineboy/export`，Spine 4.3.75-beta 导出） | 随官方示例仓库（Spine Runtimes License / 示例许可） | `examples/game_api/assets/spine/spineboy.{skel,spineatlas,png}` + 清单 `spineboy.spine` |
+
+**为什么是 essence 版**：pro 版含一个 `clipping` 附件（把头部裁进 `head-bb`），而当前渲染管线
+不实现裁剪——导入期会明确拒绝（`SpineError::UnsupportedClipping`）。essence 版只含 region
+与 boundingbox，是当前管线能吃下的最小完整骨骼，动画集相同（aim/death/hit/idle/jump/run/shoot/walk）。
+
+**为什么没有直接入库 pro 版的完整示例**：上游示例文件不随本仓分发；`examples/game_api` 里的这份
+是精简后用于演示的最小集合（三个文件合计约 265 KB）。若需完整示例，请自行从上游仓库按许可获取。

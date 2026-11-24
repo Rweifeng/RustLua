@@ -24,7 +24,8 @@ fn main() {
     let names = extracted
         .drawables
         .iter()
-        .map(|drawable| drawable.name.clone())
+        // P2：drawable 名是 `Arc<str>`；这里只是断言与 JSON 用途，转成 `String` 保持原输出。
+        .map(|drawable| drawable.name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(names.len(), 3, "demo3d drawable count changed");
     for required in ["Ground", "ShadowTriangle", "SkeletonWarrior"] {

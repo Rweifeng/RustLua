@@ -1,11 +1,13 @@
-//! 非阻塞离屏回读（WP12 阶段 4b 从 `renderer/mod.rs` 原样搬出）：槽位与结果类型，
-//! 以及 `impl Renderer` 上的拷贝/轮询/提交/账本方法。
+//! 离屏回读的**对外门面**：同步截图（`copy_texture_to_cpu`、PNG 捕获）与
+//! 非阻塞回读的委托方法、对外指标类型。
 //!
-//! `ReadbackMetrics` / `ReadbackStatus` 是 `host/mod.rs` 再导出的对外类型，保持 `pub` 不变，
-//! 由 `renderer/mod.rs` 用 `pub use` 接回原路径。`ReadbackSlot`（`Renderer` 的字段类型）留在
-//! `mod.rs`：本模块是它的后代，读写它的私有字段本来就不需要放宽任何可见性（计划 §3.1.2）。
+//! 非阻塞回读的**实现**在 [`super::async_readback`]（P3 起与 Shader 预览共用同一份
+//! 环形槽逻辑）；本模块只保留 `impl Renderer` 上的委托与对外类型 `ReadbackMetrics` /
+//! `ReadbackStatus`（后者由 `async_readback` 定义、这里 `use` 进来再
+//! 经 `renderer/mod.rs` 的 `pub use` 接回原路径，对外路径不变）。
 
-use super::{ReadbackSlot, Renderer};
+use super::Renderer;
+use super::async_readback::ReadbackStatus;
 use rustlua_render::frame::{Scene3d, SceneMesh};
 use std::path::Path;
 
@@ -19,21 +21,6 @@ pub struct ReadbackMetrics {
     pub pending: u64,
     pub cpu_bytes: usize,
     pub buffer_rebuilds: u64,
-}
-
-/// 非阻塞离屏回读的结果。
-pub enum ReadbackStatus {
-    /// 就绪的紧凑 RGBA8 像素（每行 `row_bytes`，无行尾填充），附实际尺寸。
-    /// 尺寸可能与当前渲染尺寸不同（排空的是上一帧不同分辨率的槽）。
-    Ready {
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
-    /// 尚未就绪（主线程未阻塞等待 GPU）；调用方沿用上一帧纹理即可。
-    Pending,
-    /// 回读失败。
-    Failed(String),
 }
 
 /// HDR 场景颜色的 CPU 回读（P3-R01）。
@@ -100,13 +87,6 @@ pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
         sign | (u32::from(exponent) + 112) << 23 | (mantissa << 13)
     };
     f32::from_bits(decoded)
-}
-
-/// 单个回读槽轮询的结果（M11-03）：未就绪 / 就绪像素 / 映射失败。
-enum ReadbackPoll {
-    NotReady,
-    Ready(Vec<u8>, u32, u32),
-    Failed(String),
 }
 
 /// 在 PNG 内侧画一圈相框。照片模式用，不参与窗口逐帧路径。
@@ -511,258 +491,59 @@ impl Renderer {
     /// 读取之前提交的结果。就绪返回 `Ready(pixels)`，未就绪返回 `Pending`——
     /// 主线程永不阻塞等待 GPU。纹理须有 `COPY_SRC` usage。
     ///
-    /// M11-03（R-04）：映射失败的回读槽现在会返回 `Failed` 而非当作就绪返回脏数据；
-    /// 失败槽会清空并允许下帧重试。
+    /// P3：具体实现搬到 [`super::async_readback::AsyncReadback`]，与 Shader 预览
+    /// 共用同一份环形槽逻辑；这里只是委托，行为与搬出前逐字节一致。
     pub fn readback_frame(
         &mut self,
         texture: &wgpu::Texture,
         width: u32,
         height: u32,
     ) -> ReadbackStatus {
-        // 先排空任意就绪槽（滞后一帧的结果）；失败槽上报错误（也允许重试）。
-        let mut ready = None;
-        let mut failed = None;
-        for index in 0..self.readback_slots.len() {
-            match self.poll_readback(index) {
-                ReadbackPoll::Ready(pixels, width, height) => {
-                    ready = Some((pixels, width, height));
-                    break;
-                }
-                ReadbackPoll::Failed(error) => {
-                    if failed.is_none() {
-                        failed = Some(error);
-                    }
-                }
-                ReadbackPoll::NotReady => {}
-            }
-        }
-        // 无论是否排空到结果，都提交本次拷贝，保证每个渲染帧都会被回读。
-        self.submit_readback(texture, width, height);
-        self.readback_pending_count += 1;
-        if let Some((pixels, width, height)) = ready {
-            ReadbackStatus::Ready {
-                pixels,
-                width,
-                height,
-            }
-        } else if let Some(error) = failed {
-            ReadbackStatus::Failed(error)
-        } else {
-            ReadbackStatus::Pending
-        }
+        self.readback.readback_frame(texture, width, height)
     }
 
     pub fn readback_slot_count(&self) -> usize {
-        self.readback_slots.len()
+        self.readback.metrics().slot_count
     }
 
     pub fn readback_busy_count(&self) -> usize {
-        self.readback_slots
-            .iter()
-            .filter(|slot| slot.submission.is_some())
-            .count()
+        self.readback.metrics().busy_count
     }
 
     pub fn readback_metrics(&self) -> ReadbackMetrics {
+        let m = self.readback.metrics();
         ReadbackMetrics {
-            slot_count: self.readback_slots.len(),
-            busy_count: self.readback_busy_count(),
-            submitted: self.readback_submitted,
-            completed: self.readback_completed,
-            dropped: self.readback_dropped,
-            pending: self.readback_pending_count,
-            cpu_bytes: self
-                .readback_slots
-                .iter()
-                .map(|slot| slot.pixels.capacity())
-                .sum(),
-            buffer_rebuilds: self.readback_buffer_rebuilds,
+            slot_count: m.slot_count,
+            busy_count: m.busy_count,
+            submitted: m.submitted,
+            completed: m.completed,
+            dropped: m.dropped,
+            pending: m.pending,
+            cpu_bytes: m.cpu_bytes,
+            buffer_rebuilds: m.buffer_rebuilds,
         }
     }
-    /// 是否有在途（已提交未读）的回读等待排空。
+
     pub fn readback_in_flight(&self) -> bool {
-        self.readback_slots
-            .iter()
-            .any(|slot| slot.submission.is_some())
+        self.readback.has_inflight()
     }
 
-    /// 仅排空待读的回读（内容未变、无需新提交时调用），返回就绪像素或映射错误。
+    /// 测试专用：见 [`super::async_readback::AsyncReadback::inject_failed_slot`]。
+    #[cfg(test)]
+    pub(super) fn inject_failed_readback_slot(
+        &mut self,
+        submission: wgpu::SubmissionIndex,
+        error: &str,
+        width: u32,
+        height: u32,
+    ) {
+        self.readback
+            .inject_failed_slot(submission, error, width, height);
+    }
+
     pub fn readback_pending(&mut self) -> ReadbackStatus {
-        for index in 0..self.readback_slots.len() {
-            match self.poll_readback(index) {
-                ReadbackPoll::Ready(pixels, width, height) => {
-                    return ReadbackStatus::Ready {
-                        pixels,
-                        width,
-                        height,
-                    };
-                }
-                ReadbackPoll::Failed(error) => return ReadbackStatus::Failed(error),
-                ReadbackPoll::NotReady => {}
-            }
-        }
-        ReadbackStatus::Pending
-    }
-
-    /// 非阻塞检查一个回读槽的映射结果：未就绪 / 就绪（读出行数据并置回空闲）/
-    /// 映射失败（上报错误并把槽置回空闲以便重试）。
-    fn poll_readback(&mut self, index: usize) -> ReadbackPoll {
-        let Some(slot) = self.readback_slots.get(index) else {
-            return ReadbackPoll::NotReady;
-        };
-        let Some(_) = slot.submission else {
-            return ReadbackPoll::NotReady;
-        };
-        // 非阻塞 maintain：处理所有已完成的提交与 `map_async` 回调（超时即返回，
-        // 主线程不阻塞）。就绪与否由 `map_result` 标志判断。
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::ZERO),
-        });
-        let result = slot.map_result.load(std::sync::atomic::Ordering::Acquire);
-        if result == 0 {
-            return ReadbackPoll::NotReady;
-        }
-        if result == 2 {
-            // 映射失败：上报错误并把槽置回空闲（buffer 未映射，不能 unmap）。
-            let error = slot
-                .map_error
-                .lock()
-                .ok()
-                .and_then(|mut guard| guard.take())
-                .unwrap_or_else(|| "GPU 回读映射失败".to_owned());
-            let slot = &mut self.readback_slots[index];
-            slot.submission = None;
-            slot.map_result
-                .store(0, std::sync::atomic::Ordering::Release);
-            return ReadbackPoll::Failed(error);
-        }
-        // 映射成功：读出行数据并置回空闲。
-        let (width, height, row_bytes, bytes_per_row) =
-            (slot.width, slot.height, slot.row_bytes, slot.bytes_per_row);
-        let buffer = slot.buffer.clone();
-        let padded = buffer.slice(..).get_mapped_range();
-        let mut pixels = self.readback_slots[index].pixels.clone();
-        pixels.clear();
-        pixels.reserve((row_bytes * height) as usize);
-        for row in 0..height as usize {
-            let start = row * bytes_per_row as usize;
-            pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
-        }
-        drop(padded);
-        buffer.unmap();
-        // 槽置回空闲，允许复用。
-        let slot = &mut self.readback_slots[index];
-        slot.submission = None;
-        slot.map_result
-            .store(0, std::sync::atomic::Ordering::Release);
-        self.readback_completed = self.readback_completed.saturating_add(1);
-        ReadbackPoll::Ready(pixels, width, height)
-    }
-
-    /// 向一个空闲回读槽提交离屏纹理 → staging buffer 的拷贝（buffer 尺寸不符时重建）。
-    fn submit_readback(&mut self, texture: &wgpu::Texture, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        let row_bytes = 4 * width;
-        let bytes_per_row = row_bytes.div_ceil(256);
-        let bytes_per_row = bytes_per_row * 256;
-        let size_bytes = (bytes_per_row * height) as u64;
-        tracing::debug!(target: "render", width, height, "[readback] submit");
-        // 惰性创建双缓冲槽。
-        while self.readback_slots.len() < 2 {
-            self.readback_slots.push(ReadbackSlot {
-                buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("rustlua-editor-readback"),
-                    size: size_bytes.max(4),
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                }),
-                submission: None,
-                map_result: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
-                map_error: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                width,
-                height,
-                row_bytes,
-                bytes_per_row,
-                pixels: Vec::with_capacity((row_bytes * height) as usize),
-                generation: 0,
-            });
-        }
-        // 找一个空闲槽（无在途提交）。
-        let Some(index) = self
-            .readback_slots
-            .iter()
-            .position(|slot| slot.submission.is_none())
-        else {
-            self.readback_dropped += 1;
-            return; // 全部在途，跳过本次提交
-        };
-        // 尺寸不符时重建 buffer，避免越界写入。
-        let slot = &mut self.readback_slots[index];
-        if slot.width != width || slot.height != height || slot.buffer.size() < size_bytes {
-            slot.buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("rustlua-editor-readback"),
-                size: size_bytes,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            slot.width = width;
-            slot.height = height;
-            slot.row_bytes = row_bytes;
-            slot.bytes_per_row = bytes_per_row;
-            slot.generation = slot.generation.saturating_add(1);
-            self.readback_buffer_rebuilds = self.readback_buffer_rebuilds.saturating_add(1);
-        }
-        let buffer = slot.buffer.clone();
-        let map_result = slot.map_result.clone();
-        let map_error = slot.map_error.clone();
-        slot.map_result
-            .store(0, std::sync::atomic::Ordering::Release);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rustlua-editor-readback-copy"),
-            });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        // 先提交拷贝，再请求映射（与同步回读一致：map_async 会把 buffer 标记为
-        // mapped-pending，若在 copy 提交前调用会触发 "Buffer is still mapped"）。
-        let submission = self.queue.submit([encoder.finish()]);
-        // M11-03（R-04）：捕获 `map_async` 结果。映射失败不再被当作"已就绪"返回脏数据，
-        // 而是记录错误（map_result=2 + map_error），由 poll_readback 上报 Failed 并清槽重试。
-        buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| match result {
-                Ok(()) => map_result.store(1, std::sync::atomic::Ordering::Release),
-                Err(error) => {
-                    map_result.store(2, std::sync::atomic::Ordering::Release);
-                    if let Ok(mut guard) = map_error.lock() {
-                        *guard = Some(error.to_string());
-                    }
-                }
-            });
-        slot.submission = Some(submission);
-        self.readback_submitted = self.readback_submitted.saturating_add(1);
+        // 只"排空"、不提交新拷贝：取到就绪槽返回 Ready，映射失败返回 Failed，
+        // 否则 Pending（含"当前没有在途槽"）。
+        self.readback.take_ready()
     }
 }

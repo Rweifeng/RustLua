@@ -39,10 +39,11 @@ fn serialized_and_runtime_consistency_demo3d() {
         let drawable = runtime3d
             .drawables
             .iter()
-            .find(|d| d.name == serialized_entity.name)
+            .find(|d| *d.name == *serialized_entity.name)
             .unwrap_or_else(|| panic!("runtime 缺少同名实体 {}", serialized_entity.name));
         assert_eq!(
-            drawable.mesh_path, serialized_entity.mesh.mesh,
+            &*drawable.mesh_path,
+            serialized_entity.mesh.mesh.as_str(),
             "{} 的 mesh path 应一致",
             serialized_entity.name
         );

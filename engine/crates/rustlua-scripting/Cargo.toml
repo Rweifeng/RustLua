@@ -44,6 +44,10 @@ rustlua-camera = { path = "../rustlua-camera" }
 rustlua-animation = { path = "../rustlua-animation" }
 # 物理组件类型与碰撞形状同样是测试要造/要断言的领域知识（绑定、装配与驱动已归组合根）。
 rustlua-physics = { path = "../rustlua-physics" }
+# M84：`spine` 表由组合根装（`engine::host::script_packs`），库本身对 Spine 零引用。
+# 但快照门（`api_surface_snapshot`）用的是本 crate 自建的测试运行时，必须也装这张表，
+# 否则基线与实际 API 面会差一整块。dev 依赖不进产物依赖图，也不进 `architecture_edges`。
+rustlua-spine = { path = "../rustlua-spine" }
 # UI 绑定、15 类场景组件装配、宿主访问器与 prefab 布局节点计算已由组合根接管
 # （`engine::host::script_packs` / `runtime_scene::ui_driver` / `mesh_ui`）：库本身对 UI 域
 # 零引用（`docs/62` P1 阶段 4d）。测试仍要造 UI 组件与 UiState 句柄、断言脚本写入的

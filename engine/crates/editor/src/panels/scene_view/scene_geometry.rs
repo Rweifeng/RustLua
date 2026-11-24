@@ -356,9 +356,11 @@ pub(crate) fn scene_drag_transform(
 
 pub(crate) fn pick_scene_3d_entity(
     ray: Ray3,
+    // 名字只作为"这条记录是谁"的读侧标签，本函数不参与判定；P2 起统一用 `Arc<str>`，
+    // 与 `SceneView3dTypedEntity.name` 同一类型，避免调用侧为点选再造一份 `String`。
     entities: &[(
         SceneEntityId,
-        String,
+        std::sync::Arc<str>,
         Transform3D,
         rustlua_math::math3d::Aabb3,
     )],

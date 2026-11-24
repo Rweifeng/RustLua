@@ -613,7 +613,7 @@ fn sample_hierarchy_phase(
                     report
                         .timings
                         .iter()
-                        .find(|timing| timing.name == "spatial_propagate")
+                        .find(|timing| &*timing.name == "spatial_propagate")
                         .map(|timing| timing.elapsed.as_micros() as u64)
                 })
                 .unwrap_or(0),

@@ -75,12 +75,20 @@ const BUDGET: &[(&str, &[&str])] = &[
         // 文法解析/校验着色器图，`ShaderGraph` 的值类型住在 `rustlua-visual-script`。
         // 它是纯叶子（serde/serde_json/thiserror，不认 scene/render），所以这条边不开新方向、
         // 也不把重型依赖带进导入层——与上面 `animation`/`scene` 那两条同因。
+        //
+        // `spine`（M84 P1）：`.spine` / `.skel` / `.spineatlas` 三个导入器必须用**运行时同一台**
+        // 解析器校验（`SpineManifest::parse` / `validate::skeleton_bytes` / `validate::atlas_text`），
+        // 否则"导入成功、运行时打不开"的分叉会重新长出来。`rustlua-spine` 只依赖
+        // spine2d core（无 wgpu 后端）+ ecs/math/lua-api/component-codec，不拉渲染器、
+        // 不拉 image/rodio，因此这条边与 `animation` 同构：不开新方向、不新增重型传递依赖。
+        // 校验走 `validate` 模块的中性入口，导入层**不**直接 `use spine2d`。
         &[
             "animation",
             "assets",
             "infra",
             "math",
             "scene",
+            "spine",
             "ui",
             "visual-script",
         ],

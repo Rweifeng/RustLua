@@ -79,7 +79,7 @@ fn main() -> Result<(), String> {
     let mut names = extracted
         .drawables
         .iter()
-        .map(|drawable| drawable.name.clone())
+        .map(|drawable| drawable.name.to_string())
         .collect::<Vec<_>>();
     names.sort();
     let mesh = runtime

@@ -31,6 +31,7 @@ members = [
     "crates/rustlua-render",
     "crates/rustlua-scene",
     "crates/rustlua-scripting",
+    "crates/rustlua-spine",
     "crates/rustlua-visual-script",
     "crates/rustlua-ui",
     "crates/rustlua-ui-host-evidence",
@@ -72,7 +73,11 @@ rustlua-scene = { path = "crates/rustlua-scene" }
 rustlua-camera = { path = "crates/rustlua-camera" }
 rustlua-animation = { path = "crates/rustlua-animation" }
 rustlua-render = { path = "crates/rustlua-render" }
+rustlua-spine = { path = "crates/rustlua-spine" }
 rustlua-gpu = { path = "crates/rustlua-gpu" }
+# M84 Spine 2D：只用 spine2d 的 core（crate 自带的 wgpu 后端要 wgpu 29/30，本仓是 27）。
+# 冻结 Spine 4.3.x；升级须走 M84-00 §4.1 的 backend 隔离层与 golden 对拍门。
+spine2d = { version = "0.5", features = ["json", "binary"] }
 rustlua-frame-abi = { path = "crates/rustlua-frame-abi" }
 rustlua-ui = { path = "crates/rustlua-ui" }
 rustlua-ui-spec = { path = "crates/rustlua-ui-spec" }

@@ -78,6 +78,7 @@ fn cutaway_cap_scales_the_section_band() {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -96,8 +97,8 @@ fn empty_mesh() -> SceneMesh {
 fn water_drawable() -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "Water".to_owned(),
-        mesh_path: "__water__?size=64&res=8&y=0".to_owned(),
+        name: "Water".to_owned().into(),
+        mesh_path: "__water__?size=64&res=8&y=0".to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),

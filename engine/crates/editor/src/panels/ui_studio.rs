@@ -45,6 +45,17 @@ pub(crate) struct UiStudioPanel {
     /// 画布屏幕位移（与缩放解耦，缩放锚点由 [`crate::ui_canvas::CanvasView`] 算）。
     pub(crate) canvas_pan: egui::Vec2,
     /// 画布图片纹理缓存：工程内相对路径 → 纹理。
+    ///
+    /// **P1-1 结论（2026-11-19）：当前恒为空，不需要容量上限。**
+    /// 全仓没有任何写入点——它一路被 `clear()`、被传给 `draw_canvas`（那里收下但没用）、
+    /// 被内存面板读 `len()`。所以"这个缓存会不会无限增长"在现状下不成立：
+    /// 增长量为零。
+    ///
+    /// 保留字段是因为它记录了**设计意图**（画布引用工程内图片时应当缓存纹理句柄，
+    /// 否则每帧 `load_texture` 会把 GPU 纹理翻倍）。真要启用时，请一并做两件事：
+    /// 1. 加容量上限（按字节或条数）并在超限时按 LRU 淘汰——`egui::TextureHandle`
+    ///    只要还被引用就不会释放，无上限等于把工程里所有图片常驻显存；
+    /// 2. 在 `release_all_resources()` 里清空它（P1-4 的释放路径已经预留了位置）。
     pub(crate) canvas_textures: BTreeMap<String, egui::TextureHandle>,
     /// 画布真正绘制过的帧数（测试用来确认面板走到了画布路径）。
     pub(crate) canvas_paints: u64,

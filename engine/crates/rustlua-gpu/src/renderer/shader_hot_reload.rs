@@ -29,8 +29,9 @@ use web_time::Instant;
 use super::DepthPass;
 use super::Renderer;
 use super::construct::{
-    build_fullscreen_pipeline, build_textured_pipeline, build_vector_text_pipeline,
-    build_world_sprite_pipeline, create_mesh_pipeline, create_shadow_pipeline,
+    additive_blend_state, build_fullscreen_pipeline, build_textured_pipeline,
+    build_vector_text_pipeline, build_world_sprite_pipeline,
+    build_world_sprite_pipeline_with_blend, create_mesh_pipeline, create_shadow_pipeline,
     module_from_preprocessed, preprocessed_variant, variant_root,
 };
 #[cfg(test)]
@@ -301,7 +302,10 @@ enum BuiltSlots {
     WorldSprite {
         translucent: wgpu::RenderPipeline,
         opaque: wgpu::RenderPipeline,
+        /// M84 P2-③：additive 变体（与半透明同深度策略，只有混合方程不同）。
+        additive: wgpu::RenderPipeline,
         hdr: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+        hdr_additive: Option<wgpu::RenderPipeline>,
     },
     PostProcess {
         pipeline: wgpu::RenderPipeline,
@@ -326,13 +330,19 @@ impl BuiltSlots {
             Self::WorldSprite {
                 translucent,
                 opaque,
+                additive,
                 hdr,
+                hdr_additive,
             } => {
                 renderer.world_sprite_pipeline = translucent;
                 renderer.world_sprite_opaque_pipeline = opaque;
+                renderer.world_sprite_additive_pipeline = additive;
                 if let Some((hdr_translucent, hdr_opaque)) = hdr {
                     renderer.hdr_world_sprite_pipeline = Some(hdr_translucent);
                     renderer.hdr_world_sprite_opaque_pipeline = Some(hdr_opaque);
+                }
+                if let Some(hdr_additive) = hdr_additive {
+                    renderer.hdr_world_sprite_additive_pipeline = Some(hdr_additive);
                 }
             }
             Self::PostProcess { pipeline } => renderer.post_process_pipeline = pipeline,
@@ -746,6 +756,19 @@ impl Renderer {
                         ),
                     )
                 });
+                // HDR additive 只在 HDR 变体存在时重建：用**已有**的字段判存在性，
+                // 与 `hdr` 用同一个 `hdr_world_sprite_pipeline.is_some()` 判据。
+                let hdr_additive = self.hdr_world_sprite_pipeline.as_ref().map(|_| {
+                    build_world_sprite_pipeline_with_blend(
+                        &self.device,
+                        layout,
+                        &module,
+                        DepthPass::WorldSprite,
+                        wgpu::TextureFormat::Rgba16Float,
+                        additive_blend_state(),
+                        "rustlua-world-sprite-additive-hdr-pipeline",
+                    )
+                });
                 BuiltSlots::WorldSprite {
                     translucent: build_world_sprite_pipeline(
                         &self.device,
@@ -763,6 +786,18 @@ impl Renderer {
                         format,
                         "rustlua-world-sprite-opaque-pipeline",
                     ),
+                    // M84 P2-③：additive 必须一起重建，否则热重载后"首帧与重载后"是两条
+                    // 不同的混合路径，画面对不上又极难查（这正是 two_d_pipeline 注释里写的坑）。
+                    additive: build_world_sprite_pipeline_with_blend(
+                        &self.device,
+                        layout,
+                        &module,
+                        DepthPass::WorldSprite,
+                        format,
+                        additive_blend_state(),
+                        "rustlua-world-sprite-additive-pipeline",
+                    ),
+                    hdr_additive,
                     hdr,
                 }
             }

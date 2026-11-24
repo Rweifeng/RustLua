@@ -29,8 +29,10 @@ fn target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
 fn ground() -> rustlua_render::frame::Scene3dDrawable {
     rustlua_render::frame::Scene3dDrawable {
         entity: rustlua_scene::scene::SceneEntityId(1),
-        name: "ground".to_owned(),
-        mesh_path: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+        name: "ground".to_owned().into(),
+        mesh_path: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL
+            .to_owned()
+            .into(),
         material: None,
         mesh_handle: None,
         model: Mat4::translation(Vec3::new(0.0, 0.0, -2.0))
@@ -52,6 +54,7 @@ fn ground() -> rustlua_render::frame::Scene3dDrawable {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -76,17 +79,14 @@ fn pixel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
     ]
 }
 
-fn test_device(label: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .ok()?;
+fn test_device(tag: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
+    // 适配器选择走共享策略（`RUSTLUA_TEST_GPU`），不再各写一份
+    // `force_fallback_adapter: true`——那样会把每个测试都推到软件光栅化上。
+    let (adapter, _mode) = crate::test_adapter::request_test_adapter();
+    let adapter = adapter?;
     Some(
         pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some(label),
+            label: Some(tag),
             required_features: wgpu::Features::empty(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             required_limits: wgpu::Limits::default(),

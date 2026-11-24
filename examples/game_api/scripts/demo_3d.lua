@@ -54,6 +54,9 @@ local clip_index = 1
 local probe_entity = nil
 local probe_attached = false
 local debug_on = false
+-- 特效预设（M96）：进入 `effect_overlay` 步骤时打开，离开时**不停**——让读者能看着它
+-- 跨步骤继续播；想停就 `render.stop_effect()`。
+local effect_playing = false
 local env_id = nil
 local sun_id = nil
 local warrior_id = nil
@@ -634,39 +637,52 @@ local steps = {
     {
         id = "effect_overlay",
         title = "Effect overlay / 炎刃斩击",
-        claim = "project.toml [render] 的 .sgraph 叠加层在运行时可用：火焰流动 + 刀光弧 + 冲击波合成一张图，按名字或槽位改参数、改时间，非法槽位/非有限值/负时间一律拒绝（headless 下没有宿主挂载时，按名字改参数会如实返回原因）",
+        claim = "特效做成 .prefab 预设后由逻辑按需加载：render.play_effect 触发、render.stop_effect 撤掉，同一张 .sgraph 可有多份预设（只换参数）；project.toml [render] 的常驻叠加层仍走原来的参数/时间 API，非法槽位/非有限值/负时间一律拒绝",
         api = {
+            "render.play_effect",
+            "render.stop_effect",
             "render.set_effect_params",
             "render.set_effect_param",
             "render.set_effect_time",
         },
-        code = "render.set_effect_param('spin', 2.8); render.set_effect_param('speed', 0.9); render.set_effect_params(1, 1.0, 0.42, 0.08, 0.0); render.set_effect_time(1.25)",
+        code = "render.play_effect('assets/fx/flame_blade_slash.prefab'); render.set_effect_param('spin', 2.8); render.stop_effect()",
         enter = function()
             reset_world()
             ensure_landscape()
+            -- 进入本步就按预设播一次（这里其实每帧都在 play，展示"同一名字重播 = 替换而不是叠加"）。
+            effect_playing = true
         end,
         run = function(dt)
             elapsed = elapsed + dt
             spin_landscape(elapsed)
-            -- 炎刃斩击：刀光弧旋转(spin)、冲击波扩散(speed)、火焰色(color_r/g/b)、闪烁(frequency)
-            -- 都走命名参数；槽位 0.x 仍是深度描边宽度，保留槽位 API 的演示。
+            if effect_playing then
+                -- 预设负责"长什么样"，脚本只负责"什么时候播"；这里每帧调 play 演示幂等。
+                render.play_effect("assets/fx/flame_blade_slash.prefab")
+            end
+            -- 播着的时候仍可逐帧微调：命名参数与槽位两条路都对脚本触发的那一层生效。
             render.set_effect_param("spin", 1.6 + 1.2 * (0.5 + 0.5 * math.sin(elapsed * 0.7)))
             render.set_effect_param("speed", 0.6 + 0.5 * (0.5 + 0.5 * math.sin(elapsed * 1.1)))
-            render.set_effect_params(1, 1.0, 0.32 + 0.2 * (0.5 + 0.5 * math.sin(elapsed)), 0.06, 0.0)
-            render.set_effect_params(0, 0.0025 + 0.0015 * (0.5 + 0.5 * math.sin(elapsed)), 0.0, 0.0, 0.0)
             render.set_effect_time(elapsed)
-            lab.note("炎刃斩击 = 火焰纹理×火焰色×闪烁 + 冲击波环，刀光弧遮罩；改命名参数即改画面，改时间是宿主时钟之外的覆盖")
+            lab.note("render.play_effect(.prefab) 按预设加载 → 同一张图换参数即另一种招式；render.stop_effect() 撤掉，工程级常驻特效不受影响")
         end,
         read = function()
             return {
-                { "overlay", "flame_blade_slash.sgraph" },
+                { "preset", "flame_blade_slash.prefab" },
+                { "playing", effect_playing and "yes" or "no" },
                 { "spin", string.format("%.2f", 1.6 + 1.2 * (0.5 + 0.5 * math.sin(elapsed * 0.7))) },
-                { "speed", string.format("%.2f", 0.6 + 0.5 * (0.5 + 0.5 * math.sin(elapsed * 1.1))) },
                 { "time", string.format("%.2f", elapsed) },
-                { "param", "spin / speed / color_r/g/b" },
+                { "param", "preset params + live overrides" },
             }
         end,
         check = function(t)
+            -- 预设路径只做形状校验：真加载发生在宿主（headless 自检没有渲染器）。
+            t:ok(not render.play_effect(""), "empty preset path is rejected")
+            t:ok(not render.play_effect("assets/fx/flame_blade_slash.sgraph"),
+                "a .sgraph is not a preset; only .prefab is accepted")
+            t:ok(render.play_effect("assets/fx/flame_blade_slash.prefab"), "a .prefab preset path is accepted")
+            t:ok(render.play_effect("assets/fx/frost_blade_slash.prefab", "scratch"), "named instance is accepted")
+            t:ok(render.stop_effect("scratch"), "stop accepts a name")
+            t:ok(render.stop_effect(), "stop without a name stops every script-driven effect")
             -- 槽位路径总是可用（只校验 0..16 的槽号与有限值）。
             t:ok(render.set_effect_params(0, 0.003, 0.0, 0.0, 0.0), "slots accept a valid vec4")
             local bad_slot = render.set_effect_params(16, 0.0, 0.0, 0.0, 0.0)
@@ -676,7 +692,7 @@ local steps = {
             t:ok(render.set_effect_time(1.25), "effect time accepts a finite non-negative value")
             local bad_time = render.set_effect_time(-1.0)
             t:ok(not bad_time, "negative effect time is rejected")
-            -- 按名字改参数需要宿主先挂载 .sgraph 并把名字表推给脚本层。
+            -- 按名字改参数需要宿主先挂载并把名字表推给脚本层。
             -- headless 自检没有宿主，函数如实返回 (false, reason) —— 这本身是契约的一部分。
             local named_ok, named_reason = render.set_effect_param("edge_width", 0.003)
             if named_ok then

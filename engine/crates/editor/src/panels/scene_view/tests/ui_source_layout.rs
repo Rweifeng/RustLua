@@ -41,16 +41,34 @@ fn load_source(path: &Path) -> rustlua_scene::scene::Scene {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("scene") => rustlua_scene::scene::Scene::load(path)
             .unwrap_or_else(|error| panic!("{path:?}: {error}")),
-        Some("prefab") => {
-            let prefab = Prefab::load(path).unwrap_or_else(|error| panic!("{path:?}: {error}"));
-            let mut scene = rustlua_scene::scene::Scene::new(prefab.name.clone());
-            prefab
-                .instantiate(&mut scene, None, &BTreeMap::new())
-                .unwrap_or_else(|error| panic!("{path:?}: {error}"));
-            scene
-        }
+        Some("prefab") => match Prefab::load(path) {
+            Ok(prefab) => {
+                let mut scene = rustlua_scene::scene::Scene::new(prefab.name.clone());
+                prefab
+                    .instantiate(&mut scene, None, &BTreeMap::new())
+                    .unwrap_or_else(|error| panic!("{path:?}: {error}"));
+                scene
+            }
+            // M96：`assets/fx/*.prefab` 是**特效预设**（`kind=effect`），不是场景预制体。
+            // 它与场景预制体共用扩展名，但描述的是着色图参数，没有实体可实例化——
+            // 布局报告据此跳过它（空场景 = 不含 UI 源，`is_ui_source` 自然为假）。
+            Err(_) if is_effect_preset(path) => rustlua_scene::scene::Scene::new(
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            Err(error) => panic!("{path:?}: {error}"),
+        },
         _ => unreachable!("only .scene/.prefab reach here"),
     }
+}
+
+/// 读文件头判断是不是特效预设。**先看文本**再决定要不要当场景预制体解析：
+/// 两者扩展名相同，靠内容里的 `kind=effect` 区分是唯一可靠的判据。
+fn is_effect_preset(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|text| text.lines().any(|line| line.trim() == "kind=effect"))
+        .unwrap_or(false)
 }
 
 fn is_ui_source(scene: &rustlua_scene::scene::Scene) -> bool {
@@ -165,8 +183,9 @@ fn ui_source_scene_layout_matches_golden() {
     let reports = layout_reports(&root);
     assert_eq!(
         reports.len(),
-        13 * RESOLUTIONS.len(),
-        "UI 源场景/预制体数量变了（2026-11-02 家底 13 个；新增/删除样例工程时同步改这里并重生成基线）：{}",
+        14 * RESOLUTIONS.len(),
+        "UI 源场景/预制体数量变了（2026-11-23 家底 14 个：13 个场景 + demo_ui.prefab；\
+         新增/删除样例工程时同步改这里并重生成基线）：{}",
         reports
             .iter()
             .map(|report| report.split('|').next().unwrap())

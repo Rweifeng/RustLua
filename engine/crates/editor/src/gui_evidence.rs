@@ -163,6 +163,11 @@ struct EvidenceStep {
     ui_studio: bool,
     /// 采集前是否聚焦 Game 标签且**不进入 Play**（编辑期游戏画面预览的真窗口证据）。
     game: bool,
+    /// 采集前是否聚焦 Shader Graph 标签并展开「生成预设」抽屉（M96 真窗口证据）。
+    shader_preset: bool,
+    /// 采集前是否在资源面板选中一份 `.sgraph` 并停在属性面板（M99 真窗口证据：
+    /// 属性面板里的就地预览）。
+    shader_asset: bool,
     /// 采集前是否启用某台机型预设（`DEVICE_PRESETS` 下标；设备模拟真机证据）。
     /// 窗口尺寸同步设为该机型设计分辨率，Game 视图按机型 letterbox。
     device: Option<usize>,
@@ -186,6 +191,8 @@ struct CaptureRecord {
     assistant: bool,
     ui_studio: bool,
     game: bool,
+    shader_preset: bool,
+    shader_asset: bool,
     image_size: (u32, u32),
     /// 非黑像素比例：证明"窗口真的渲染出了东西"，而不是一张全黑图。
     lit_ratio: f32,
@@ -350,6 +357,8 @@ impl GuiEvidence {
                 assistant: step.assistant,
                 ui_studio: step.ui_studio,
                 game: step.game,
+                shader_preset: step.shader_preset,
+                shader_asset: step.shader_asset,
                 image_size: (0, 0),
                 lit_ratio: 0.0,
                 mean_luma: 0.0,
@@ -513,6 +522,45 @@ impl GuiEvidence {
                 crate::dock::focus_tab(state, crate::dock::DockTab::Game);
             }
         }
+        // M99：资源面板选中一份 `.sgraph`，让属性面板显示它的就地预览。
+        // 选工程里真实存在的那张（`project.toml` 挂的炎刃斩击），保证预览一定有内容。
+        if step.shader_asset {
+            app.show_inspector_panel = true;
+            if let Some(state) = app.dock_state.as_mut() {
+                crate::dock::focus_tab(state, crate::dock::DockTab::Inspector);
+            }
+            // 从**资源索引**里挑第一条 Shader Graph：属性面板的资源分支按索引入口匹配
+            // （`entries().iter().find`），自己 join 一个路径与索引里的 `path` 未必逐字相等
+            // （大小写/分隔符），那样会落到"资源信息不可用"。
+            if app.selected_resource.is_none() {
+                let pick = app
+                    .resources
+                    .entries()
+                    .iter()
+                    .find(|entry| {
+                        entry.kind == rustlua_assets::resource_kind::ResourceKind::ShaderGraph
+                    })
+                    .map(|entry| entry.path.clone());
+                match pick {
+                    Some(path) => app.select_resource(path),
+                    None => tracing::warn!(
+                        target: "editor",
+                        "[gui-evidence] 资源索引里没有 Shader Graph，属性面板预览证据可能为空"
+                    ),
+                }
+            }
+        }
+        // M96：Shader Graph 标签 + 生成预设抽屉。抽屉的开关与参数初值都由面板自己维护，
+        // 这里只负责"切过去并让它开着"——每帧都设一次，覆盖掉用户上次留下的关闭状态。
+        if step.shader_preset {
+            app.show_shader_graph = true;
+            if let Some(state) = app.dock_state.as_mut() {
+                crate::dock::focus_tab(state, crate::dock::DockTab::ShaderGraph);
+            }
+            if !app.shader_graph.preset_drawer_open() {
+                app.shader_graph.toggle_preset_drawer_for_evidence();
+            }
+        }
         if step.play {
             if !app.is_playing() && app.document.current_scene.is_some() {
                 app.play();
@@ -557,6 +605,8 @@ impl GuiEvidence {
                 assistant: false,
                 ui_studio: false,
                 game: false,
+                shader_preset: false,
+                shader_asset: false,
                 device: None,
             });
             let (width, height) = (image.width() as u32, image.height() as u32);
@@ -605,6 +655,8 @@ impl GuiEvidence {
                 assistant: step.assistant,
                 ui_studio: step.ui_studio,
                 game: step.game,
+                shader_preset: step.shader_preset,
+                shader_asset: step.shader_asset,
                 image_size: (width, height),
                 lit_ratio,
                 mean_luma,
@@ -747,6 +799,8 @@ impl GuiEvidence {
                     "assistant": record.assistant,
                     "ui_studio": record.ui_studio,
                     "game": record.game,
+                    "shader_preset": record.shader_preset,
+                    "shader_asset": record.shader_asset,
                     "image_size": [record.image_size.0, record.image_size.1],
                     "lit_ratio": record.lit_ratio,
                     "mean_luma": record.mean_luma,
@@ -789,6 +843,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
                 assistant: false,
                 ui_studio: false,
                 game: false,
+                shader_preset: false,
+                shader_asset: false,
                 device: None,
             });
         }
@@ -802,6 +858,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: false,
+        shader_preset: false,
+        shader_asset: false,
         device: None,
     });
     steps.push(EvidenceStep {
@@ -813,6 +871,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: false,
+        shader_preset: false,
+        shader_asset: false,
         device: None,
     });
     // M75-03 验收门 3：同一份真实窗口证据里必须有一张**助手面板**截图。
@@ -826,6 +886,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: true,
         ui_studio: false,
         game: false,
+        shader_preset: false,
+        shader_asset: false,
         device: None,
     });
     // M76-04 验收门：UI Studio 的面板/画布必须在**真实窗口**里留下一张 PNG。
@@ -839,6 +901,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: true,
         game: false,
+        shader_preset: false,
+        shader_asset: false,
         device: None,
     });
     // 编辑期游戏画面预览：Game 标签在**不 Play** 时也必须画出当前场景。追加在末尾，
@@ -852,6 +916,37 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: true,
+        shader_preset: false,
+        shader_asset: false,
+        device: None,
+    });
+    // M96：Shader 面板 + 生成预设抽屉必须有一张真窗口证据——这条流程的价值全在
+    // "滑块摆在哪、按钮点得到"，单测证明不了排版。放在设备模拟之前。
+    steps.push(EvidenceStep {
+        label: "dpi1.5-1280x720-shader-preset".to_owned(),
+        pixels_per_point: 1.5,
+        inner_size: egui::vec2(1280.0, 720.0),
+        view_3d: false,
+        play: false,
+        assistant: false,
+        ui_studio: false,
+        game: false,
+        shader_preset: true,
+        shader_asset: false,
+        device: None,
+    });
+    // M99：属性面板里的 `.sgraph` 就地预览。选中资源 → 属性面板显示预览图与模板说明。
+    steps.push(EvidenceStep {
+        label: "dpi1.5-1280x720-shader-asset".to_owned(),
+        pixels_per_point: 1.5,
+        inner_size: egui::vec2(1280.0, 720.0),
+        view_3d: false,
+        play: false,
+        assistant: false,
+        ui_studio: false,
+        game: false,
+        shader_preset: false,
+        shader_asset: true,
         device: None,
     });
     // 设备模拟验收门①：每台机型预设留一张真实窗口截图（Game 标签、不 Play）。
@@ -868,6 +963,8 @@ fn evidence_steps() -> Vec<EvidenceStep> {
             assistant: false,
             ui_studio: false,
             game: true,
+            shader_preset: false,
+            shader_asset: false,
             device: Some(index),
         });
     }

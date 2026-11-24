@@ -484,11 +484,24 @@ pub(crate) fn runtime_perf_sections(
                     false,
                 ),
                 row(
+                    "CPU 矢量缓冲",
+                    format_bytes(snapshot.cpu_vector_cache_bytes),
+                    "runtime.cpu_vector_cache_bytes",
+                    false,
+                ),
+                row(
+                    "待上传解码缓冲",
+                    format_bytes(snapshot.async_cpu_buffered_bytes),
+                    "runtime.async_cpu_buffered_bytes",
+                    // 正常情况下主线程每帧都会 drain，队列应该在几 MB 以内；
+                    // 远超这个量说明取走侧卡住了（或异步加载在堆积）。
+                    snapshot.async_cpu_buffered_bytes > 32 * 1024 * 1024,
+                ),
+                row(
                     "缓冲扩容次数",
                     snapshot.vertex_buffer_growths.to_string(),
                     "runtime.vertex_buffer_growths",
-                    snapshot.vertex_buffer_growths > 8,
-                ),
+                    snapshot.vertex_buffer_growths > 8,                ),
                 row(
                     "回读槽 / 丢弃",
                     format!(

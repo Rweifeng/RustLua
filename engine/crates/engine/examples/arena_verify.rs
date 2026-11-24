@@ -153,7 +153,7 @@ fn run_scene(root: &Path) -> SceneReport {
     let drawables = scene3d
         .drawables
         .iter()
-        .map(|drawable| drawable.name.clone())
+        .map(|drawable| drawable.name.to_string())
         .collect::<Vec<_>>();
     SceneReport {
         stats,

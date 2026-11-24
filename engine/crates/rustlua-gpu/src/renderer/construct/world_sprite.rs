@@ -29,7 +29,9 @@ use crate::renderer::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 use crate::renderer::{DepthPass, RendererCapabilities};
 use crate::shader::WORLD_SPRITE_SHADER;
 
-use super::build_world_sprite_pipeline;
+use super::{
+    additive_blend_state, build_world_sprite_pipeline, build_world_sprite_pipeline_with_blend,
+};
 
 /// 世界 Sprite 通道的一整套资源。
 pub(crate) struct WorldSpriteResources {
@@ -42,6 +44,13 @@ pub(crate) struct WorldSpriteResources {
     pub opaque_pipeline: RenderPipeline,
     pub hdr_pipeline: Option<RenderPipeline>,
     pub hdr_opaque_pipeline: Option<RenderPipeline>,
+    /// M84 P2-③：Spine 的 additive 混合变体（只用于半透明段，深度策略与 `pipeline` 相同）。
+    ///
+    /// 单独一条而不是给 `pipeline` 换 blend：world sprite 的主体是精灵，它们绝大多数是
+    /// 标准 alpha 混合；把 additive 做成"另一条管线、按 draw 切换"比"每个精灵都带一个
+    /// blend 字段再查表"便宜得多。
+    pub additive_pipeline: RenderPipeline,
+    pub hdr_additive_pipeline: Option<RenderPipeline>,
     pub vertex_buffer: Buffer,
 }
 
@@ -88,7 +97,7 @@ pub(crate) fn world_sprite_resources(
     let world_sprite_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rustlua-world-sprite-pipeline-layout"),
-            bind_group_layouts: &[&world_sprite_camera_layout, &texture_bind_group_layout],
+            bind_group_layouts: &[&world_sprite_camera_layout, texture_bind_group_layout],
             push_constant_ranges: &[],
         });
     // 世界 Sprite 的两条管线只差深度策略：不透明写深度（可与网格互相遮挡），半透明
@@ -96,7 +105,7 @@ pub(crate) fn world_sprite_resources(
     // 换一个策略"就会变成两条不同的渲染路径。P3-R01 起目标格式也是参数：HDR 变体只换格式。
     let create_world_sprite_pipeline = |label: &str, pass: DepthPass, target_format| {
         build_world_sprite_pipeline(
-            &device,
+            device,
             &world_sprite_pipeline_layout,
             &world_sprite_shader,
             pass,
@@ -114,23 +123,41 @@ pub(crate) fn world_sprite_resources(
         DepthPass::WorldSpriteOpaque,
         format,
     );
-    let (hdr_world_sprite_pipeline, hdr_world_sprite_opaque_pipeline) = if capabilities.hdr_usable()
-    {
-        (
-            Some(create_world_sprite_pipeline(
-                "rustlua-world-sprite-hdr-pipeline",
-                DepthPass::WorldSprite,
-                wgpu::TextureFormat::Rgba16Float,
-            )),
-            Some(create_world_sprite_pipeline(
-                "rustlua-world-sprite-opaque-hdr-pipeline",
-                DepthPass::WorldSpriteOpaque,
-                wgpu::TextureFormat::Rgba16Float,
-            )),
+    // M84 P2-③：additive 变体。深度策略与半透明主管线一致（测深度不写深度），只有混合方程不同。
+    let create_world_sprite_additive_pipeline = |label: &str, target_format| {
+        build_world_sprite_pipeline_with_blend(
+            device,
+            &world_sprite_pipeline_layout,
+            &world_sprite_shader,
+            DepthPass::WorldSprite,
+            target_format,
+            additive_blend_state(),
+            label,
         )
-    } else {
-        (None, None)
     };
+    let world_sprite_additive_pipeline =
+        create_world_sprite_additive_pipeline("rustlua-world-sprite-additive-pipeline", format);
+    let (hdr_world_sprite_pipeline, hdr_world_sprite_opaque_pipeline, hdr_additive_pipeline) =
+        if capabilities.hdr_usable() {
+            (
+                Some(create_world_sprite_pipeline(
+                    "rustlua-world-sprite-hdr-pipeline",
+                    DepthPass::WorldSprite,
+                    wgpu::TextureFormat::Rgba16Float,
+                )),
+                Some(create_world_sprite_pipeline(
+                    "rustlua-world-sprite-opaque-hdr-pipeline",
+                    DepthPass::WorldSpriteOpaque,
+                    wgpu::TextureFormat::Rgba16Float,
+                )),
+                Some(create_world_sprite_additive_pipeline(
+                    "rustlua-world-sprite-additive-hdr-pipeline",
+                    wgpu::TextureFormat::Rgba16Float,
+                )),
+            )
+        } else {
+            (None, None, None)
+        };
     let world_sprite_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("rustlua-world-sprite-buffer"),
         size: WORLD_SPRITE_BUFFER_BYTES,
@@ -146,6 +173,8 @@ pub(crate) fn world_sprite_resources(
         opaque_pipeline: world_sprite_opaque_pipeline,
         hdr_pipeline: hdr_world_sprite_pipeline,
         hdr_opaque_pipeline: hdr_world_sprite_opaque_pipeline,
+        additive_pipeline: world_sprite_additive_pipeline,
+        hdr_additive_pipeline,
         vertex_buffer: world_sprite_buffer,
     }
 }

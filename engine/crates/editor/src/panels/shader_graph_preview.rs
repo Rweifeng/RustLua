@@ -4,6 +4,8 @@
 //! - 编辑器面板：每帧渲染一张小图上传成 egui 纹理，作者改模板/参数后立刻看到画面；
 //! - 测试：用 fallback adapter 跑同样的管线，把"能编译"升级成"能画出可复现的像素"。
 
+use eframe::egui;
+
 /// 编辑器和测试共用的预览尺寸（16:10，够看清效果又不拖慢逐帧回读）。
 pub(crate) const PREVIEW_W: u32 = 256;
 pub(crate) const PREVIEW_H: u32 = 160;
@@ -65,8 +67,9 @@ pub(crate) struct ShaderPreview {
     depth_view: wgpu::TextureView,
     target: wgpu::Texture,
     target_view: wgpu::TextureView,
-    readback: wgpu::Buffer,
-    bytes_per_row: u32,
+    /// P3：回读走 `rustlua-gpu` 的通用非阻塞回读器（与 Scene View 共用同一份实现）。
+    /// 旧实现自建一块 staging buffer + mpsc 通道 + 阻塞 `poll(Wait)`，UI 线程要等 GPU。
+    readback: rustlua_gpu::renderer::async_readback::AsyncReadback,
     bind_group_layout: wgpu::BindGroupLayout,
     params: wgpu::Buffer,
     graph_params: wgpu::Buffer,
@@ -183,14 +186,7 @@ impl ShaderPreview {
         });
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let row_bytes = 4 * PREVIEW_W;
-        let bytes_per_row = row_bytes.div_ceil(256) * 256;
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("shader-graph-preview-readback"),
-            size: u64::from(bytes_per_row * PREVIEW_H),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = rustlua_gpu::renderer::async_readback::AsyncReadback::new(device, queue);
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shader-graph-preview-bind-layout"),
@@ -298,7 +294,6 @@ impl ShaderPreview {
             target,
             target_view,
             readback,
-            bytes_per_row,
             bind_group_layout,
             params,
             graph_params,
@@ -369,10 +364,21 @@ impl ShaderPreview {
 
     /// 以 `time` / `intensity` 渲染一帧并同步回读紧凑 RGBA8（`PREVIEW_W * PREVIEW_H * 4` 字节）。
     /// `intensity` 与 `time` 同属 binding 2 的 uniform：改它只写 32 字节 buffer，不重编管线。
-    pub(crate) fn render(&mut self, time: f32, intensity: f32) -> Result<Vec<u8>, String> {
+    /// 提交一帧预览并**立即返回**，不等待 GPU。
+    ///
+    /// 与 [`Self::render`] 的区别只在"等不等 GPU"：这里 `map_async` 之后就返回，
+    /// 把等待交给 [`Self::try_take`]，因此 UI 线程不会卡在 `device.poll(Wait)` 上。
+    /// 参数（时间/强度）记进在途状态，用于回来时判断是否已过期。
+    pub(crate) fn submit(&mut self, time: f32, intensity: f32) -> Result<(), String> {
         let Some(pipeline) = &self.pipeline else {
             return Err("预览管线尚未编译".to_owned());
         };
+        // 同一时刻只允许一帧在途：上一帧还没回来就再提交，会让回读槽被占满
+        // （`AsyncReadback` 溢出时计数丢弃，像素就丢了）。这里提前拒绝，让调用方
+        // 保持旧画面——比排队更合适，因为排队只会让显示越来越滞后。
+        if self.readback.has_inflight() {
+            return Err("上一帧回读尚未完成".to_owned());
+        }
         let params_bytes: Vec<u8> = [time, intensity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -444,51 +450,60 @@ impl ShaderPreview {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        let row_bytes = 4 * PREVIEW_W;
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &self.readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.bytes_per_row),
-                    rows_per_image: Some(PREVIEW_H),
-                },
-            },
-            wgpu::Extent3d {
-                width: PREVIEW_W,
-                height: PREVIEW_H,
-                depth_or_array_layers: 1,
-            },
-        );
+        // 先把渲染 pass 提交掉（这一步不能省：`drop` 编码器等于**丢弃**整帧绘制）。
         self.queue.submit([encoder.finish()]);
+        // 再把"拷贝到 staging + 请求映射"交给通用回读器（与 Scene View 共用实现）。
+        // 它自己管环形槽与 `map_async` 完成标志，主线程不阻塞。
+        self.readback
+            .submit_copy(&self.target, PREVIEW_W, PREVIEW_H);
+        Ok(())
+    }
 
-        let slice = self.readback.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
-        let map_ok = rx.recv().ok().and_then(Result::ok).is_some();
-        let mut pixels = Vec::with_capacity((row_bytes * PREVIEW_H) as usize);
-        if map_ok {
-            let padded = slice.get_mapped_range();
-            for row in 0..PREVIEW_H as usize {
-                let start = row * self.bytes_per_row as usize;
-                pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
-            }
+    /// 非阻塞取回：`Some(pixels)` = 这一帧已经回来了；`None` = 还在途（调用方保持旧画面）。
+    ///
+    /// 只排空、不提交新拷贝；`AsyncReadback` 内部用零超时 `poll` 推进一次事件循环，
+    /// **不等**任何东西。
+    pub(crate) fn try_take(&mut self) -> Option<Vec<u8>> {
+        match self.readback.take_ready() {
+            rustlua_gpu::renderer::async_readback::ReadbackStatus::Ready {
+                pixels,
+                width,
+                height,
+            } if width == PREVIEW_W && height == PREVIEW_H => Some(pixels),
+            // 尺寸不符（理论上不会发生：目标纹理尺寸固定）或失败/未就绪都当"这次没取到"。
+            _ => None,
         }
-        // 复用同一块回读 buffer：不 unmapped 下一次 `map_async` 会报 "Buffer is already mapped"
-        // （预览每帧调用一次，画廊连续渲染 27 张时必然踩到）。
-        self.readback.unmap();
+    }
+
+    /// 是否有一帧正在等 GPU（UI 可用它决定要不要显示"渲染中"）。
+    pub(crate) fn has_inflight(&self) -> bool {
+        self.readback.has_inflight()
+    }
+
+    /// 阻塞取出在途帧的像素（没有在途帧则返回 `None`）。
+    ///
+    /// 只给同步包装用；UI 每帧路径必须用 [`Self::try_take`]，否则又回到"卡 UI 等 GPU"。
+    /// 生产路径全部走异步版，因此这里只在测试中被直接调用——保留它是为了让
+    /// "异步与同步产出同一份像素"这条门可以写出来。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn render_take_blocking(&mut self) -> Option<Vec<u8>> {
+        let (pixels, width, height) = self.readback.take_blocking()?;
+        if width == PREVIEW_W && height == PREVIEW_H {
+            Some(pixels)
+        } else {
+            Some(Vec::new())
+        }
+    }
+
+    /// 同步渲染：`submit` + 阻塞等结果。
+    ///
+    /// 保留给测试与"必须拿到像素才能继续"的调用方（如缩略图一次性生成）。
+    /// **UI 每帧路径请用 [`Self::submit`] + [`Self::try_take`]**，否则仍会卡 UI 线程。
+    pub(crate) fn render(&mut self, time: f32, intensity: f32) -> Result<Vec<u8>, String> {
+        self.submit(time, intensity)?;
+        let pixels = self
+            .render_take_blocking()
+            .ok_or_else(|| "像素回读失败（映射未完成）".to_owned())?;
         let validation =
             pollster::block_on(self.device.pop_error_scope()).map(|error| error.to_string());
         if let Some(error) = validation {
@@ -547,6 +562,274 @@ fn fs_main(input: EffectOut) -> @location(0) vec4<f32> {{
     Ok((source, compiled))
 }
 
+/// 一份"按文件渲染"的 Shader Graph 预览。
+///
+/// 与面板里那台预览的区别：面板的源是**正在编辑的图**（内存对象），而属性面板看的是
+/// **磁盘上的 `.sgraph` 资源**——选中哪个文件就渲哪个，所以这里用路径做身份，
+/// 路径一变就重读、重编。两者共用同一台 [`ShaderPreview`] 与同一份包装着色器，
+/// 因此"属性面板里看到的"与"面板里看到的"不会出现两套观感。
+pub(crate) struct AssetShaderPreview {
+    /// 当前预览的文件（工程内相对路径）。换文件即重编。
+    pub(crate) relative: String,
+    renderer: ShaderPreview,
+    texture: Option<egui::TextureHandle>,
+    /// 上一次编译用的 WGSL：相同就不重编管线。
+    last_source: String,
+    pub(crate) playing: bool,
+    pub(crate) time: f32,
+    pub(crate) last_render_ms: f32,
+    pub(crate) error: Option<String>,
+    /// 参数槽的上一次值：只在不相等时重写 uniform。
+    last_slots: [[f32; 4]; 16],
+    last_intensity: f32,
+    /// 当前文件的图（成功读到才有）。属性面板用它显示模板说明。
+    pub(crate) graph: Option<rustlua_visual_script::shader_graph::ShaderGraph>,
+}
+
+impl AssetShaderPreview {
+    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, relative: &str) -> Self {
+        Self {
+            relative: relative.to_owned(),
+            renderer: ShaderPreview::new(device, queue),
+            texture: None,
+            last_source: String::new(),
+            playing: true,
+            time: 0.0,
+            last_render_ms: 0.0,
+            error: None,
+            last_slots: [[f32::NAN; 4]; 16],
+            last_intensity: f32::NAN,
+            graph: None,
+        }
+    }
+
+    /// 换文件：清掉编译缓存与错误，下一次 `render` 会重新读盘。
+    pub(crate) fn retarget(&mut self, relative: &str) {
+        if self.relative == relative {
+            return;
+        }
+        self.relative = relative.to_owned();
+        self.last_source.clear();
+        self.last_slots = [[f32::NAN; 4]; 16];
+        self.last_intensity = f32::NAN;
+        self.time = 0.0;
+        self.error = None;
+        self.graph = None;
+    }
+
+    /// 渲染一帧并把结果上传成 egui 纹理。
+    ///
+    /// 返回 `true` 表示这一帧真的重画了（调用方据此决定要不要立即重绘下一帧）。
+    /// 失败（读盘失败、图非法、管线编译失败）只写 `error`，不 panic：属性面板看一眼坏资源
+    /// 不该让编辑器崩掉。
+    /// 非阻塞版：先取回上一帧（如果有），再按需提交下一帧，**不等 GPU**。
+    ///
+    /// 返回 `true` 表示这一帧**确实取到了新像素**并刷新了纹理；提交但尚未回来时返回
+    /// `false`（调用方应保持当前画面）。UI 每帧路径用这个。
+    pub(crate) fn render_async(
+        &mut self,
+        ctx: &egui::Context,
+        root: &std::path::Path,
+        intensity: f32,
+        dt: f32,
+    ) -> bool {
+        // 读盘 + 编译只在文件变化时发生：属性面板可能每帧都画，不能每帧都解析 JSON。
+        if self.last_source.is_empty() {
+            let graph = match rustlua_editor_core::shader_graph_ops::load_shader_graph(
+                root,
+                &self.relative,
+            ) {
+                Ok(graph) => graph,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return false;
+                }
+            };
+            let compiled = match graph.compile_wgsl_uniform(0, 3) {
+                Ok(compiled) => compiled,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    return false;
+                }
+            };
+            let source = preview_shader_source(&compiled.source);
+            if let Err(error) = self.renderer.set_shader(&source) {
+                self.error = Some(error);
+                return false;
+            }
+            self.graph = Some(graph);
+            self.last_source = source;
+            self.error = None;
+        }
+
+        let compiled = match self.graph.as_ref().and_then(|graph| {
+            graph
+                .compile_wgsl_uniform(0, 3)
+                .ok()
+                .map(|compiled| (graph, compiled))
+        }) {
+            Some(pair) => pair,
+            None => return false,
+        };
+        let values = compiled.0.param_values(&compiled.1);
+        let mut slots = [[0.0_f32; 4]; 16];
+        for (slot, value) in slots.iter_mut().zip(values.iter()) {
+            *slot = *value;
+        }
+        if slots != self.last_slots || intensity != self.last_intensity {
+            self.renderer.set_params(&slots);
+            self.last_slots = slots;
+            self.last_intensity = intensity;
+        }
+
+        let mut dirty = self.texture.is_none();
+        if self.playing {
+            self.time = (self.time + dt.min(0.1)) % 1000.0;
+            dirty = true;
+        }
+        // P3：先非阻塞取回上一帧；再按需提交下一帧。与 Shader 面板同一条流水线，
+        // 属性面板因此不再在 UI 线程上等 GPU（播放时尤其明显）。
+        let mut updated = false;
+        if let Some(pixels) = self.renderer.try_take()
+            && pixels.len() == (PREVIEW_W * PREVIEW_H * 4) as usize
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [PREVIEW_W as usize, PREVIEW_H as usize],
+                &pixels,
+            );
+            match &mut self.texture {
+                Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    self.texture = Some(ctx.load_texture(
+                        "asset_shader_preview",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+            self.error = None;
+            updated = true;
+        }
+        if dirty && !self.renderer.has_inflight() {
+            let started = std::time::Instant::now();
+            match self.renderer.submit(self.time, intensity) {
+                Ok(()) => {
+                    self.last_render_ms = started.elapsed().as_secs_f32() * 1000.0;
+                    // 有在途帧就要持续刷新，否则用户看不到它回来。
+                    ctx.request_repaint();
+                }
+                Err(error) => self.error = Some(error),
+            }
+        }
+        updated
+    }
+
+    /// 同步版：提交并**等像素回来**才返回。语义与 P3 之前完全一致。
+    ///
+    /// 保留给测试，以及"必须立刻拿到图才能继续"的一次性场景（如导出缩略图）。
+    /// UI 每帧路径请用 [`Self::render_async`]；否则仍会在 UI 线程上等 GPU。
+    /// 生产代码已全部改走 `render_async`，这里仅测试引用——用它验证同步/异步像素一致。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn render(
+        &mut self,
+        ctx: &egui::Context,
+        root: &std::path::Path,
+        intensity: f32,
+        dt: f32,
+    ) -> bool {
+        // 先把在途帧收掉，避免 `submit` 因"上一帧未完成"被拒。
+        let _ = self.renderer.try_take();
+        let updated = self.render_async(ctx, root, intensity, dt);
+        // 等到刚才提交的那一帧回来并刷新纹理（若本轮确实提交了）。
+        if self.renderer.has_inflight() {
+            let started = std::time::Instant::now();
+            if let Some(pixels) = self.renderer.render_take_blocking()
+                && pixels.len() == (PREVIEW_W * PREVIEW_H * 4) as usize
+            {
+                self.last_render_ms = started.elapsed().as_secs_f32() * 1000.0;
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [PREVIEW_W as usize, PREVIEW_H as usize],
+                    &pixels,
+                );
+                match &mut self.texture {
+                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.texture = Some(ctx.load_texture(
+                            "asset_shader_preview",
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+                self.error = None;
+                return true;
+            }
+        }
+        updated
+    }
+
+    /// 把预览图与「播放/暂停 + 时间 + 耗时」控制条画进 `ui`，占满可用宽度。
+    pub(crate) fn draw(&mut self, ui: &mut egui::Ui) {
+        let width = ui.available_width().max(60.0);
+        let height = width * (PREVIEW_H as f32 / PREVIEW_W as f32);
+        match &self.texture {
+            Some(texture) => {
+                ui.add(
+                    egui::Image::new(texture)
+                        .fit_to_exact_size(egui::vec2(width, height))
+                        .corner_radius(3.0),
+                );
+            }
+            None => {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 3.0, egui::Color32::from_gray(28));
+                if self.error.is_none() {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "预览准备中…",
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_gray(160),
+                    );
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .small_button(if self.playing {
+                    "⏸ 暂停"
+                } else {
+                    "▶ 播放"
+                })
+                .clicked()
+            {
+                self.playing = !self.playing;
+            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "t={:.1}s · {:.1}ms",
+                    self.time, self.last_render_ms
+                ))
+                .small()
+                .color(egui::Color32::from_gray(170)),
+            );
+        });
+        if let Some(error) = &self.error {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 140, 110),
+                egui::RichText::new(format!("预览失败：{error}")).small(),
+            );
+        }
+        if self.playing {
+            // 与面板一致：约 30fps 重绘，能看动画又不把编辑器烧成 100% CPU。
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +884,86 @@ mod tests {
         }
         preview.set_params(&slots);
         preview.render(time, 1.0)
+    }
+
+    /// P3：异步流水线必须"提交不等待、取回拿到真像素"。
+    ///
+    /// 这条门钉住三件事：
+    /// 1. `submit` 立即返回（这里用"提交后立刻 `try_take` 通常拿不到"来体现，不强求 Timing）；
+    /// 2. 在途期间再 `submit` 会被拒（否则 readback buffer 会被映射两次）；
+    /// 3. 等它回来之后 `try_take` 能拿到与同步 `render` 逐字节相同的像素。
+    #[test]
+    fn async_pipeline_returns_the_same_pixels_as_the_blocking_one() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip Shader Graph async preview: no fallback adapter");
+            return;
+        };
+        let wgsl = ShaderTemplate::Scanlines
+            .graph()
+            .compile_wgsl()
+            .expect("scanlines compiles");
+        let source = preview_shader_source(&wgsl);
+
+        let mut sync_preview = ShaderPreview::new(&gpu.device, &gpu.queue);
+        sync_preview.set_shader(&source).expect("sync shader");
+        let expected = sync_preview.render(0.3, 1.0).expect("sync render");
+
+        let mut async_preview = ShaderPreview::new(&gpu.device, &gpu.queue);
+        async_preview.set_shader(&source).expect("async shader");
+        async_preview.submit(0.3, 1.0).expect("submit");
+        assert!(async_preview.has_inflight(), "提交之后必须处于在途状态");
+        // 在途期间再提交必须被拒：同一块 readback buffer 不能被映射两次。
+        assert!(
+            async_preview.submit(0.4, 1.0).is_err(),
+            "在途时重复提交应当被拒绝"
+        );
+        // 阻塞等这一帧回来（测试里允许等；UI 路径用 `try_take`）。
+        let pixels = async_preview
+            .render_take_blocking()
+            .expect("在途帧应当能取回");
+        assert_eq!(
+            pixels, expected,
+            "异步路径与同步路径必须产出逐字节相同的像素"
+        );
+        assert!(!async_preview.has_inflight(), "取回之后必须清空在途状态");
+    }
+
+    /// P3 的核心承诺：`submit` **不等 GPU** —— 提交耗时必须是常数级，
+    /// 与"这一帧渲染多复杂"无关。这里用一条很重的模板比对一次轻的，
+    /// 两者的 `submit` 耗时都远小于"等它画完"的耗时（阻塞版渲染同一模板的实测）。
+    #[test]
+    fn submit_returns_without_waiting_for_the_gpu() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip Shader Graph submit timing: no fallback adapter");
+            return;
+        };
+        let wgsl = ShaderTemplate::Scanlines
+            .graph()
+            .compile_wgsl()
+            .expect("scanlines compiles");
+        let source = preview_shader_source(&wgsl);
+        let mut preview = ShaderPreview::new(&gpu.device, &gpu.queue);
+        preview.set_shader(&source).expect("shader");
+        // 预热一帧，排除首次分配/编译的干扰。
+        let _ = preview.render(0.1, 1.0);
+
+        // 阻塞版的完整往返耗时。
+        let blocking = std::time::Instant::now();
+        let _ = preview.render(0.2, 1.0).expect("blocking render");
+        let blocking_ms = blocking.elapsed().as_secs_f32() * 1000.0;
+
+        // 异步版的提交耗时。
+        let submit = std::time::Instant::now();
+        preview.submit(0.3, 1.0).expect("submit");
+        let submit_ms = submit.elapsed().as_secs_f32() * 1000.0;
+        let _ = preview.render_take_blocking();
+
+        // 断言"提交明显快于完整往返"。留 0.8 的余量：软件适配器上单次提交也可能
+        // 因为编码/写 buffer 花掉一点时间，但不可能赶上"等 GPU 画完再读回"。
+        assert!(
+            submit_ms < blocking_ms.max(0.2) * 0.8,
+            "submit 必须比阻塞往返快得多：submit={submit_ms:.3}ms blocking={blocking_ms:.3}ms"
+        );
     }
 
     /// 每个模板都要能真渲染出非全透明的一帧，且同一输入两次渲染逐字节一致。
@@ -758,6 +1121,7 @@ mod tests {
 
     fn empty_scene_mesh() -> rustlua_render::frame::SceneMesh {
         rustlua_render::frame::SceneMesh {
+            spines: rustlua_render::spine_mesh::SpineMesh::default(),
             vertices: Vec::new(),
             draws: Vec::new(),
             world_sprites: Vec::new(),
@@ -1010,5 +1374,139 @@ mod tests {
                 "炎刃斩击应暴露 {required}，现有 {names:?}"
             );
         }
+    }
+
+    // ---------------------------------------------------------------- AssetShaderPreview
+
+    fn temp_project(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-asset-preview-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        root
+    }
+
+    /// 坏文件（不存在 / JSON 不合法）必须给出可读的 `error`，而不是 panic 或一张空图。
+    ///
+    /// 属性面板是"点一下资源就画"的地方：一份坏 `.sgraph` 在那里崩掉编辑器，
+    /// 等于让作者再也不敢点资源面板。
+    #[test]
+    fn asset_preview_reports_bad_files_without_panicking() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip asset preview: no fallback adapter");
+            return;
+        };
+        let root = temp_project("bad");
+        let ctx = egui::Context::default();
+
+        let mut preview =
+            AssetShaderPreview::new(&gpu.device, &gpu.queue, "assets/fx/missing.sgraph");
+        assert!(
+            !preview.render(&ctx, &root, 1.0, 0.016),
+            "读不到文件时不算画出"
+        );
+        let error = preview.error.clone().expect("应当有错误信息");
+        assert!(
+            error.contains("missing.sgraph") || error.contains("读取") || error.contains("失败"),
+            "错误信息要指出是哪个文件：{error}"
+        );
+
+        // 写一份半截 JSON：同样只能走 error 分支。
+        let broken = root.join("assets/fx/broken.sgraph");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(&broken, "{ not json").unwrap();
+        let mut preview =
+            AssetShaderPreview::new(&gpu.device, &gpu.queue, "assets/fx/broken.sgraph");
+        assert!(!preview.render(&ctx, &root, 1.0, 0.016));
+        assert!(preview.error.is_some(), "坏 JSON 必须报错");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 换文件要重编：同一个预览器先看 A 再看 B，B 必须真的渲染出 B 的画面。
+    ///
+    /// 抓的假绿：`retarget` 只改路径不清编译缓存——那样选中第二份图还是显示第一份，
+    /// 而截图与"预览正常"的断言都会通过。
+    #[test]
+    fn asset_preview_retargets_to_a_different_file() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip asset preview retarget: no fallback adapter");
+            return;
+        };
+        let root = temp_project("retarget");
+        let ctx = egui::Context::default();
+        for (relative, template) in [
+            ("assets/fx/scanlines.sgraph", ShaderTemplate::Scanlines),
+            ("assets/fx/hologram.sgraph", ShaderTemplate::Hologram),
+        ] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, template.graph().to_json()).unwrap();
+        }
+
+        let mut preview =
+            AssetShaderPreview::new(&gpu.device, &gpu.queue, "assets/fx/scanlines.sgraph");
+        assert!(
+            preview.render(&ctx, &root, 1.0, 0.016),
+            "第一份图应当能渲染"
+        );
+        assert!(
+            preview.error.is_none(),
+            "内置模板不应报错：{:?}",
+            preview.error
+        );
+        let first_source = preview.last_source.clone();
+
+        preview.retarget("assets/fx/hologram.sgraph");
+        assert!(
+            preview.render(&ctx, &root, 1.0, 0.016),
+            "第二份图应当能渲染"
+        );
+        assert_ne!(
+            first_source, preview.last_source,
+            "换文件后必须重编（否则画面还停在上一份图）"
+        );
+        assert_eq!(
+            preview.graph.as_ref().map(|graph| graph.name.clone()),
+            Some(ShaderTemplate::Hologram.graph().name),
+            "预览的图应当换成新文件"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 播放时时间推进、暂停时不动：属性面板的 ⏸/▶ 才有意义。
+    #[test]
+    fn asset_preview_advances_time_only_while_playing() {
+        let Some(gpu) = test_gpu() else {
+            eprintln!("skip asset preview time: no fallback adapter");
+            return;
+        };
+        let root = temp_project("time");
+        let ctx = egui::Context::default();
+        let path = root.join("assets/fx/scanlines.sgraph");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, ShaderTemplate::Scanlines.graph().to_json()).unwrap();
+
+        let mut preview =
+            AssetShaderPreview::new(&gpu.device, &gpu.queue, "assets/fx/scanlines.sgraph");
+        for _ in 0..5 {
+            preview.render(&ctx, &root, 1.0, 0.1);
+        }
+        let playing_time = preview.time;
+        assert!(playing_time > 0.0, "播放中时间应当推进");
+
+        preview.playing = false;
+        for _ in 0..5 {
+            preview.render(&ctx, &root, 1.0, 0.1);
+        }
+        assert!(
+            (preview.time - playing_time).abs() < 1e-6,
+            "暂停后时间不应再走（{} vs {}）",
+            preview.time,
+            playing_time
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

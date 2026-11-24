@@ -85,8 +85,8 @@ fn motion_batch_scaled(slots: &[f32], z: f32, scale: f32) -> InstanceBatch3D {
 fn batch_drawable(models: &[Mat4]) -> Scene3dDrawable {
     Scene3dDrawable {
         entity: rustlua_scene::scene::SceneEntityId(1),
-        name: "Crowd".to_owned(),
-        mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+        name: "Crowd".to_owned().into(),
+        mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),
@@ -166,6 +166,7 @@ impl Fixture {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -865,7 +866,7 @@ fn gpu_motion_frame_reuses_compute_bind_group_and_rebinds_after_arena_growth() {
     let big = std::sync::Arc::new(motion_batch(&big_slots));
     let mut big_draw = batch_drawable(&[]);
     big_draw.entity = rustlua_scene::scene::SceneEntityId(2);
-    big_draw.name = "CrowdBig".to_owned();
+    big_draw.name = "CrowdBig".into();
     fixture.renderer.stage_motion_batch(2, big, FROZEN);
     let grown = fixture.render(vec![big_draw]);
     assert!(grown.draw_calls >= 1, "大批必须真的出了 draw");

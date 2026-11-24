@@ -560,30 +560,26 @@ impl EditorApp {
             return CommandResult::NoOp;
         };
         let label = format!("设置{path}");
-        let key = component.to_owned();
-        let result =
-            self.history
-                .execute(document, label, CommandKind::Property, move |document| {
-                    let Some(instance) = document.scene.entities.get_mut(&entity) else {
-                        return Err(format!("实体不存在：{}", entity.0));
-                    };
-                    instance.components.insert(key, payload);
-                    document.mark_dirty();
-                    Ok::<(), String>(())
-                });
-        match result {
-            Ok(true) => {
-                self.status = format!("已写入 {display}.{field}");
-                CommandResult::Applied
-            }
-            Ok(false) => {
-                self.status = format!("{display}.{field} 无变化");
-                CommandResult::NoOp
-            }
-            Err(error) => {
-                self.status = error.clone();
-                CommandResult::Rejected(error)
-            }
+        // P0-3 后续：走**定向**写入，不做 `execute` 那套全文档 clone/compare/diff。
+        // 实测 1,000 实体档下通用路径要 858 µs、10,000 实体 8.6 ms，而字段编辑本身几乎为零；
+        // 这条路径只读一个组件串、写一个组件串，成本与场景规模无关。
+        //
+        // `preview_field_edit` 已经保证 `payload` 与当前值不同，所以这里的 no-op 检测
+        // 只是一层兜底（实体在两次借用之间被删掉之类）。
+        let before = document
+            .scene
+            .entities
+            .get(&entity)
+            .and_then(|instance| instance.components.get(component).cloned());
+        let applied = self
+            .history
+            .execute_component_field(document, entity, component, before, payload, label);
+        if applied {
+            self.status = format!("已写入 {display}.{field}");
+            CommandResult::Applied
+        } else {
+            self.status = format!("{display}.{field} 无变化");
+            CommandResult::NoOp
         }
     }
 

@@ -483,6 +483,7 @@ fn state_bounds(gpu: &[GpuParticleSnapshot]) -> (f32, f32, f32, usize) {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

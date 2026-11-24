@@ -10,6 +10,13 @@ engine/.tools/
 # Generated release copies and profiling/screenshot output
 /artifacts/
 
+# 仓库根的一次性证据输出：手工跑编辑器 trace / 基线时写出的 target/reports/*.json，
+# 只在本地比对，不入库（正式产物走 /artifacts/）。
+/target/
+# Spine spike 探针的 Cargo 构建产物（tools/spine-spike/ 本身是临时探针，
+# 验收后归档或删除，见 tasks/plan/M84-01）。
+tools/spine-spike/target/
+
 # 本地基线（WP0 性能阶梯、editor 基线、engine 对外符号面基准）。全部只在本机生成与比对，
 # 不入库；出处与可比性裁定见 baselines/README.md。
 /baselines/

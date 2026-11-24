@@ -88,8 +88,9 @@ pub struct RenderConfig {
     pub clip_cap: f32,
     /// 封口是否也吃到单面网格。
     pub clip_cap_both_sides: bool,
-    /// 自定义特效叠加层：工程内 `.sgraph` 路径（`None` = 关闭，像素与旧版相同）。
-    pub effect_overlay: Option<String>,
+    // 注：特效叠加层（`.sgraph`）**不在这里**。它按场景走（`.scene` 的
+    // `meta\teffect_overlay\t<路径>`），理由见 `rustlua_scene::scene::EFFECT_OVERLAY_META_KEY`：
+    // 放在工程级会让**所有**场景都带上同一个特效——曾经就是这样，切到任何场景都有刀光。
     /// M98：GPU 粒子软边宽度（深度单位）。默认 0.02 = 旧行为；0 = 关（硬边）；越大软边越宽。
     pub particle_softness: f32,
 }
@@ -116,7 +117,6 @@ impl Default for RenderConfig {
             water_refract_steps: 0,
             clip_cap: 0.0,
             clip_cap_both_sides: false,
-            effect_overlay: None,
             particle_softness: DEFAULT_PARTICLE_SOFTNESS,
         }
     }
@@ -161,10 +161,6 @@ impl RenderConfig {
             .draw_distance_filter
             .map(|filter| filter.trim().to_owned())
             .filter(|filter| !filter.is_empty());
-        self.effect_overlay = self
-            .effect_overlay
-            .map(|path| path.trim().to_owned())
-            .filter(|path| !path.is_empty());
         // 0 = 硬边（关）；上限 0.5 防止把整颗粒子吃掉。
         self.particle_softness = finite_non_negative(self.particle_softness).min(0.5);
         self
@@ -312,9 +308,6 @@ impl RenderConfig {
         if let Some(value) = value_for(text, "clip_cap_both_sides") {
             config.clip_cap_both_sides = parse_bool(value).unwrap_or(false);
         }
-        if let Some(value) = value_for(text, "effect_overlay") {
-            config.effect_overlay = Some(value.to_owned());
-        }
         if let Some(value) = value_for(text, "particle_softness") {
             config.particle_softness = value.parse().unwrap_or(DEFAULT_PARTICLE_SOFTNESS);
         }
@@ -357,10 +350,6 @@ impl RenderConfig {
             ("water_refract_steps", self.water_refract_steps.to_string()),
             ("clip_cap", fmt_float(self.clip_cap)),
             ("clip_cap_both_sides", self.clip_cap_both_sides.to_string()),
-            (
-                "effect_overlay",
-                self.effect_overlay.clone().unwrap_or_default(),
-            ),
             ("particle_softness", fmt_float(self.particle_softness)),
         ]
     }
@@ -573,28 +562,26 @@ mod tests {
         assert_eq!(config.draw_distance_filter, None);
     }
 
+    /// 特效叠加层是**场景级**配置，`[render]` 段不该再写出这一项。
+    ///
+    /// 这条门防的是"有人图省事又把它加回工程级"——那会让所有场景共用同一个特效
+    /// （曾经就是这样：切到 api_spine / api_audio 也带着刀光）。
+    /// 场景级的读写见 `rustlua_scene::Scene::effect_overlay`。
     #[test]
-    fn effect_overlay_path_round_trips_and_defaults_off() {
-        assert_eq!(RenderConfig::default().effect_overlay, None);
+    fn effect_overlay_is_not_a_project_level_setting() {
         let text = RenderConfig::default().upsert_section("");
         assert!(
-            text.contains("effect_overlay = "),
-            "写出的 [render] 段应含该项：{text}"
+            !text.contains("effect_overlay"),
+            "叠加层属于场景语义，不该出现在 [render] 段：{text}"
         );
-        let configured = RenderConfig {
-            effect_overlay: Some("assets/fx/fire.sgraph".to_owned()),
-            ..RenderConfig::default()
-        };
-        let written = configured.upsert_section("");
-        let parsed = RenderConfig::from_toml(&written);
+        // 旧工程里若残留这一行，解析时被忽略（不报错），由场景配置接管。
+        let legacy =
+            RenderConfig::from_toml("[render]\neffect_overlay = \"assets/fx/fire.sgraph\"\n");
         assert_eq!(
-            parsed.effect_overlay.as_deref(),
-            Some("assets/fx/fire.sgraph"),
-            "应解析出 .sgraph 路径：{written}"
+            legacy.planar_divisor,
+            RenderConfig::default().planar_divisor,
+            "渲染质量字段仍按默认值解析"
         );
-        // 空白值等价于关闭（不写空字符串进渲染器）。
-        let empty = RenderConfig::from_toml("[render]\neffect_overlay = \"  \"\n");
-        assert_eq!(empty.effect_overlay, None);
     }
 
     #[test]
@@ -709,8 +696,7 @@ mod tests {
         // 末尾键随字段追加而移动：这里只钉"最后确实是 [render] 的键"，不钉具体是哪一列。
         let last_line = once.lines().last().expect("non-empty");
         assert!(
-            last_line.starts_with("effect_overlay = ")
-                || last_line.starts_with("particle_softness = ")
+            last_line.starts_with("particle_softness = ")
                 || last_line.starts_with("sprite_softness = "),
             "{once}"
         );

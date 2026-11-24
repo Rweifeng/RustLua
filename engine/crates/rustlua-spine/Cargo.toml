@@ -1,0 +1,19 @@
+[package]
+name = "rustlua-spine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+spine2d = { workspace = true }
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-math = { path = "../rustlua-math" }
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+rustlua-component-codec = { path = "../rustlua-component-codec" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+
+[dev-dependencies]
+rustlua-infra = { path = "../rustlua-infra" }

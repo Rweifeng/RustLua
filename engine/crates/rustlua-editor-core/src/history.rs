@@ -1,5 +1,5 @@
 use crate::SceneDocument;
-use crate::patch_history::{EditPatch, scene_field_patch};
+use crate::patch_history::{EditPatch, FieldChange, scene_field_patch};
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use std::path::PathBuf;
 
@@ -369,6 +369,80 @@ impl CommandHistory {
             self.patch_compression_enabled(),
         ));
         Ok(true)
+    }
+
+    /// 单组件字段写入的**定向**执行：不克隆文档、不做全文档比较、不做全文档 diff。
+    ///
+    /// 为什么需要它：通用 [`Self::execute`] 为了"是否 no-op"与"压成补丁"要做
+    /// `document.clone()` × 2 + 全文档 `==`，成本是 O(文档)。实测 1,000 实体 858 µs、
+    /// 10,000 实体 8.6 ms，而字段编辑本身几乎为零——编辑器里拖一次滑杆要 1 ms 就是这个原因
+    /// （P0-3 的 trace：`dispatch:SetComponentField` 平均 941 µs）。
+    ///
+    /// 调用方在字段写入这条路上**已经知道**改了哪个实体的哪个组件、新旧值各是什么
+    /// （见 `FieldEdit::Changed`），于是"是不是 no-op"只需比较两个组件串，补丁也只需
+    /// 装一条 `FieldChange::Component`。整条路径与文档规模无关。
+    ///
+    /// 语义与 `execute(|document| { …insert(component, payload)…; mark_dirty(); })`
+    /// 逐项相同：`undo`/`redo` 之后场景内容、`dirty`、`revision`、`disk_signature` 一致
+    /// （后者由 `DocumentAnchor` 记住，不靠整份文档免费带）。
+    ///
+    /// 返回 `false` 表示这次写入是 no-op（新旧值相同、或实体/组件不存在），历史不变。
+    pub fn execute_component_field(
+        &mut self,
+        document: &mut SceneDocument,
+        entity: SceneEntityId,
+        component: &str,
+        before: Option<String>,
+        after: String,
+        label: impl Into<String>,
+    ) -> bool {
+        if before.as_deref() == Some(after.as_str()) {
+            // 与通用 [`Self::execute`] 对齐：那条路径**先执行 edit 再比对**，所以即使这一步
+            // 是 no-op，`mark_dirty` 也已经把 `revision` 推进了一格。`revision` 是编辑器
+            // "场景内容是否变化"的轮询判据，差一格会让两个通道在差分门里对不上。
+            // 这里不写组件（值本来就一样），只补那一次修订号。
+            if document.scene.entities.contains_key(&entity) {
+                document.mark_dirty();
+            }
+            return false;
+        }
+        if !document.scene.entities.contains_key(&entity) {
+            return false;
+        }
+        // 锚点必须在**改动之前**取：它记的是"这一步开始时文档的文档级状态"。
+        let anchor_before = DocumentAnchor::of(document);
+        document
+            .scene
+            .entities
+            .get_mut(&entity)
+            .expect("刚检查过存在")
+            .components
+            .insert(component.to_owned(), after.clone());
+        document.mark_dirty();
+        let anchor_after = DocumentAnchor::of(document);
+
+        let command = EditCommand {
+            label: label.into(),
+            kind: CommandKind::Property,
+            storage: CommandStorage::Patch {
+                patch: EditPatch::new(
+                    String::new(),
+                    CommandKind::Property,
+                    vec![FieldChange::component(
+                        entity,
+                        component.to_owned(),
+                        before,
+                        Some(after),
+                    )],
+                ),
+                before: anchor_before,
+                after: anchor_after,
+            },
+        };
+        self.redo.clear();
+        self.note_edit();
+        self.undo.push(command);
+        true
     }
 
     pub fn push(&mut self, command: EditCommand) {
@@ -971,6 +1045,92 @@ mod tests {
             patch.disk_signature, snapshot.disk_signature,
             "{stage}：disk_signature 不一致"
         );
+    }
+
+    /// 定向字段写入（`execute_component_field`）必须与通用 `execute` **逐项等价**。
+    ///
+    /// 这是 P0-3 之后新增的第二条写入路径：它跳过全文档 clone/compare/diff，代价是
+    /// "no-op 检测"与"补丁内容"都由调用方直接给出。既然绕开了通用实现里的推导，
+    /// 就必须证明两者在同一串编辑上得到的**文档、栈深、账本签名、撤销/重做结果**完全一致。
+    #[test]
+    fn directed_field_edit_matches_the_generic_execute_path() {
+        let start = anchored_document();
+        let entity = SceneEntityId(1);
+        let mut directed_document = start.clone();
+        let mut generic_document = start.clone();
+        let mut directed = CommandHistory::new();
+        let mut generic = CommandHistory::new();
+
+        // 同一串组件字段写入，含"写回原值"（应当被判成 no-op，两边都不要入栈）。
+        let steps = ["1", "2", "2", "3", "1"];
+        for value in steps {
+            let before = directed_document
+                .scene
+                .entities
+                .get(&entity)
+                .and_then(|instance| instance.components.get("x").cloned());
+            directed.execute_component_field(
+                &mut directed_document,
+                entity,
+                "x",
+                before,
+                value.to_owned(),
+                "设置 x",
+            );
+            // 通用路径：让 `execute` 自己渲染 no-op 与 diff。
+            let payload = value.to_owned();
+            generic
+                .execute(
+                    &mut generic_document,
+                    "设置 x",
+                    CommandKind::Property,
+                    move |document| {
+                        let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                            return Err("实体不存在".to_owned());
+                        };
+                        instance.components.insert("x".to_owned(), payload);
+                        document.mark_dirty();
+                        Ok::<(), String>(())
+                    },
+                )
+                .expect("通用路径不该失败");
+            assert_documents_identical(
+                &format!("写入 {value} 之后"),
+                &directed_document,
+                &generic_document,
+            );
+            assert_eq!(
+                directed.undo_len(),
+                generic.undo_len(),
+                "写入 {value} 之后栈深必须一致（no-op 判定不能有分歧）"
+            );
+            assert_eq!(
+                directed.undo_signature(),
+                generic.undo_signature(),
+                "写入 {value} 之后账本签名必须一致"
+            );
+        }
+        // `1 -> 2 -> 3 -> 1` 是三次真实改动（第二个 "2" 是 no-op）。
+        assert_eq!(directed.undo_len(), 4, "4 次真实改动入栈，第三次是 no-op");
+
+        // 全量撤销 → 必须回到起点；全量重做 → 必须回到终点。
+        let end = directed_document.clone();
+        while directed.can_undo() {
+            let _ = directed.undo(&mut directed_document);
+            let _ = generic.undo(&mut generic_document);
+            assert_documents_identical("撤销一步后", &directed_document, &generic_document);
+        }
+        assert_documents_identical("全部撤销后", &directed_document, &start);
+        while directed.can_redo() {
+            let _ = directed.redo(&mut directed_document);
+            let _ = generic.redo(&mut generic_document);
+            assert_documents_identical("重做一步后", &directed_document, &generic_document);
+        }
+        assert_documents_identical("全部重做后", &directed_document, &end);
+
+        // 定向路径产出的确实是**补丁**形态（否则这条门只证明了"又抄了一遍快照"）。
+        let (patch, snapshot) = directed.storage_counts();
+        assert_eq!((patch, snapshot), (4, 0), "定向写入必须全部是补丁形态");
     }
 
     /// 主门：同一串编辑在两种形态下走一遍，每步之后、每一步撤销之后、每一步重做之后都必须

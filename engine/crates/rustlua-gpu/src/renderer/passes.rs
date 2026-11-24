@@ -1033,10 +1033,14 @@ impl Renderer {
                 .gpu_particles
                 .iter()
                 .any(super::gpu_particles::GpuParticleSystem::is_active);
-        let world_view = if mesh.world_sprites.is_empty() && !particles_active {
-            None
-        } else {
+        // M84 P1：Spine 与普通 World Sprite 共用世界视图。纯 Spine 帧也必须准备视图，
+        // 否则 Spine 几何不会上传，后面的 WorldSprite pass 也无法执行。
+        let world_content_active =
+            !mesh.world_sprites.is_empty() || !mesh.spines.is_empty() || particles_active;
+        let world_view = if world_content_active {
             self.prepare_world_sprites(mesh, main_matrix, overlay_viewport, target)
+        } else {
+            None
         };
         // docs/54 §4.3：打开后处理时本帧所有场景通道都画进**离屏场景颜色纹理**，最后由
         // `PostProcess` 通道采样它写进目标附件。视图在这里"取出"、渲染完放回——这样渲染循环里
@@ -1188,7 +1192,9 @@ impl Renderer {
             clear: clear.is_some(),
             has_3d_draws: !frame_draws.is_empty(),
             planar_reflection,
-            world_sprites: mesh.world_sprites.len(),
+            // M84 P1：Spine 与 world sprite 共用同一条世界通道与深度附件，
+            // 因此 Spine draw 计入「世界 2D 内容」事实，保证纯 Spine 场景也会跑该 pass。
+            world_sprites: mesh.world_sprites.len() + mesh.spines.draws.len(),
             world_sprite_opaque_segment: mesh
                 .world_sprite_draws
                 .iter()
@@ -1247,6 +1253,7 @@ impl Renderer {
                 DepthPass::WorldSpriteOpaque,
                 hdr_active,
                 &mesh.world_sprite_draws,
+                &mesh.spines,
                 &mesh.paths,
                 &mesh.path_handles,
                 SpritePassFilter::Opaque,
@@ -1811,6 +1818,7 @@ impl Renderer {
                 DepthPass::WorldSprite,
                 hdr_active,
                 &mesh.world_sprite_draws,
+                &mesh.spines,
                 &mesh.paths,
                 &mesh.path_handles,
                 filter,
@@ -2160,7 +2168,13 @@ impl Renderer {
         }
         // M86/M91：自定义特效叠加层。有叠加层时画面已在离屏目标里：
         // 先用恒等后处理把它回拷到最终目标（等价于逐像素复制），再叠特效并采样那份画面。
-        if let Some(scene) = effect_scene_view.as_ref() {
+        //
+        // M96：`effect_scene_view` 存在只说明"走了离屏路线"，不代表真有层要画——只有命名层
+        // 且它不采样场景时，离屏是空跑的，这里必须自己判空，否则记录一次空 pass 的统计。
+        if let Some(scene) = effect_scene_view
+            .as_ref()
+            .filter(|_| self.effect_overlay_active())
+        {
             let vertices = self.draw_post_process(
                 encoder,
                 scene,
@@ -2185,8 +2199,19 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // 多层按 push 顺序叠加：后一层画在前一层之上。
+            // 多层按挂载顺序叠加：后一层画在前一层之上。
+            // M96：工程级常驻层（`effect_overlays`）先画，`effect.play` 挂上的命名层后画——
+            // 逻辑触发的特效压在常驻氛围特效之上，符合"招式盖过环境"的直觉。
             for overlay in &mut self.effect_overlays {
+                overlay.prepare(
+                    &self.queue,
+                    target.0,
+                    target.1,
+                    Some((scene, &self.depth_view)),
+                );
+                overlay.draw(&mut pass);
+            }
+            for (_, overlay) in &mut self.named_effect_overlays {
                 overlay.prepare(
                     &self.queue,
                     target.0,
@@ -2197,10 +2222,14 @@ impl Renderer {
             }
             drop(pass);
             record_set_pass(&mut metrics);
-            record_triangle_draw(&mut metrics, 3 * self.effect_overlays.len() as u32);
+            let layers = self.effect_overlays.len() + self.named_effect_overlays.len();
+            record_triangle_draw(&mut metrics, 3 * layers as u32);
         }
         // 快路径：叠加层不采样场景色/深度时直接叠在最终目标上，省掉离屏 + 回拷。
-        if !self.effect_overlays.is_empty() && !overlays_need_scene {
+        //
+        // M96：判定必须用 `effect_overlay_active()` 而不是只看 `effect_overlays`——
+        // 否则只有脚本层（`effect.play`）时整段快路径被跳过，挂上去的层一帧都不画。
+        if self.effect_overlay_active() && !overlays_need_scene {
             let depth_written = scene3d.is_some() || !mesh.draws.is_empty();
             if !depth_written {
                 // 没有 3D 写入时深度是上一帧残留：先清成远平面，避免深度类模板串帧。
@@ -2239,9 +2268,16 @@ impl Renderer {
                 overlay.prepare(&self.queue, target.0, target.1, None);
                 overlay.draw(&mut pass);
             }
+            // M96：命名层与常驻层走同一条快路径（都不采样场景色/深度时才到达这里，
+            // 由 `effect_overlays_need_scene` 统一判定）。
+            for (_, overlay) in &mut self.named_effect_overlays {
+                overlay.prepare(&self.queue, target.0, target.1, None);
+                overlay.draw(&mut pass);
+            }
             drop(pass);
             record_set_pass(&mut metrics);
-            record_triangle_draw(&mut metrics, 3 * self.effect_overlays.len() as u32);
+            let layers = self.effect_overlays.len() + self.named_effect_overlays.len();
+            record_triangle_draw(&mut metrics, 3 * layers as u32);
         }
         // 离屏视图放回（纹理本体一直在 `self` 里，视图只是个句柄）。
         self.effect_scene_view = effect_scene_view;

@@ -851,7 +851,7 @@ impl EditorApp {
                     |path| path.display().to_string(),
                 );
                 self.push_console_notice(format!(
-                    "当前打开的场景已被外部修改：{name}（保存会被拒绝；确认后可「强制保存（覆盖外部修改）」）"
+                    "当前打开的场景已被外部修改：{name}（保存会被拒绝；请先「重新加载」采用磁盘版本，或先另存再继续编辑）"
                 ));
                 self.set_scene_view_diagnostic(format!("外部修改：{name} —— 保存已被保护性拒绝"));
             }
@@ -1923,6 +1923,43 @@ mod tests {
         );
         assert!(app.selected_resource.is_none());
         assert!(app.status.contains("已删除资源"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// P1-2 缩略图缓存对账：删除资源后，缓存里以该资源相对路径为键的条目必须消失。
+    ///
+    /// 这是一条"缓存与资源清单一致性"的门——缩略图缓存是 `HashMap<String, TextureHandle>`，
+    /// 长期会话下若只增不减就是泄漏。`perform_delete` 已有 `thumbnails.remove`，
+    /// 但没有测试守着它；这里补上，改坏了会被抓出来。
+    #[test]
+    fn deleting_a_resource_drops_its_thumbnail_cache_entry() {
+        let root = temp_project_root("thumbnail-reconcile");
+        fs::write(root.join("assets/gone.png"), b"png").unwrap();
+        fs::write(root.join("assets/keep.png"), b"png").unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+
+        // 直接往缓存里塞两个句柄，模拟"缩略图已解码并上传"后的状态（无 GPU 也能建）。
+        let ctx = egui::Context::default();
+        let image = egui::ColorImage::new([2, 2], vec![egui::Color32::WHITE; 4]);
+        for key in ["assets/gone.png", "assets/keep.png"] {
+            let handle = ctx.load_texture(key, image.clone(), egui::TextureOptions::NEAREST);
+            app.thumbnails.insert(key.to_owned(), handle);
+        }
+        assert_eq!(app.thumbnails.len(), 2, "前置：两个缩略图已在缓存里");
+
+        app.select_resource(PathBuf::from("assets/gone.png"));
+        app.handle_delete_shortcut();
+
+        assert!(
+            !app.thumbnails.contains_key("assets/gone.png"),
+            "删除资源后它的缩略图缓存必须一并移除，否则长期会话只增不减"
+        );
+        assert!(
+            app.thumbnails.contains_key("assets/keep.png"),
+            "未删除资源的缩略图必须保留（对账不能一刀切清空）"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

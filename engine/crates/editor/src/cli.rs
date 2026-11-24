@@ -23,6 +23,12 @@ pub(crate) struct Arguments {
     pub(crate) perf_baseline: bool,
     /// 基线报告落盘路径（可选；同时始终打印到 stdout）。
     pub(crate) perf_report: Option<PathBuf>,
+    /// P0-3：跑基线场景时**同时采集 span trace** 并导出 Chrome Trace Event JSON。
+    ///
+    /// 为什么不靠"开窗点按钮"：人工操作既不可复现、也进不了 CI。这里用同一个
+    /// `EditorApp`（无窗口）跑同一批高频操作序列，采集出的 span 与实际使用时
+    /// 走的是同一条 `Profiler` 埋点路径。
+    pub(crate) perf_trace: Option<PathBuf>,
     /// docs/55 阶段 0「GUI smoke」：无窗口的合成输入整帧用例（可当质量门）。
     pub(crate) gui_smoke: bool,
     /// GUI smoke 报告落盘路径（可选；同时始终打印到 stdout）。
@@ -59,6 +65,11 @@ pub(crate) fn parse_arguments() -> Result<Arguments, String> {
                 arguments.migrate_report = Some(PathBuf::from(path));
             }
             "--perf-baseline" => arguments.perf_baseline = true,
+            "--perf-trace" => {
+                arguments.perf_trace = Some(PathBuf::from(
+                    values.next().ok_or("--perf-trace requires <path>")?,
+                ));
+            }
             "--perf-report" => {
                 let path = values
                     .next()
@@ -91,12 +102,13 @@ pub(crate) fn parse_arguments() -> Result<Arguments, String> {
                     "用法：editor [--project <项目路径>] [--check]\n\
                      \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
                      \x20     editor --project <项目路径> --restore-spatial\n\
-                     \x20     editor --perf-baseline [--perf-report <路径>]\n\
+                     \x20     editor --perf-baseline [--perf-report <路径>] [--perf-trace <路径>]\n\
                      \x20     editor --gui-smoke [--gui-report <路径>]\n\
                      \x20     editor --project <项目路径> [--shader-dir <目录>]\n\
                      {mcp_help}\
                      \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）\n\
                      \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）\n\
+                     \x20     （--perf-trace 同时在基线场景里采集 span 并导出 Chrome Trace JSON）\n\
                      \x20     （--gui-smoke 无窗口运行 docs/55 阶段 0 的合成输入 GUI 用例；有用例失败时退出码为 2）\n\
                      \x20     （shader 热重载：编辑器默认监听项目 shaders/，同名 .wgsl 覆盖内置源；\n\
                      \x20       --shader-dir 或 RUSTLUA_SHADER_DIR 可把覆盖目录指到别处）"

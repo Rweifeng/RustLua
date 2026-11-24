@@ -37,6 +37,17 @@ pub trait Importer: Send + Sync {
     fn extensions(&self) -> &'static [&'static str];
     /// Rejects malformed or unsupported sources before they reach the cache.
     fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String>;
+    /// Validates source relationships that require project context, such as a
+    /// manifest's referenced files. Called on every import attempt, including
+    /// cache hits, so changed dependencies cannot bypass contextual checks.
+    fn validate_project_context(
+        &self,
+        _project_root: &Path,
+        _source: &Path,
+        _bytes: &[u8],
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// Produces the cached artifacts. The default copies the raw source bytes
     /// into a single artifact; formatters may override this to transform.
     fn produce(

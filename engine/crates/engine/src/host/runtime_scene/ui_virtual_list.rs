@@ -66,6 +66,17 @@ impl RuntimeScene {
     /// 在绘制趟之前逐帧调用，行缺失一帧是可恢复的，不值得把整帧 UI 炸掉。
     pub(super) fn reconcile_virtual_lists(&mut self, screen_viewport: [f32; 2]) {
         let inputs = self.collect_virtual_list_inputs();
+        // 没有虚拟列表就直接收工：**这一条的早退是性能关键**，不是风格问题。
+        //
+        // `entity_names_by_slot()` 会把**全部实体**的名字克隆进一张 `BTreeMap<u64, String>`
+        // （每个实体一次字符串分配）。10k 实体的场景里，这一行曾经每帧白付一万次分配——
+        // 场景根本没有虚拟列表，名字表拿来了也没人读。实测这一处占该场景每帧分配的 51.6%。
+        //
+        // 早退条件是"本帧没有列表输入"（`collect_virtual_list_inputs` 已经是逐帧扫描的
+        // 事实来源）。列表存在时行为完全不变（下面所有逻辑都从 `inputs` 出发）。
+        if inputs.is_empty() && self.ui_virtual_rows.is_empty() {
+            return;
+        }
         let names = self.script.entity_names_by_slot();
         let mut frame = VirtualListFrame::default();
         let mut template_slots = BTreeSet::new();

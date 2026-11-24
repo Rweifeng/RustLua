@@ -106,6 +106,53 @@ fn render_fog_round_trips_and_rejects_invalid_density() {
     let _ = fs::remove_file(path);
 }
 
+/// M96：`render.play_effect` / `render.stop_effect` 只做形状与路径校验，把意图写进
+/// `RenderOverrides`；真正的加载与挂层在宿主侧（`game_app::apply_effect_command`）。
+///
+/// 抓的假绿：把路径校验删掉，`.sgraph` 或空路径也会被接受，宿主到时候才报
+/// "预设加载失败"——错误发生在几百行之外，脚本作者完全看不出是自己写错了参数。
+#[test]
+fn effect_play_and_stop_record_intent_and_reject_bad_paths() {
+    use rustlua_render::render_overrides::EffectCommand;
+
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    assert_eq!(runtime.take_effect_command(), None, "脚本没碰过就没意图");
+
+    let path = script(
+        "assert(render.play_effect('') == false, 'empty path rejected')\n\
+         assert(render.play_effect('assets/fx/a.sgraph') == false, 'non-prefab rejected')\n\
+         assert(render.play_effect(' assets/fx/a.prefab') == false, 'padded path rejected')\n\
+         local ok, reason = render.play_effect('assets/fx/炎刃斩击.prefab')\n\
+         assert(ok, reason)\n\
+         function update() end",
+    );
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(
+        runtime.take_effect_command(),
+        Some(EffectCommand::Play {
+            prefab: "assets/fx/炎刃斩击.prefab".to_owned(),
+            name: String::new(),
+        })
+    );
+    assert_eq!(runtime.take_effect_command(), None, "取走即清空");
+    let _ = fs::remove_file(path);
+
+    let named = script(
+        "assert(render.play_effect('assets/fx/a.prefab', 'hit') )\n\
+         assert(render.stop_effect('hit'))\n\
+         function update() end",
+    );
+    runtime.execute_project_script(&named).unwrap();
+    // 同一帧里后写的 stop 覆盖前面的 play：脚本只表达"最终想要什么"。
+    assert_eq!(
+        runtime.take_effect_command(),
+        Some(EffectCommand::Stop {
+            name: "hit".to_owned(),
+        })
+    );
+    let _ = fs::remove_file(named);
+}
+
 /// P3-R283：距离预算的「没碰过 = None」与「显式关 = Some(0)」必须分得开——
 /// 宿主每帧只在 `Some` 时写入渲染器，若 0 被当成 None，脚本就永远关不掉
 /// 启动期的 `--shadow-caster-distance`。抓的假绿：把 0 归一成 None。

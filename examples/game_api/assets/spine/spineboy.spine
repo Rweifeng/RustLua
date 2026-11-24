@@ -1,0 +1,12 @@
+# Spine 2D 示例骨骼（spineboy，官方 spine-runtimes 4.3 示例导出的 **essence** 版）。
+#
+# 为什么用 ess 而不是 pro：pro 版带一个 clipping 附件（把头部框进 head-bb），而本引擎
+# 目前的渲染管线**不实现裁剪**——导入期会明确拒绝（M84 P2-①，见 SpineError::UnsupportedClipping）。
+# ess 版只含 region 与 boundingbox，是当前管线能吃下的最小完整骨骼。
+#
+# 版本冻结在 4.3.x：与运行时 `SpineManifest::parse` 的校验口径一致。这里如实记录导出该文件
+# 的 Spine 版本；校验只看主次版本 `4.3.` 前缀，补丁号与后缀不影响兼容性。
+spine_version=4.3.75-beta
+skeleton=assets/spine/spineboy.skel
+atlas=assets/spine/spineboy.spineatlas
+page=assets/spine/spineboy.png

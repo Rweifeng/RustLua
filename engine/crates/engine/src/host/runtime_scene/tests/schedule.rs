@@ -126,8 +126,8 @@ fn two_d_listener_follows_camera2d_center() {
 /// 固定步顺序必须与原手工编排一致：
 /// input_apply → lua_update → ui_click_dispatch → physics2d → physics3d →
 /// particles → clock → scene_transition；帧级系统每调用一次：
-/// integrate_velocity → animation_state_advance → animation3d_advance →
-/// animation_player_advance。
+/// integrate_velocity → animation_state_advance → spine_advance →
+/// animation3d_advance → animation_player_advance。
 #[test]
 fn builtin_pipeline_preserves_legacy_stage_order() {
     let mut runtime = sample_runtime();
@@ -198,6 +198,8 @@ fn builtin_pipeline_preserves_legacy_stage_order() {
             "integrate_velocity",
             "camera2d_controller",
             "animation_state_advance",
+            // M84 P1：Spine 骨架推进与 2D 状态机同格，排在 3D 之前——几何必须在提取前算好。
+            "spine_advance",
             "animation3d_advance",
             "animation_player_advance",
             "spatial_propagate",

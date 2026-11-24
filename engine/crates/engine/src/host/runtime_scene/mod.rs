@@ -135,6 +135,10 @@ pub struct RuntimeScene {
     /// [`crate::host::script_packs`]）。
     pub(crate) animation_state:
         rustlua_lua_api::Handle<rustlua_animation::animation_lua::AnimationState>,
+    /// Spine 2D 的脚本可见状态（M84 P1）：本帧刚触发的动画事件。`spine_advance` 系统每帧把
+    /// `SpinePlayer::drain_events()` 推进这里，Lua `spine.events()` 取走的是同一份
+    /// （组合根接线见 [`crate::host::script_packs`]）。
+    pub(crate) spine_state: rustlua_lua_api::Handle<rustlua_spine::SpineState>,
     /// 物理模拟的能力单元：两个世界、分阶段回写队列与调试请求。步进、回写与刚体同步的
     /// 驱动逻辑在 [`super::physics_driver`]（宿主侧），脚本层只保留绑定。
     pub(crate) physics_state: rustlua_lua_api::Handle<rustlua_physics::physics_state::PhysicsState>,
@@ -201,6 +205,17 @@ pub struct RuntimeScene {
     /// 启动场景的来源（只在 `new`/`new_with_layout` 路径上有值；`from_scene*` 是显式文档）。
     /// 见 [`StartupSceneReport`]：宿主用它区分"独立运行时"与"真的加载了工程的启动场景"。
     pub(crate) startup_scene: Option<StartupSceneReport>,
+    /// 启动场景声明的特效叠加层路径（`.scene` 的 `meta\teffect_overlay`）。
+    ///
+    /// 在 `init` 里从 `Scene` 摘下并存下来：`Scene` 之后被消费掉（实体进 ECS），但宿主
+    /// 建渲染器时还要用它把 `.sgraph` 挂上去。放工程级配置会让所有场景共用同一个特效。
+    pub(crate) effect_overlay: Option<String>,
+    /// Spine 骨架是否已做过"静态采样"（见 `collect_spine_mesh`）。
+    ///
+    /// 只对编辑态有意义：那里不跑调度，`spine_advance` 从不执行，`output` 永远是空的，
+    /// 场景视图会什么都不画。首次提取时补一次 `snap_pose()`（`dt = 0`）把 setup pose
+    /// 采成网格；之后不再重复（骨架在编辑态本来就不动）。
+    pub(crate) spine_pose_snapped: bool,
     /// P3-R03-4：场景 `Environment` 组件的加载结果（没有声明时为 `None`）。
     pub(crate) environment: Option<environment::RuntimeSceneEnvironment>,
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
@@ -759,6 +774,13 @@ impl RuntimeScene {
             o.effect_param_names = Some(names);
             o.effect_params = Some(defaults);
         });
+    }
+
+    /// M96：取走脚本最后一次 `effect.play` / `effect.stop`（取走即清空，避免每帧重复加载）。
+    pub fn take_effect_command(
+        &mut self,
+    ) -> Option<rustlua_render::render_overrides::EffectCommand> {
+        self.render_overrides.with_mut(|o| o.effect_command.take())
     }
 
     /// P3-R210：脚本设置的剖面封口深度（米，0 = 关）。

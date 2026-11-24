@@ -454,6 +454,8 @@ fn kind_directory(kind: ResourceKind) -> &'static str {
         ResourceKind::Material => "materials",
         ResourceKind::Environment => "env",
         ResourceKind::ShaderGraph => "shaders",
+        // M84：Spine 三件套（`.spine`/`.skel`/`.spineatlas`）自成一组。
+        ResourceKind::Spine => "spine",
         ResourceKind::Animation | ResourceKind::Other => "imports",
     }
 }

@@ -57,7 +57,7 @@ pub(crate) fn camera_bindings(
 ) -> CameraBindings {
     let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rustlua-camera3d-bind-group"),
-        layout: &camera_bind_group_layout,
+        layout: camera_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -73,11 +73,11 @@ pub(crate) fn camera_bindings(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
+                resource: wgpu::BindingResource::TextureView(shadow_sample_view),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
-                resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 5,
@@ -85,19 +85,19 @@ pub(crate) fn camera_bindings(
             },
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
+                resource: wgpu::BindingResource::TextureView(point_shadow_array_view),
             },
             wgpu::BindGroupEntry {
                 binding: 7,
-                resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 8,
-                resource: wgpu::BindingResource::TextureView(&esm_array_view),
+                resource: wgpu::BindingResource::TextureView(esm_array_view),
             },
             wgpu::BindGroupEntry {
                 binding: 11,
-                resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
+                resource: wgpu::BindingResource::Sampler(point_shadow_plain_sampler),
             },
         ],
     });
@@ -112,7 +112,7 @@ pub(crate) fn camera_bindings(
     });
     let planar_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("rustlua-planar-camera-bind-group"),
-        layout: &camera_bind_group_layout,
+        layout: camera_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -128,11 +128,11 @@ pub(crate) fn camera_bindings(
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: wgpu::BindingResource::TextureView(&shadow_sample_view),
+                resource: wgpu::BindingResource::TextureView(shadow_sample_view),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
-                resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 5,
@@ -140,19 +140,19 @@ pub(crate) fn camera_bindings(
             },
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: wgpu::BindingResource::TextureView(&point_shadow_array_view),
+                resource: wgpu::BindingResource::TextureView(point_shadow_array_view),
             },
             wgpu::BindGroupEntry {
                 binding: 7,
-                resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
             wgpu::BindGroupEntry {
                 binding: 8,
-                resource: wgpu::BindingResource::TextureView(&esm_array_view),
+                resource: wgpu::BindingResource::TextureView(esm_array_view),
             },
             wgpu::BindGroupEntry {
                 binding: 11,
-                resource: wgpu::BindingResource::Sampler(&point_shadow_plain_sampler),
+                resource: wgpu::BindingResource::Sampler(point_shadow_plain_sampler),
             },
         ],
     });
@@ -196,7 +196,7 @@ pub(crate) fn camera_bindings(
     );
     let planar_reflection_view =
         planar_reflection_texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let planar_reflection_depth = Renderer::create_depth_view(&device, 1, 1);
+    let planar_reflection_depth = Renderer::create_depth_view(device, 1, 1);
     CameraBindings {
         camera_bind_group,
         planar_camera_buffer,

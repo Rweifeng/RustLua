@@ -99,6 +99,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
 
     // 宿主给出身份（运行时提取就是这条路径）。
     let quad = |handle: AssetHandle| SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: vec![
             OverlayVertex {
                 position: [-1.0, -1.0],
@@ -244,8 +245,8 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
-            name: "Ground".to_owned(),
-            mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
             material: None,
             mesh_handle: handle,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
@@ -276,6 +277,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -386,5 +388,123 @@ fn mesh_identity_rejects_reused_handle_from_another_runtime() {
         renderer.cached_mesh_count(),
         2,
         "两条路径各缓存一份，重号句柄不产生额外副本"
+    );
+}
+
+/// P1-4：`release_cached_resources` 必须把可重建缓存清空，且**不影响后续绘制的像素**。
+///
+/// 这条门守两件事：
+/// 1. 缓存真的被放掉（网格/材质/贴图计数归零，释放字节数 > 0）；
+/// 2. 释放只是"丢掉派生物"——再画一帧，像素与释放前**逐字节相同**。
+///    第 2 条尤其关键：清 `textures` 会打乱按索引引用的材质槽位，写错就是黑图。
+#[test]
+fn release_cached_resources_frees_caches_and_keeps_pixels_identical() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let Some(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()
+    else {
+        return gpu_skipped("request_adapter");
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+        label: Some("rustlua-test-device"),
+        required_features: wgpu::Features::empty(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
+    .expect("request test device");
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
+        .expect("offscreen renderer");
+
+    let size = 64u32;
+    let camera = Camera3D::perspective(
+        Vec3::new(0.0, 0.0, 4.0),
+        Vec3::ZERO,
+        std::f32::consts::FRAC_PI_2,
+        0.1,
+        100.0,
+    )
+    .expect("perspective camera");
+    let viewport = Viewport::new(size as f32, size as f32).expect("viewport");
+    let handle = AssetHandle::new(9, 4);
+    let scene = Scene3d {
+        camera,
+        view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
+        light: Light::default(),
+        point_lights: Vec::new(),
+        drawables: vec![rustlua_render::frame::Scene3dDrawable {
+            entity: rustlua_scene::scene::SceneEntityId(1),
+            name: "Ground".to_owned().into(),
+            mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
+            material: None,
+            mesh_handle: Some(handle),
+            model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
+            palette: Vec::new(),
+            instances: Vec::new(),
+            bounds: rustlua_render::frame::Scene3dBounds {
+                local_aabb: rustlua_math::math3d::Aabb3 {
+                    min: Vec3::new(-4.0, -4.0, -0.1),
+                    max: Vec3::new(4.0, 4.0, 0.1),
+                },
+                source: rustlua_render::frame::BoundsSource::Fallback,
+            },
+        }],
+    };
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("rustlua-test-release-resources"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        // 除了渲染附件，还要能回读像素——这条门靠逐字节比较。
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mesh = || rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
+        vertices: Vec::new(),
+        draws: Vec::new(),
+        world_sprites: Vec::new(),
+        world_sprite_draws: Vec::new(),
+        paths: Vec::new(),
+        path_handles: Vec::new(),
+        font_atlas: None,
+        custom_font_atlases: Vec::new(),
+        vector_vertices: Vec::new(),
+        vector_glyphs: Vec::new(),
+        vector_segments: Vec::new(),
+    };
+    let frame = |renderer: &mut Renderer| {
+        renderer.render_into_texture(&mesh(), Some(&scene), &view, size, size, true);
+        renderer
+            .copy_texture_to_cpu(&target, size, size)
+            .expect("readback")
+    };
+
+    // 第一帧建立缓存，第二帧取稳定像素。
+    let _ = frame(&mut renderer);
+    let before = frame(&mut renderer);
+    assert!(renderer.cached_mesh_count() > 0, "夹具应当已建立网格缓存");
+
+    let released = renderer.release_cached_resources();
+    assert!(released > 0, "应当报告释放了正字节数");
+    assert_eq!(renderer.cached_mesh_count(), 0, "网格缓存必须清空");
+
+    let after = frame(&mut renderer);
+    assert_eq!(
+        before, after,
+        "释放缓存只丢掉派生物，再画一帧像素必须逐字节相同"
     );
 }

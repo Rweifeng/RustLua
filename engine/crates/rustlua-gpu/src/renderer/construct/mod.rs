@@ -527,8 +527,10 @@ impl Renderer {
         let world_sprite_camera_bind_group = ws.camera_bind_group;
         let world_sprite_pipeline = ws.pipeline;
         let world_sprite_opaque_pipeline = ws.opaque_pipeline;
+        let world_sprite_additive_pipeline = ws.additive_pipeline;
         let hdr_world_sprite_pipeline = ws.hdr_pipeline;
         let hdr_world_sprite_opaque_pipeline = ws.hdr_opaque_pipeline;
+        let hdr_world_sprite_additive_pipeline = ws.hdr_additive_pipeline;
         let world_sprite_buffer = ws.vertex_buffer;
         // GPU 粒子布局：拆分批 8 搬到 `construct/gpu_particles.rs`。
         // 它引用批次 7 的 world_sprite_camera_layout，所以只能在批次 7 之后做。
@@ -595,8 +597,11 @@ impl Renderer {
             config.present_mode
         );
         let ssao_depth_view = depth_view.clone();
+        // P3：回读器在 `device`/`queue` 移交进结构体之前建好，内部各自持有一份克隆句柄。
+        let readback_reader = crate::renderer::async_readback::AsyncReadback::new(&device, &queue);
         Ok(Self {
             surface,
+            readback: readback_reader,
             device,
             queue,
             config,
@@ -719,6 +724,7 @@ impl Renderer {
             instance_arena_used: 0,
             frame_bind_build_us: 0,
             frame_bind_bake_us: 0,
+            instance_scratch: Vec::new(),
             pending_compute: None,
             pending_compute_sealed: None,
             bake_inputs: std::collections::HashMap::new(),
@@ -792,12 +798,6 @@ impl Renderer {
             clock: web_time::Instant::now(),
             clock_frozen_secs: None,
             _material_bind_group_layout: material_bind_group_layout,
-            readback_slots: Vec::new(),
-            readback_submitted: 0,
-            readback_completed: 0,
-            readback_dropped: 0,
-            readback_pending_count: 0,
-            readback_buffer_rebuilds: 0,
             timestamp_query_set,
             timestamp_slots: Vec::new(),
             timestamp_period_ns,
@@ -814,6 +814,7 @@ impl Renderer {
             frame_views: FrameViews::new(),
             world_sprite_pipeline,
             world_sprite_opaque_pipeline,
+            world_sprite_additive_pipeline,
             world_sprite_camera_buffer,
             world_sprite_camera_bind_group,
             world_sprite_buffer,
@@ -828,8 +829,14 @@ impl Renderer {
                     [0.0, 0.0, 0.0, 1.0],
                 ],
             },
+            // M84 P1：Spine 缓冲懒创建（首个非空 Spine 帧才分配设备资源）。
+            spine_vertex_buffer: None,
+            spine_vertex_capacity: 0,
+            spine_index_buffer: None,
+            spine_index_capacity: 0,
             post_process: None,
             effect_overlays: Vec::new(),
+            named_effect_overlays: Vec::new(),
             effect_scene_texture: None,
             effect_scene_view: None,
             effect_scene_size: (0, 0),
@@ -848,6 +855,7 @@ impl Renderer {
             hdr_scene_size: (0, 0),
             hdr_world_sprite_pipeline,
             hdr_world_sprite_opaque_pipeline,
+            hdr_world_sprite_additive_pipeline,
             tonemap_pipeline,
             tonemap_params,
             section_height_white,
@@ -1293,6 +1301,36 @@ fn two_d_pipeline(
     depth: Option<wgpu::DepthStencilState>,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    two_d_pipeline_with_blend(
+        device,
+        layout,
+        module,
+        vertex_buffers,
+        topology,
+        format,
+        depth,
+        wgpu::BlendState::ALPHA_BLENDING,
+        label,
+    )
+}
+
+/// 与 [`two_d_pipeline`] 相同，只把混合状态参数化（M84 P2-③）。
+///
+/// 为什么要单独一支而不是给原函数加参数：原函数的 6 个调用方全是"标准 alpha 混合"，
+/// 给它们各加一个 `BlendState::ALPHA_BLENDING` 只是噪声。Spine 的 additive/multiply 是
+/// 少数派，单独走这条路径，语义差别因此只出现在调用点。
+#[allow(clippy::too_many_arguments)] // 同 `two_d_pipeline`
+fn two_d_pipeline_with_blend(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    vertex_buffers: &[wgpu::VertexBufferLayout<'static>],
+    topology: wgpu::PrimitiveTopology,
+    format: wgpu::TextureFormat,
+    depth: Option<wgpu::DepthStencilState>,
+    blend: wgpu::BlendState,
+    label: &str,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
@@ -1308,7 +1346,7 @@ fn two_d_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -1383,6 +1421,51 @@ pub(super) fn build_world_sprite_pipeline(
         Some(depth_stencil_state(pass, wgpu::DepthBiasState::default())),
         label,
     )
+}
+
+/// 与 [`build_world_sprite_pipeline`] 相同，只把混合状态参数化（M84 P2-③ 的 additive 变体）。
+pub(super) fn build_world_sprite_pipeline_with_blend(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    pass: DepthPass,
+    format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    two_d_pipeline_with_blend(
+        device,
+        layout,
+        module,
+        &[world_sprite_vertex_layout()],
+        wgpu::PrimitiveTopology::TriangleList,
+        format,
+        Some(depth_stencil_state(pass, wgpu::DepthBiasState::default())),
+        blend,
+        label,
+    )
+}
+
+/// Spine additive 混合的 wgpu 方程。
+///
+/// 与官方 runtime 的 additive 语义对齐：`dst = src*src_alpha + dst`（颜色相加、不衰减
+/// 目标），alpha 通道同样相加。这是 Spine 的 `additive` 在 GL 侧的标准写法
+/// （`GL_SRC_ALPHA, GL_ONE`），与 `BlendState::PREMULTIPLIED_ALPHA_BLENDING` 不同——
+/// 后者会乘进目标 alpha，画光效时会出现"越亮越透"的错误观感。
+#[must_use]
+pub(super) fn additive_blend_state() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::SrcAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
 }
 
 /// GPU 粒子（`gpu_particles.rs` 内联 draw 段）的 instanced 管线。
@@ -1741,4 +1824,42 @@ fn fs_main() -> @location(0) vec4<f32> {
         multiview: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod additive_blend_tests {
+    //! M84 P2-③：Spine additive 混合方程的契约。
+    //!
+    //! 钉的是**混合方程本身**——它是画面观感的唯一来源，写错了表现为"光效越亮越透"或
+    //! "光效被背景吃掉"，两者单看代码都像对的。与官方 runtime 对应：
+    //! Spine 的 `additive` 在 GL 侧是 `glBlendFunc(GL_SRC_ALPHA, GL_ONE)`。
+
+    use super::additive_blend_state;
+
+    #[test]
+    fn additive_adds_to_a_non_fading_destination() {
+        let blend = additive_blend_state();
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
+        // alpha 通道同样相加：Spine 的光效合成不依赖目标 alpha，
+        // 乘进目标会变成"越亮越透"。
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Add);
+    }
+
+    /// 反面对照：additive 必须与标准 alpha 混合可区分。
+    ///
+    /// 若哪天有人把它写成 `ALPHA_BLENDING` 的别名，这条会先红——光效观感的问题
+    /// 不该靠肉眼看截图才发现。
+    #[test]
+    fn additive_is_distinguishable_from_standard_alpha_blending() {
+        let additive = additive_blend_state();
+        let alpha = wgpu::BlendState::ALPHA_BLENDING;
+        assert_ne!(
+            additive.color.dst_factor, alpha.color.dst_factor,
+            "additive 的目标因子是 One（不衰减目标），标准 alpha 是 OneMinusSrcAlpha"
+        );
+    }
 }

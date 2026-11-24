@@ -125,7 +125,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if arguments.perf_baseline {
         // ER-01：无窗口基线报告；有场景不达标时退出码 2（可当质量门）。
-        let ok = perf_baseline::run_and_write_report(arguments.perf_report.as_deref())?;
+        let ok = perf_baseline::run_and_write_report(
+            arguments.perf_report.as_deref(),
+            arguments.perf_trace.as_deref(),
+        )?;
         if !ok {
             std::process::exit(2);
         }
@@ -466,6 +469,9 @@ struct EditorApp {
     lua_source_view: crate::panels::lua_source_view::LuaSourceViewState,
     /// 模型预览（选中 `.glb`/`.gltf` 时属性面板里的旋转/缩放）：软光栅，只读、不写盘。
     model_preview: crate::panels::model_preview::ModelPreviewState,
+    /// `.sgraph` 资源的就地预览（M99：属性面板里选中 Shader Graph 时直接看到画面）。
+    /// `None` = 还没建（没有 GPU 设备或还没选中过）；按路径重定位，延迟到首次绘制时创建。
+    shader_asset_preview: Option<crate::panels::shader_graph_preview::AssetShaderPreview>,
     /// 「导入设置」段（属性面板的资源分支）：模型缩放 / 音频音量 / 字体字重，写 `resources.meta`。
     import_settings: crate::panels::import_settings::ImportSettingsState,
     /// 断链检查窗（资源 ▸ 断链检查…）：一次扫描的结果行，改指动作只发命令。
@@ -506,6 +512,8 @@ struct EditorApp {
     /// 标签带到前台（它可能刚被补进树），并把「层级」「属性」标签一并带到前台——
     /// 内嵌的 UI 节点树/检查器分别画在这两块面板里，标签被挡住时它们是看不到的。
     pending_ui_studio_focus: bool,
+    /// 属性面板里点了「在 Shader Graph 面板中打开」：下一帧把那份 `.sgraph` 载入并聚焦标签。
+    pending_open_shader_graph: Option<String>,
     /// UI 工作室标签是否是它所在标签组的**活动**标签（每帧画之前由 `show_workspace`
     /// 写入）。层级/属性面板只在它为真时内嵌 UI 节点树/检查器，切回 Scene/Game 即
     /// 回到场景实体层级与属性。
@@ -630,6 +638,8 @@ struct EditorApp {
     scene_screen_cache_key: Option<(u64, (u32, u32))>,
     /// 资源浏览器纹理缩略图缓存（按资源相对路径）。
     thumbnails: std::collections::HashMap<String, egui::TextureHandle>,
+    /// 已提示过软阈值的缓存名（P0-4）：同一条提示只出一次，避免每帧刷屏。
+    cache_limit_notices: std::collections::HashSet<String>,
     /// 后台缩略图解码 worker：避免大资源项目在 UI 线程同步解码导致打开卡死。
     thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker,
     /// 资源目录树缓存（按 filter + refresh_count 复用），避免每帧 clone 全部条目重建。
@@ -1053,9 +1063,11 @@ pub(crate) struct SceneView3dTyped {
 #[derive(Clone, Debug)]
 pub(crate) struct SceneView3dTypedEntity {
     id: SceneEntityId,
-    name: String,
+    /// P2：与 `Scene3dDrawable.name` 同为 `Arc<str>`，缓存与每帧预览之间只做引用计数。
+    name: std::sync::Arc<str>,
     transform: Transform3D,
-    mesh_path: String,
+    /// P2：与 `Scene3dDrawable.mesh_path` 同为 `Arc<str>`（同理，避免每帧克隆）。
+    mesh_path: std::sync::Arc<str>,
 }
 
 #[derive(Default)]
@@ -1263,6 +1275,7 @@ impl EditorApp {
             procedural: crate::panels::procedural::ProceduralState::default(),
             lua_source_view: crate::panels::lua_source_view::LuaSourceViewState::new(),
             model_preview: crate::panels::model_preview::ModelPreviewState::new(),
+            shader_asset_preview: None,
             import_settings: crate::panels::import_settings::ImportSettingsState::new(),
             broken_refs: crate::panels::broken_refs::BrokenRefsPanelState::new(),
             prefab_structure: crate::panels::prefab_structure_view::PrefabStructureViewState::new(),
@@ -1282,6 +1295,7 @@ impl EditorApp {
             show_ui_studio: false,
             show_shader_graph: true,
             pending_ui_studio_focus: false,
+            pending_open_shader_graph: None,
             ui_studio_active: false,
             ui_studio_panel: crate::panels::ui_studio::UiStudioPanel::default(),
             graph: crate::panels::graph::GraphPanelState::default(),
@@ -1348,6 +1362,7 @@ impl EditorApp {
             scene_screen_tex_id: None,
             scene_screen_cache_key: None,
             thumbnails: std::collections::HashMap::new(),
+            cache_limit_notices: std::collections::HashSet::new(),
             thumbnail_worker: crate::panels::resource_browser::ThumbnailWorker::new(),
             resource_tree_cache: None,
             refresh_pending: false,
@@ -2579,6 +2594,30 @@ impl EditorApp {
         self.capture_status = Some(status);
     }
 
+    /// P1-4：把编辑器持有的**全部可重建 GPU 资源**还给系统。
+    ///
+    /// 什么时候用：关闭工程、切到大场景前、或长时间空闲。释放的都是派生物
+    /// （网格/贴图/字体图集/视图纹理 ID），下次绘制按需重建，**像素不变**，只是首帧变慢。
+    ///
+    /// 不释放：`Renderer` 的管线缓存与顶点缓冲（重编要几百毫秒、容量复用正是它的价值），
+    /// Lua 运行时（那是用户状态，不是缓存）。
+    ///
+    /// 返回释放掉的估算字节数（供关闭工程那行状态栏读数）。
+    pub(crate) fn release_all_resources(&mut self) -> u64 {
+        // 先归还 egui 侧的原生纹理 ID：它们是指向 `scene_texture` 绑定组的句柄，
+        // 底层资源一旦被回收，旧 ID 就会指向已销毁的纹理。
+        self.release_scene_view_textures();
+        // 画布纹理缓存当前恒为空（见 `UiStudioPanel::canvas_textures` 的说明），
+        // 这里顺手清一次：将来有人把它启用了，释放路径已经是对的。
+        self.ui_studio_panel.canvas_textures.clear();
+        // 引擎自己的 `Renderer` 是 `scene_renderer`；`render_state.renderer` 是
+        // `eframe::egui_wgpu::Renderer`（egui 的绘制器），没有这些缓存可释放。
+        match self.scene_renderer.as_mut() {
+            Some(renderer) => renderer.release_cached_resources(),
+            None => 0,
+        }
+    }
+
     /// E06-2：把本帧的调度报告桥接进 trace。
     ///
     /// `FrameScheduleReport` 只有每系统耗时、没有开始时间，因此按报告顺序从
@@ -2659,6 +2698,38 @@ impl EditorApp {
             f64::from(self.console_row_probe.max_content_height()),
         );
         profiler.set_gauge("thumbnail_cache_entries", self.thumbnails.len() as f64);
+        // P0-4：把"可能无界"的缓存条目也变成可观测读数。缩略图与 UI Studio 画布纹理是
+        // 编辑器里两个按资源/节点数增长的纹理表，长时间会话下若只增不减，这里能看见。
+        profiler.set_gauge(
+            "ui_studio_canvas_textures",
+            self.ui_studio_panel.canvas_textures.len() as f64,
+        );
+        profiler.set_gauge(
+            "prefab_source_cache_entries",
+            self.prefab_source_cache.len() as f64,
+        );
+        // 软阈值：超了就提示一次（不拦操作、不刷屏），把"疑似泄漏"从隐性变显性。
+        // 阈值取 2000：正常工程远低于此，触发即为异常增长的信号。
+        const CACHE_SOFT_LIMIT: usize = 2000;
+        for (label, len) in [
+            ("缩略图", self.thumbnails.len()),
+            (
+                "UI Studio 画布纹理",
+                self.ui_studio_panel.canvas_textures.len(),
+            ),
+            ("预制体源缓存", self.prefab_source_cache.len()),
+        ] {
+            if len > CACHE_SOFT_LIMIT {
+                let key = format!("cache-soft-limit:{label}");
+                if !self.cache_limit_notices.contains(&key) {
+                    self.cache_limit_notices.insert(key);
+                    self.push_console_notice(format!(
+                        "[性能] {label}缓存条目 {len} 超过软阈值 {CACHE_SOFT_LIMIT}，疑似只增不减；\
+                         性能面板可看 gauge 走势"
+                    ));
+                }
+            }
+        }
     }
 
     fn push_console_notice(&mut self, line: impl Into<String>) {

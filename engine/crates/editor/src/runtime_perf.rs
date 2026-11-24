@@ -104,6 +104,10 @@ pub(crate) struct RuntimePerfSnapshot {
     pub vertex_buffer_capacity: u64,
     pub vertex_buffer_growths: u64,
     pub vertex_bytes_peak: u64,
+    /// P1-3：CPU 侧矢量字形/线段缓冲的容量字节（进进程 RSS，不是显存）。
+    pub cpu_vector_cache_bytes: u64,
+    /// P1-3：已解码、等主线程取走的资源字节（贴图像素 + 网格顶点/索引）。
+    pub async_cpu_buffered_bytes: u64,
     /// P3-R04-3：已编译的 3D 网格/阴影 shader 变体数。
     pub pipeline_variants: usize,
     /// 变体缓存命中次数（构造期重复请求同一键）。
@@ -819,6 +823,8 @@ mod tests {
             vertex_buffer_capacity: 1024 * 1024,
             vertex_buffer_growths: 1,
             vertex_bytes_peak: 900 * 1024,
+            cpu_vector_cache_bytes: 64 * 1024,
+            async_cpu_buffered_bytes: 128 * 1024,
             pipeline_variants: 6,
             pipeline_variant_hits: 0,
             pipeline_variant_misses: 6,

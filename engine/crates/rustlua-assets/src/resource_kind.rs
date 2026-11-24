@@ -37,6 +37,11 @@ pub enum ResourceKind {
     Animation,
     /// Shader Graph source assets (`.sgraph`).
     ShaderGraph,
+    /// Spine 2D 骨骼动画（M84）：`.spine` 清单 / `.skel` 二进制骨骼 / `.spineatlas` 图集文本。
+    ///
+    /// 图集刻意改名：Spine 导出的 `.atlas` 与引擎自有图集格式同名，直接放进工程会被归成
+    /// [`Self::Atlas`]，两者的导入规则完全不同。
+    Spine,
     /// Anything the pipeline does not yet understand.
     Other,
 }
@@ -65,6 +70,7 @@ impl ResourceKind {
             "ttf" | "otf" => Self::Font,
             "anim" => Self::Animation,
             "sgraph" => Self::ShaderGraph,
+            "spine" | "skel" | "spineatlas" => Self::Spine,
             _ => Self::Other,
         }
     }
@@ -84,6 +90,7 @@ impl ResourceKind {
             Self::Font => "字体",
             Self::Animation => "动画",
             Self::ShaderGraph => "Shader Graph",
+            Self::Spine => "Spine",
             Self::Other => "其他",
         }
     }
@@ -103,6 +110,7 @@ impl ResourceKind {
             Self::Font => "font",
             Self::Animation => "animation",
             Self::ShaderGraph => "shader_graph",
+            Self::Spine => "spine",
             Self::Other => "other",
         }
     }
@@ -122,6 +130,7 @@ impl ResourceKind {
             "font" => Self::Font,
             "animation" => Self::Animation,
             "shader_graph" => Self::ShaderGraph,
+            "spine" => Self::Spine,
             "other" => Self::Other,
             _ => return None,
         })
@@ -167,6 +176,20 @@ mod tests {
             ResourceKind::from_path("assets/shaders/fire.sgraph"),
             ResourceKind::ShaderGraph
         );
+        // M84：Spine 三件套归同一家族；`.atlas` 仍是引擎自有图集（刻意不合并）。
+        assert_eq!(
+            ResourceKind::from_path("assets/spine/hero.spine"),
+            ResourceKind::Spine
+        );
+        assert_eq!(
+            ResourceKind::from_path("assets/spine/hero.skel"),
+            ResourceKind::Spine
+        );
+        assert_eq!(
+            ResourceKind::from_path("assets/spine/hero.spineatlas"),
+            ResourceKind::Spine
+        );
+        assert_eq!(ResourceKind::from_path("a.atlas"), ResourceKind::Atlas);
     }
 
     #[test]
@@ -203,6 +226,7 @@ mod tests {
             ResourceKind::Font,
             ResourceKind::Animation,
             ResourceKind::ShaderGraph,
+            ResourceKind::Spine,
             ResourceKind::Other,
         ] {
             assert_eq!(ResourceKind::parse(kind.token()), Some(kind));
@@ -225,6 +249,7 @@ mod tests {
             ResourceKind::Font,
             ResourceKind::Animation,
             ResourceKind::ShaderGraph,
+            ResourceKind::Spine,
             ResourceKind::Other,
         ] {
             assert!(!kind.label().is_empty());

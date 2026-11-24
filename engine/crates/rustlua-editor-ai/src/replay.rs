@@ -125,6 +125,13 @@ impl ReplayReport {
 
 /// 回放固定用无头策略：T1 自动，T2/T3 拒绝。fixture 若需要 T2，必须显式走拒绝路径，
 /// 避免回放门悄悄获得「自动改跨文件资源」的能力。
+///
+/// `result_large_err`：`ReplayError` 的 `ResultMismatch` 带两个 `serde_json::Value`，
+/// 整个 enum 至少 176 字节，于是 `Result` 把这个代价放在**成功路径**上。这里不改形状，
+/// 因为：① 本函数只被回放门与测试调用（`editor::ai_host` 的测试），不在任何热路径；
+/// ② 装箱会让"错误里带完整 expected/actual diff"这个设计变得更绕，而那份 diff 正是
+/// 回放失败时唯一有用的诊断。代价是每帧级别的 API 不该学它。
+#[allow(clippy::result_large_err)]
 pub fn run_replay(
     fixture: &ReplayFixture,
     host: &mut dyn ToolHost,

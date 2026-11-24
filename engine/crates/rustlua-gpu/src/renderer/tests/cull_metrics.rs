@@ -17,23 +17,21 @@ use rustlua_render::mesh3d::GROUND_PLANE_SENTINEL;
 const SIZE: u32 = 32;
 
 fn test_device(tag: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .ok()?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-        label: Some(tag),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request test device");
-    Some((device, queue))
+    // 适配器选择走共享策略（`RUSTLUA_TEST_GPU`），不再各写一份
+    // `force_fallback_adapter: true`——那样会把每个测试都推到软件光栅化上。
+    let (adapter, _mode) = crate::test_adapter::request_test_adapter();
+    let adapter = adapter?;
+    Some(
+        pollster::block_on(adapter.request_device(&DeviceDescriptor {
+            label: Some(tag),
+            required_features: wgpu::Features::empty(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("request test device"),
+    )
 }
 
 fn drawable(entity: u64, x: f32) -> rustlua_render::frame::Scene3dDrawable {
@@ -43,8 +41,8 @@ fn drawable(entity: u64, x: f32) -> rustlua_render::frame::Scene3dDrawable {
 fn drawable_at(entity: u64, x: f32, z: f32) -> rustlua_render::frame::Scene3dDrawable {
     rustlua_render::frame::Scene3dDrawable {
         entity: rustlua_scene::scene::SceneEntityId(entity),
-        name: format!("plane-{entity}"),
-        mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+        name: format!("plane-{entity}").into(),
+        mesh_path: GROUND_PLANE_SENTINEL.to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::translation(Vec3::new(x, 0.0, z)),
@@ -147,7 +145,7 @@ fn skip_mesh_filter_skips_matching_drawables_before_culling() {
     let mut renderer =
         Renderer::new_offscreen(device, queue, None, true, true).expect("offscreen renderer");
     let mut grass = drawable(2, 0.0);
-    grass.mesh_path = "assets/models/grass.glb".to_owned();
+    grass.mesh_path = "assets/models/grass.glb".into();
     let scene = scene_with(vec![drawable(1, 0.0), grass]);
 
     // 未开开关：假路径不在缓存里、被缓存门跳过，但不进 skip 计数。
@@ -173,7 +171,7 @@ fn skip_mesh_filter_skips_matching_drawables_before_culling() {
     // 回滚档：关掉开关后同一路径不再计入 skip。
     renderer.set_skip_mesh_filter(None);
     let mut grass = drawable(3, 0.0);
-    grass.mesh_path = "assets/models/grass.glb".to_owned();
+    grass.mesh_path = "assets/models/grass.glb".into();
     renderer.frame_3d_draws(&scene_with(vec![grass]));
     assert_eq!(renderer.frame_skip_mesh, 0);
 }

@@ -10,8 +10,8 @@ fn water_plane_is_extracted_from_scene_drawables() {
 
     let drawable = Scene3dDrawable {
         entity: SceneEntityId(7),
-        name: "Water".to_owned(),
-        mesh_path: "__water__?size=100&res=8&y=-0.5".to_owned(),
+        name: "Water".to_owned().into(),
+        mesh_path: "__water__?size=100&res=8&y=-0.5".to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::translation(Vec3::new(10.0, 5.0, -20.0))
@@ -83,6 +83,7 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: vec![rustlua_render::frame::SceneDraw {
             texture: 1,
@@ -181,6 +182,7 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let empty_mesh = || rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -217,6 +219,7 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
         overlay: Some(declared),
     });
     let quad = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: vec![
             OverlayVertex {
                 position: [-1.0, -1.0],
@@ -287,6 +290,118 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
     );
 }
 
+/// M84 P1：纯 Spine 帧必须进入世界视图准备和 WorldSprite pass。
+///
+/// 这个用例只放入 Spine，不放普通世界 Sprite 或 GPU 粒子，专门锁定 world_view 门控：
+/// 如果门控遗漏 Spine，`RenderPlan` 会声明 WorldSprite，但实际执行会漏掉该通道。
+#[test]
+fn pure_spine_frame_executes_world_sprite_pass() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let Some(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()
+    else {
+        return gpu_skipped("request_adapter");
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+        label: Some("rustlua-pure-spine-device"),
+        required_features: wgpu::Features::empty(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
+    .expect("request test device");
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+        .expect("offscreen renderer");
+    let size = 64u32;
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("rustlua-pure-spine-target"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh {
+            vertices: vec![
+                rustlua_render::spine_mesh::SpineVertex {
+                    position: [-0.5, -0.5, 0.0],
+                    uv: [0.0, 1.0],
+                    color: [1.0; 4],
+                },
+                rustlua_render::spine_mesh::SpineVertex {
+                    position: [0.5, -0.5, 0.0],
+                    uv: [1.0, 1.0],
+                    color: [1.0; 4],
+                },
+                rustlua_render::spine_mesh::SpineVertex {
+                    position: [0.0, 0.5, 0.0],
+                    uv: [0.5, 0.0],
+                    color: [1.0; 4],
+                },
+            ],
+            indices: vec![0, 1, 2],
+            draws: vec![rustlua_render::spine_mesh::SpineDraw {
+                texture: 0,
+                first_index: 0,
+                index_count: 3,
+                blend: rustlua_render::spine_mesh::SpineBlendMode::Normal,
+                premultiplied_alpha: false,
+                z: 0.0,
+            }],
+        },
+        vertices: Vec::new(),
+        draws: Vec::new(),
+        world_sprites: Vec::new(),
+        world_sprite_draws: Vec::new(),
+        paths: vec![rustlua_render::frame::WHITE_TEXTURE_PATH.to_owned()],
+        path_handles: Vec::new(),
+        font_atlas: None,
+        custom_font_atlases: Vec::new(),
+        vector_vertices: Vec::new(),
+        vector_glyphs: Vec::new(),
+        vector_segments: Vec::new(),
+    };
+
+    let outcome = renderer.render_into_texture(&mesh, None, &view, size, size, true);
+    assert!(
+        matches!(outcome, RenderOutcome::Presented),
+        "纯 Spine 帧不应因世界视图门控而失败"
+    );
+    assert!(
+        renderer.last_frame_plan().contains(RenderPass::WorldSprite),
+        "纯 Spine 帧必须计划 WorldSprite pass"
+    );
+    assert_eq!(
+        renderer.last_frame_passes(),
+        renderer.last_frame_plan().passes(),
+        "纯 Spine 帧的计划和实际执行必须一致"
+    );
+    assert_eq!(
+        renderer.last_frame_metrics().dropped_draws,
+        0,
+        "有效 Spine draw 不应被丢弃"
+    );
+    assert_eq!(
+        renderer.last_frame_metrics().draw_calls,
+        1,
+        "纯 Spine 帧应提交一个索引 draw"
+    );
+}
+
 /// docs/54 §4.3：后处理通道写像素的**方向性**证据。
 ///
 /// 恒等参数不该把画面弄花（离屏 sRGB 往返最多差几个 LSB），而曝光、色调与暗角三个参数各自
@@ -332,6 +447,7 @@ fn post_process_pass_changes_pixels_in_the_documented_way() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

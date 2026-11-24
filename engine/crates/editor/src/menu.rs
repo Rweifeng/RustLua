@@ -208,12 +208,8 @@ pub(crate) enum MenuAction {
     // 文件
     NewScene,
     NewProject,
-    /// 文件 ▸ 新建 2D 起步项目…（与空白项目同一条骨架，多一块可控角色与它的实体脚本）。
-    NewProject2d,
     OpenProject,
     SaveScene,
-    /// docs/55 阶段 3：明知磁盘被外部改动也覆盖（显式动作，不绑快捷键）。
-    ForceSaveScene,
     ProjectSettings,
     /// 文件 ▸ 渲染设置…：项目级生产画质项（`project.toml` 的 `[render]` 段）。
     RenderSettings,
@@ -312,20 +308,13 @@ const FILE_MENU: &[MenuRow] = &[
     // 场景名由 `create_scene` 自动取（`main`，冲突时 `main2`…）。
     MenuRow::Item(MenuItem::new("新建场景", MenuAction::NewScene).gate(MenuGate::ProjectLoaded)),
     MenuRow::Separator,
-    MenuRow::Item(MenuItem::new("新建空白项目…", MenuAction::NewProject)),
-    MenuRow::Item(MenuItem::new("新建 2D 起步项目…", MenuAction::NewProject2d)),
+    MenuRow::Item(MenuItem::new("新建项目…", MenuAction::NewProject)),
     MenuRow::Item(MenuItem::new("打开项目…", MenuAction::OpenProject)),
     MenuRow::RecentProjects,
     MenuRow::Separator,
     MenuRow::Item(
         MenuItem::new("保存场景", MenuAction::SaveScene)
             .shortcut("Ctrl+S")
-            .gate(MenuGate::ProjectLoaded),
-    ),
-    // docs/55 阶段 3：磁盘文件被外部改动时普通保存会被**拒绝**（不静默覆盖别人的改动），
-    // 这里给出显式出口；没有冲突时它只是"再保存一次"，不会造成意外。
-    MenuRow::Item(
-        MenuItem::new("强制保存（覆盖外部修改）", MenuAction::ForceSaveScene)
             .gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Separator,
@@ -818,15 +807,9 @@ impl EditorApp {
             MenuAction::NewProject => {
                 self.create_new_project(crate::panels::header::ProjectTemplate::Blank)
             }
-            MenuAction::NewProject2d => {
-                self.create_new_project(crate::panels::header::ProjectTemplate::Starter2d)
-            }
             MenuAction::OpenProject => self.open_project_menu(),
             MenuAction::SaveScene => {
                 self.dispatch(editor::EditorCommand::Save);
-            }
-            MenuAction::ForceSaveScene => {
-                self.save_scene_force();
             }
             MenuAction::ProjectSettings => self.open_project_settings(),
             MenuAction::RenderSettings => self.open_render_settings(),
@@ -1270,7 +1253,7 @@ mod tests {
     /// - **运行控制**（播放/停止/暂停/步进）：会真的尝试创建 GPU 预览会话，无窗口环境下要等到
     ///   初始化超时，单测会从毫秒级变成几十秒；这四条由
     ///   `command_router::play_control_commands_follow_the_state_machine` 等专门测试覆盖；
-    /// - **新建/打开项目**（空白 / 2D 起步 / 打开）：会弹出**原生目录选择对话框**
+    /// - **新建/打开项目**（新建 / 打开）：会弹出**原生目录选择对话框**
     ///   （`choose_project_directory`），单元测试不该弹窗。
     ///
     /// 其余条目在这条测试里必须"无项目、无选中"也能安全执行。
@@ -1288,7 +1271,6 @@ mod tests {
                             | MenuAction::PlayTogglePause
                             | MenuAction::PlayStep
                             | MenuAction::NewProject
-                            | MenuAction::NewProject2d
                             | MenuAction::OpenProject
                     ) {
                         skipped += 1;
@@ -1315,7 +1297,7 @@ mod tests {
                 }
             });
         }
-        assert_eq!(skipped, 7, "被跳过的动作数量变了，请同步本测试说明");
+        assert_eq!(skipped, 6, "被跳过的动作数量变了，请同步本测试说明");
         // 无项目时"需要项目"的条目全部灰置，但动作本身也必须安全可执行。
         assert!(!app.project_loaded);
     }

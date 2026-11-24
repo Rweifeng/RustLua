@@ -1152,6 +1152,7 @@ fn synthetic_mesh() -> rustlua_render::frame::SceneMesh {
         ));
     }
     rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices,
         draws,
         world_sprites: Vec::new(),

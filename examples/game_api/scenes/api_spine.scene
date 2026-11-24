@@ -1,0 +1,20 @@
+scene_version=2
+name=api_spine
+meta	display_name	Spine 2D 骨骼动画
+# M84 P1：Spine 2D 骨骼动画演示。
+#
+# Hero 是唯一挂了 `SpineSkeleton` 的实体：`data=` 指向 `.spine` 清单，清单再引用
+# `.skel` 骨骼、`.spineatlas` 图集与页 PNG。引擎每帧在 CPU 侧采样骨架，按 slot
+# draw order 提交三角网格（不与精灵合批，否则部件会互相遮挡错位）。
+#
+# 实体名与 scripts/demo_spine.lua 里的 entity.find 一一对应。
+entity	1	Hero
+component	1	SpineSkeleton	data=assets/spine/spineboy.spine;animation=idle;skin=default;speed=1.000000;scale=1.000000;z=0.000000;loop=true;enabled=true;sorting_layer=default;order=10
+component	1	Transform	position=640.000000000,300.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	2	Backdrop
+component	2	Quad	size=1280,720;color=0.060,0.070,0.100,1.000
+component	2	Transform	position=640.000000000,360.000000000,-1.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	Hud
+component	3	Text	text=Spine 2D demo;font_size=14;color=0.850,0.900,1.000
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,1.0000,0.0000,1.0000;offsets=364.00,-330.00,364.00,-330.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,1.0000

@@ -307,6 +307,35 @@ map = "rustlua-actions-v2\ninteract=key:keye,pad:0\n..."
 
 `follow` 期间相机的中心由控制器决定；`unfollow` 之后 `set` 的效果才不会被覆盖。
 
+### `spine` Spine 2D 骨骼动画（M84 P1）
+
+执行 M84 之前引擎**没有 2D 骨骼运行时**：`animation.*` 管的是帧序列与状态机，`animation3d.*`
+管的是 glTF 的 GPU 蒙皮——两者都不能表达 Spine 的 slot / draw order / 图集页 / 混合模式。
+`spine` 表补上这一块：实体挂 `SpineSkeleton` 组件后，引擎每帧在 CPU 侧采样骨架，按 slot
+draw order 提交索引三角网格（与精灵共用世界相机与深度，但**不合批**——合批会打乱部件遮挡）。
+
+组件载荷：`data=<.spine 清单>;animation=idle;skin=default;speed=1;scale=1;z=0;loop=true;
+enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨骼、`.spineatlas`
+图集与页 PNG（图集刻意改名，避免与引擎自有 `.atlas` 格式冲突）。
+
+| 调用 | 说明 |
+| --- | --- |
+| `spine.set_animation(id, name [, looped])` | 切动画；`loop` 缺省 `true`，空串停播。动画名不存在**报错**，不静默回退 |
+| `spine.get_animation(id)` | 当前动画名（未设置过为空串） |
+| `spine.list(id)` | 骨架里全部动画名（由 `.skel` 决定） |
+| `spine.set_skin(id, name)` | 切皮肤，缺省皮肤叫 `default`；不存在的皮肤报错 |
+| `spine.set_speed(id, speed)` | 播放倍率；负数/非有限值被忽略 |
+| `spine.set_enabled(id, enabled)` | `false` 停止推进但**保留上一帧网格**（不闪没） |
+| `spine.events()` | 取走本帧事件（取走即清） |
+| `spine.bounds(id)` | 本帧世界空间包围盒 `{min_x, min_y, max_x, max_y}`；未采样时四点全零 |
+
+事件项形状：`{ entity, kind, name, animation }`。P1 只产 `kind == "start"`（切换动画时，
+含脚本内 `set_animation` **当场**入队的那一批）；timeline 自定义事件与 `complete` 留给 P2。
+切场景时未取走的事件随旧世界一起作废，与 `animation.events()` 同语义。
+
+所有函数出错路径都是 `api_error`（实体不存在 / 没有 `SpineSkeleton` / 名字不存在），
+不会返回 `nil` 让脚本继续在错误状态上跑。
+
 ### `camera3d` 3D 屏↔世界投影链（WP9 / docs/54 §8-⑦）
 
 此前 Lua 只能自己拼一条射线喂给 `physics3d.raycast`——"屏幕坐标 → 相机射线"这段投影数学

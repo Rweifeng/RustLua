@@ -1,6 +1,6 @@
 # Lua 模块 `render`
 
-> 运行期 API 面基线里本模块有 21 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 23 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -11,9 +11,21 @@
 > 运行期 API 面基线里本模块有 14 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名不要手改**；在每个小节里把 `TODO(文档槽)` 换成真实说明即可。
 
+## `render.play_effect(prefab: String, name: Option<String>)`
+
+按 `.prefab` **特效预设**加载并播放一层特效。预设里写好了引用哪张 `.sgraph`、以及
+一批参数取值，所以逻辑里不必关心 shader 细节。
+
+- 参数：`prefab` 为工程内相对的 `.prefab` 路径（必须以 `.prefab` 结尾、不能有前后空白）；
+  `name` 可选，是这层特效的实例名——**同名再 play 是替换而不是叠加**，因此可以放心每帧调它。
+- 返回：`(ok, reason)`。
+- 失败：路径为空、不是 `.prefab`、或带前后空白。**真正的加载发生在宿主**（下一帧），
+  预设不存在或参数名写错时宿主记错误日志、画面表现为"没有特效"。
+- 示例：`render.play_effect("assets/fx/flame_blade_slash.prefab")`
+
 ## `render.set_clip_cap(depth: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:217`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:230`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -24,7 +36,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `render.set_clip_cap_both_sides(on: Value)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:232`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:245`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -75,36 +87,34 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `render.set_effect_param(name: String, value: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:304`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+按**名字**改特效参数，不用记槽位号。名字来自 `.sgraph` 编译出的命名参数表
+（见 `docs/80-可视化Shader编程面板与特效模板.md`）；同一张图里重名的参数会带节点前缀。
 
-TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
-
-- 参数：
-- 返回：
-- 失败：
-- 示例：
+- 参数：`name` 为参数名（如 `spin` / `speed` / `color_r`）；`value` 为有限数。
+- 返回：`(ok, reason)`。
+- 失败：值非有限；名字不存在（`reason` 会列出可用参数）；宿主还没挂载任何特效
+  （先配 `project.toml [render] effect_overlay`，或先 `render.play_effect`）。
+- 示例：`render.set_effect_param("spin", 2.4)`
 
 ## `render.set_effect_params(slot: i64, x: f32, y: f32, z: f32, w: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:338`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+按**槽位**整体写一个 `vec4`。给需要一次改四个分量、或名字表不可用时的场合；
+槽位编号见 `.sgraph` 的参数表（最多 16 个）。
 
-TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
-
-- 参数：
-- 返回：
-- 失败：
-- 示例：
+- 参数：`slot` 0..16；四个分量必须是有限数。
+- 返回：`(ok, reason)`。
+- 失败：槽号越界；任一分量非有限。
+- 示例：`render.set_effect_params(1, 1.0, 0.42, 0.08, 0.0)`
 
 ## `render.set_effect_time(seconds: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/render_tuning.rs:358`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+覆盖特效时钟。不调时宿主按自己的时钟推进；调了就以脚本为准，适合做招式起手/收招的
+节奏控制（比如整段招式共用一个 `elapsed`）。
 
-TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
-
-- 参数：
-- 返回：
-- 失败：
-- 示例：
+- 参数：`seconds` 有限且 ≥ 0。
+- 返回：`(ok, reason)`。
+- 失败：负数或非有限。
+- 示例：`render.set_effect_time(elapsed)`
 
 ## `render.set_exposure(ev: f32)`
 
@@ -230,3 +240,13 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - `draw_calls`、`vertices`、`triangles`、`set_pass_calls`；
 - 首帧/无渲染时全为 0；
 - 数据由宿主在每次 `Renderer::render` 后写回 `ScriptState`。
+
+## `render.stop_effect(name: Option<String>)`
+
+撤掉脚本播放的特效层。
+
+- 参数：`name` 可选。给了就只撤这一层（没有则无操作）；不给则撤掉**全部**脚本层。
+- 返回：固定 `true`（撤一个不存在的名字不是错误，避免"停止"要写 try）。
+- 注意：只影响 `render.play_effect` 挂的层，`project.toml [render] effect_overlay` 那条
+  工程级常驻特效不受影响——那是配置的意图，不该被脚本改写。
+- 示例：`render.stop_effect()`

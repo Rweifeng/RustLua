@@ -27,6 +27,16 @@ return {
         steps = 6,
     },
     {
+        scene = "api_spine",
+        module = "demo_spine",
+        category = "2D",
+        title = "Spine 2D",
+        label = "Skeleton / Skins / Events",
+        summary = "Spine 骨骼动画：动画清单、切换与读回、速度/皮肤、事件轮询与包围盒",
+        modules = { "spine" },
+        steps = 5,
+    },
+    {
         scene = "api_camera",
         module = "demo_camera",
         category = "2D",
@@ -55,6 +65,16 @@ return {
         summary = "材质球、环境光、骨骼剪辑、3D 物理查询与 XZ 平面导航",
         modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera", "particles", "terrain3d", "water3d", "cells3d", "render" },
         steps = 17,
+    },
+    {
+        scene = "api_fx",
+        module = "demo_fx",
+        category = "3D",
+        title = "Effect Presets",
+        label = "Prefab FX / Blade Loop",
+        summary = "3D 舞台上的怪物循环出刀：特效做成 .prefab 预设按需加载，暖色与冷蓝两份预设交替，逐帧调参",
+        modules = { "render", "camera", "animation3d", "transform3d", "mesh", "light" },
+        steps = 3,
     },
     {
         scene = "api_gameplay",

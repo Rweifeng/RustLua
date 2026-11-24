@@ -391,7 +391,9 @@ impl super::LuaRuntime {
                 if scripted.len() >= MAX_SCRIPTED_ENTITIES {
                     return;
                 }
-                let name = entities.with(|entities| entities.names.first_name(id));
+                let name = entities
+                    .with(|entities| entities.names.first_name(id))
+                    .map(|name| name.to_string());
                 let position = world
                     .get::<Transform>(id)
                     .ok()

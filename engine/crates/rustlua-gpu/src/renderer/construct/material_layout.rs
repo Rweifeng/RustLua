@@ -144,10 +144,9 @@ pub(crate) fn material_bind_group_layout(
             count: None,
         },
     ]);
-    let material_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("rustlua-material3d-bind-group-layout"),
-            entries: &material_entries,
-        });
-    material_bind_group_layout
+
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("rustlua-material3d-bind-group-layout"),
+        entries: &material_entries,
+    })
 }

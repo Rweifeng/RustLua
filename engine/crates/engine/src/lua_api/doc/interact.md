@@ -6,20 +6,9 @@
 
 <!-- 以上为自动生成头，以下第一段散文是模块说明（再生成时保留） -->
 
-## `interact.clear_prompt()`
+## `interact.clear_prompt(…)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/interact_prompt.rs:44`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
-
-TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
-
-- 参数：
-- 返回：
-- 失败：
-- 示例：
-
-## `interact.get_prompt()`
-
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/interact_prompt.rs:56`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：未定位（注册形状不在解析器覆盖范围内，签名待人工补）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -28,9 +17,20 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 失败：
 - 示例：
 
-## `interact.prompt(text: String)`
+## `interact.get_prompt(…)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/interact_prompt.rs:23`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：未定位（注册形状不在解析器覆盖范围内，签名待人工补）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
+
+- 参数：
+- 返回：
+- 失败：
+- 示例：
+
+## `interact.prompt(…)`
+
+> 绑定：未定位（注册形状不在解析器覆盖范围内，签名待人工补）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

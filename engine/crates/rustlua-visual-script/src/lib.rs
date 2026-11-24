@@ -29,6 +29,7 @@
 //! 输入表达式与参数（样例见 `tests/plugin_nodes.rs`）。
 
 mod codegen;
+pub mod effect_prefab;
 mod error;
 mod graph;
 mod registry;

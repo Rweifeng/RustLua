@@ -107,6 +107,7 @@ fn uploaded_rgba_texture_is_sampled_as_uploaded() {
         sdf: 0,
     };
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: vec![
             corner(-1.0, -1.0, 0.0, 0.0),
             corner(1.0, -1.0, 1.0, 0.0),

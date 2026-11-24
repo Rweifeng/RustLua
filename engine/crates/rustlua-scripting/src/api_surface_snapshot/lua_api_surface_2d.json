@@ -331,8 +331,13 @@
     },
     {
       "funcs": [
+        "play_effect",
+        "set_effect_param",
+        "set_effect_params",
+        "set_effect_time",
         "set_quality",
-        "stats"
+        "stats",
+        "stop_effect"
       ],
       "name": "render"
     },
@@ -377,6 +382,19 @@
         "set_catalog"
       ],
       "name": "shop"
+    },
+    {
+      "funcs": [
+        "bounds",
+        "events",
+        "get_animation",
+        "list",
+        "set_animation",
+        "set_enabled",
+        "set_skin",
+        "set_speed"
+      ],
+      "name": "spine"
     },
     {
       "funcs": [

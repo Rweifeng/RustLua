@@ -97,6 +97,11 @@ fn is_encryptable_data(path: &Path) -> bool {
 pub(crate) fn is_compressible_asset(path: &Path) -> bool {
     // mp3 虽然自身是压缩格式，实测工程内 16 个 clips 走 pack 的 gzip 默认档仍从
     // 1,497,215 B 降到 1,441,547 B（-3.7%）：低码率单声道流的帧头与填充字节可压。
+    //
+    // M84 P3：Spine 的 `.skel`（二进制骨骼）与 `.spineatlas`（图集文本）同样可压。
+    // 实测官方 spineboy：`.skel` 20440→13922（-32%）、`.spineatlas` 1636→627（-62%）。
+    // `.spine`（清单）只有几百字节，收益小但零成本，一并纳入。三者都是 gzip 通用压缩，
+    // **不含格式知识**——运行时按清单标志解压，不需要认识 Spine 数据类型。
     matches!(
         extension(path).as_deref(),
         Some("png")
@@ -108,6 +113,9 @@ pub(crate) fn is_compressible_asset(path: &Path) -> bool {
             | Some("ttf")
             | Some("otf")
             | Some("glb")
+            | Some("skel")
+            | Some("spineatlas")
+            | Some("spine")
     )
 }
 

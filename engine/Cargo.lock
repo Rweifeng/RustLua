@@ -864,6 +864,7 @@ dependencies = [
  "rustlua-render",
  "rustlua-scene",
  "rustlua-scripting",
+ "rustlua-spine",
  "rustlua-ui",
  "rustlua-ui-host-evidence",
  "rustlua-ui-spec",
@@ -1064,6 +1065,7 @@ dependencies = [
  "rustlua-render",
  "rustlua-scene",
  "rustlua-scripting",
+ "rustlua-spine",
  "rustlua-ui",
  "rustlua-visual-script",
  "serde",
@@ -1772,6 +1774,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3327,6 +3331,7 @@ dependencies = [
  "rustlua-infra",
  "rustlua-math",
  "rustlua-scene",
+ "rustlua-spine",
  "rustlua-ui",
  "rustlua-visual-script",
  "serde",
@@ -3620,12 +3625,27 @@ dependencies = [
  "rustlua-physics",
  "rustlua-render",
  "rustlua-scene",
+ "rustlua-spine",
  "rustlua-ui",
  "rustlua-visual-script",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
  "web-time",
+]
+
+[[package]]
+name = "rustlua-spine"
+version = "0.1.1"
+dependencies = [
+ "mlua",
+ "rustlua-component-codec",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-lua-api",
+ "rustlua-math",
+ "spine2d",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3791,6 +3811,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -3967,6 +3988,19 @@ dependencies = [
  "num-traits",
  "robust",
  "smallvec",
+]
+
+[[package]]
+name = "spine2d"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb78516d10d1989088485ab128dd69283b669a20505759b313e9a0e3caf40d9f"
+dependencies = [
+ "byteorder",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

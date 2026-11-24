@@ -46,6 +46,7 @@ fn offscreen_renderer_produces_pixels() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

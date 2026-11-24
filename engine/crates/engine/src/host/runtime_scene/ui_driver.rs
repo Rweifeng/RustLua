@@ -36,7 +36,9 @@ impl RuntimeScene {
         self.ui_state.with(|ui| f(ui.view_model()))
     }
 
-    /// 双向绑定的写回入口：只改视图模型，目标由 [`super::ui_bindings`] 的 resolve 落地。
+    /// 双向绑定的写回入口：只改视图模型，目标由 `super::ui_bindings` 的 resolve 落地
+    /// （不写成 intra-doc 链接：那个模块是私有的，公开文档链接私有项会让
+    /// `cargo doc -D warnings` 判红）。
     pub fn with_ui_view_model_mut<R>(
         &self,
         f: impl FnOnce(&mut BTreeMap<String, rustlua_ui::ui_binding::BindingValue>) -> R,

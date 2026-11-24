@@ -46,18 +46,18 @@ pub(crate) fn environment_group(
     // 全零 SH 与 1×1 黑 cube，这样 PBR 管线布局只有一种，不需要为 Off/On 切换布局。
     // 浮点线性过滤不可用时按 nearest/不可过滤声明（Tier B），避免绑定校验失败。
     let environment_bind_group_layout =
-        crate::renderer::environment::bind_group_layout(&device, capabilities.float_linear_filter);
+        crate::renderer::environment::bind_group_layout(device, capabilities.float_linear_filter);
     let environment_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("rustlua-environment-buffer"),
         contents: bytemuck::cast_slice(&EnvironmentLighting::default().uniform(IblMode::Off)),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let environment_fallback_view = crate::renderer::environment::fallback_view(&device, &queue);
+    let environment_fallback_view = crate::renderer::environment::fallback_view(device, queue);
     let environment_sampler =
-        crate::renderer::environment::sampler(&device, capabilities.float_linear_filter);
+        crate::renderer::environment::sampler(device, capabilities.float_linear_filter);
     let environment_view = environment_fallback_view.clone();
     let environment_bind_group = crate::renderer::environment::bind_group(
-        &device,
+        device,
         &environment_bind_group_layout,
         &environment_buffer,
         &environment_view,

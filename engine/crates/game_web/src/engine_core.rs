@@ -653,6 +653,7 @@ fn scene_mesh(texture_key: &str) -> SceneMesh {
     }
     let paths = vec![texture_key.to_owned()];
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices,
         draws,
         world_sprites: Vec::new(),

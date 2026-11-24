@@ -64,8 +64,8 @@ fn cells_drawable(path: String) -> Scene3dDrawable {
     let (min, max) = empty_spec().bounds();
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "Cells".to_owned(),
-        mesh_path: path,
+        name: "Cells".to_owned().into(),
+        mesh_path: path.into(),
         material: None,
         mesh_handle: None,
         model: Mat4::identity(),
@@ -88,6 +88,7 @@ fn bogus_path() -> String {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

@@ -84,6 +84,8 @@ pub enum ComponentId {
     Script,
     /// docs/54 §4.3：显式 2D 显示模式（world / overlay / screen）。
     RenderMode,
+    /// M84 P1：Spine 2D 骨骼动画（载荷文法在 `rustlua-spine`）。
+    SpineSkeleton,
 }
 
 impl ComponentId {
@@ -129,6 +131,7 @@ impl ComponentId {
         Self::Animation3d,
         Self::Script,
         Self::RenderMode,
+        Self::SpineSkeleton,
     ];
 
     /// 场景/Prefab 文件里写的组件名（与 `compile_component` 的 match 分支一一对应）。
@@ -166,6 +169,7 @@ impl ComponentId {
             Self::Animation3d => "Animation3D",
             Self::Script => "Script",
             Self::RenderMode => "RenderMode",
+            Self::SpineSkeleton => "SpineSkeleton",
         }
     }
 }
@@ -244,6 +248,9 @@ fn component_id_for_opaque(name: &str) -> Option<ComponentId> {
         // 差别是**有没有纹理区域**（Quad 没有、也不参与帧动画）。合并会让
         // "这个矩形会不会被帧动画改 UV"变成隐式推断。
         "Quad" => ComponentId::Quad,
+        // M84 P1：Spine 骨骼动画走 Opaque 载荷，字段校验/资源路径由
+        // `rustlua-spine::scene_codec` 提供，scene 层不反向依赖 spine crate。
+        "SpineSkeleton" => ComponentId::SpineSkeleton,
         // docs/54 §4.3：显式 2D 显示模式——"这段几何走哪条路"从全局开关下放到实体。
         "RenderMode" => ComponentId::RenderMode,
         "UiLayout" => ComponentId::UiLayout,

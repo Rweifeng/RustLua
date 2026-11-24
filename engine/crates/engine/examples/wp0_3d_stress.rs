@@ -356,6 +356,7 @@ fn render_once(
     phases: &mut PhaseTotals,
     profile: bool,
 ) -> PhaseTotals {
+    let frame_alloc_before = std::env::var_os("P2_FRAME").map(|_| alloc_snapshot());
     let started_vertices = profile.then(Instant::now);
     let alloc_before_vertices = profile.then(alloc_snapshot);
     let mesh = runtime.vertices(640, 360).expect("2D extraction");
@@ -407,6 +408,21 @@ fn render_once(
     phases.extract_alloc_bytes += frame.extract_alloc_bytes;
     phases.render_alloc_count += frame.render_alloc_count;
     phases.render_alloc_bytes += frame.render_alloc_bytes;
+    if let Some(before) = frame_alloc_before {
+        drop(mesh);
+        drop(scene);
+        let (all, _) = alloc_delta(before, alloc_snapshot());
+        let covered =
+            frame.vertices_alloc_count + frame.extract_alloc_count + frame.render_alloc_count;
+        println!(
+            "[P2] total={} v={} e={} r={} uncovered={}",
+            all,
+            frame.vertices_alloc_count,
+            frame.extract_alloc_count,
+            frame.render_alloc_count,
+            all.saturating_sub(covered)
+        );
+    }
     frame
 }
 

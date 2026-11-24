@@ -139,6 +139,24 @@ impl EditorApp {
                     scene.mark_dirty();
                 }
             }
+            // M84 P3：默认指向工程内的约定示例清单。运行时读它引用的 `.skel` + `.spineatlas`
+            // + 页 PNG；文件缺失或含 clipping 时导入期点名报错，不静默空转。
+            //
+            // 不用 `SpineSkeletonComponent::default()`：它的 `data` 是空串，装配期会直接
+            // 报"没有清单"——"添加组件后立刻能看见东西"是这个面板的基本契约。
+            "SpineSkeleton" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "SpineSkeleton".to_owned(),
+                        rustlua_spine::SpineSkeletonComponent::from_component_str(
+                            "data=assets/spine/spineboy.spine",
+                        )
+                        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?
+                        .to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
             // 唯一的 `Transform`：默认值取**引擎类型**的编码（单位变换），
             // 编辑由通用字段编辑器接管。
             "Transform" => {

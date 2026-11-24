@@ -319,13 +319,21 @@ impl EditorApp {
         // 让 3D 视图与运行时共用同一条提取路径（相机以编辑器视图作为覆盖）。
         self.ensure_scene_runtime();
         let scene3d = self.build_scene3d(render_viewport(render_w, render_h));
-        let mesh = SceneMesh {
+        // M84：2D / Spine 几何。此前这里是手写的空 `SceneMesh`——Scene View 只画 3D，
+        // 于是挂了 `SpineSkeleton` 的实体在编辑器里**完全不显示**（而在 Play 里正常，
+        // 因为 Play 走 `PreviewSession` 的 `vertices()`）。现在改走运行时同一条提取路径：
+        // `RuntimeScene::vertices()` 本来就包含精灵、世界文字、瓦片与 Spine 网格。
+        //
+        // 顺序不能反：`vertices()` 会推进空间变换传播并重定帧，必须排在
+        // `build_scene3d`（它已按编辑器相机定好 3D 帧）之后，否则 3D 视图会被 2D 的
+        // 帧边界冲掉一帧。
+        let empty_mesh = || SceneMesh {
+            spines: rustlua_render::spine_mesh::SpineMesh::default(),
             vertices: Vec::new(),
             draws: Vec::new(),
             world_sprites: Vec::new(),
             world_sprite_draws: Vec::new(),
             paths: Vec::new(),
-            // 编辑器这条路径自己手写空网格：没有资源身份（渲染器回退到按路径解析）。
             path_handles: Vec::new(),
             font_atlas: None,
             custom_font_atlases: Vec::new(),
@@ -333,6 +341,19 @@ impl EditorApp {
             vector_glyphs: Vec::new(),
             vector_segments: Vec::new(),
         };
+        let mesh = self
+            .scene_runtime
+            .as_mut()
+            .map_or_else(empty_mesh, |runtime| {
+                match runtime.vertices(render_w, render_h) {
+                    Ok(mesh) => mesh,
+                    Err(error) => {
+                        // 提取失败不该让整个 Scene View 黑掉：保留 3D，2D/Spine 本帧缺席。
+                        tracing::warn!(target: "editor", "[scene view] 2D mesh 提取失败：{error}");
+                        empty_mesh()
+                    }
+                }
+            });
         let material_preview_enabled = !self.is_playing();
         let Some(renderer) = &mut self.scene_renderer else {
             return;
@@ -356,7 +377,12 @@ impl EditorApp {
                 overlay: None,
             });
         }
+        // P0-2：把"编辑器 3D 视口离屏渲染"记进 profiler 顶 N（Chrome trace 的 span 来源）。
+        // 此前只有 Play 预览在性能面板里，非 Play 的 Scene View 是最大的一块盲区。
+        let render_started = std::time::Instant::now();
         renderer.render_into_texture(&mesh, scene3d.as_ref(), view, render_w, render_h, true);
+        self.profiler
+            .record_panel("scene_view_render_3d", render_started.elapsed());
         if self.render_state.is_some() {
             // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
             // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
@@ -582,7 +608,11 @@ impl EditorApp {
             )),
             overlay: None,
         });
+        // P0-2：编辑器 2D 视口离屏渲染计入 profiler（与 3D 同一口径，分开命名便于各自看斜率）。
+        let render_started = std::time::Instant::now();
         renderer.render_into_texture(&mesh, None, view, width, height, true);
+        self.profiler
+            .record_panel("scene_view_render_2d", render_started.elapsed());
         if self.render_state.is_some() {
             // 原生路径（有窗口）：纹理已在 GPU 上，直接注册给 egui 采样——不回读、
             // 不重传，画面也不再滞后一帧。`scene_texture` 由 2D/3D 共用且刚被本视图
@@ -721,7 +751,12 @@ impl EditorApp {
             viewport,
             scene3d.is_some(),
         ));
+        // P0-2：编辑器"游戏画面"离屏渲染同样计入 profiler——它在非 Play 时每帧都在跑，
+        // 却完全不在性能面板里，是比 2D/3D 视口更隐蔽的一块固定开销。
+        let render_started = std::time::Instant::now();
         renderer.render_into_texture(&mesh, scene3d.as_ref(), view, dw, dh, true);
+        self.profiler
+            .record_panel("scene_game_screen_render", render_started.elapsed());
         self.sync_scene_screen_texture();
         self.scene_screen_cache_key = key;
         ctx.request_repaint();

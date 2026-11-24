@@ -1,0 +1,21 @@
+# 特效预设：炎刃斩击（火光长弧 + 冲击波 + 白热核心）。
+# 与普通预制体共用 .prefab 格式，用 kind=effect 区分；逻辑里 effect.play 按路径加载。
+prefab_version=1
+kind=effect
+name=炎刃斩击
+graph=assets/fx/flame_blade_slash.sgraph
+overlay=true
+param	spin	2.4
+# center_x/center_y 是扇形圆心（UV 单位）。叠加层是全屏坐标，演示里 3D 视口只占左侧，
+# 所以圆心放到 0.38 而不是屏幕中点 0.5——否则刀光会画到右侧的卡片区上。
+# radius 是弧带到圆心的距离：0.30 让弧正好扫在怪物身前。
+param	thickness	0.07
+param	center_x	0.46
+param	center_y	0.50
+param	radius	0.16
+param	speed	0.9
+param	frequency	3.2
+param	edge_width	0.0025
+param	color_r	1.0
+param	color_g	0.42
+param	color_b	0.10

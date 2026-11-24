@@ -93,6 +93,12 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         name: "MeshRenderer",
         category: ComponentCategory::ThreeD,
     },
+    // M84 P3：Spine 2D 骨骼动画。默认载荷指向工程内的约定示例，用户再在通用字段编辑器里
+    // 改成实际的 `.spine` 清单（与 `AnimationPlayer` 同一约定：默认值可用，之后按需改）。
+    ComponentDescriptor {
+        name: "SpineSkeleton",
+        category: ComponentCategory::Rendering,
+    },
     ComponentDescriptor {
         name: "Light",
         category: ComponentCategory::ThreeD,

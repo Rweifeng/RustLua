@@ -1037,6 +1037,25 @@ const ENVIRONMENT_FIELDS: &[FieldSchema] = &[
 /// （`examples/game_jhyt/scenes/*.scene`）没有这两个字段，解析器会取默认值。
 /// 把它们标成 required 会让"旧项目无损打开"这一条在审计里直接判红——
 /// 这正是 `schema_audit` 在真实工程上第一次运行就抓出来的问题。
+/// M84 P1：`SpineSkeletonComponent::to_component_str`。`data` 必须指向 `.spine` 清单，
+/// 其余字段全部可选（旧场景无这些字段也能打开）。
+const SPINE_DATA_RULE: FieldRule = FieldRule::ProjectPath {
+    extensions: &["spine"],
+    sentinels: &[],
+};
+const SPINE_SKELETON_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("data", FieldKind::Text, true).with_rules(&[SPINE_DATA_RULE]),
+    FieldSchema::new("animation", FieldKind::Text, false),
+    FieldSchema::new("skin", FieldKind::Text, false),
+    FieldSchema::new("speed", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("scale", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("z", FieldKind::Number, false),
+    FieldSchema::new("loop", FieldKind::Bool, false),
+    FieldSchema::new("enabled", FieldKind::Bool, false),
+    FieldSchema::new("sorting_layer", FieldKind::Text, false),
+    FieldSchema::new("order", FieldKind::Int, false),
+];
+
 const SPRITE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("texture", FieldKind::Text, true).with_rules(&[TEXTURE_RULE]),
     FieldSchema::new("size", FieldKind::Size, true),
@@ -1616,6 +1635,8 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         ComponentSchema::new("UiEvents", 1, UI_EVENTS_FIELDS).with_list(UI_EVENTS_LIST),
         ComponentSchema::new("UiBindings", 1, UI_BINDINGS_FIELDS).with_list(UI_BINDINGS_LIST),
         ComponentSchema::new("UiAnimation", 1, &[]).with_list(UI_ANIMATION_LIST),
+        // M84 P1：Spine 骨骼动画组件。
+        ComponentSchema::new("SpineSkeleton", 1, SPINE_SKELETON_FIELDS),
     ];
     schemas
         .into_iter()

@@ -486,6 +486,53 @@ fn package_keeps_default_font_when_font_key_is_empty() {
 }
 
 #[test]
+fn package_dependency_index_includes_spine_manifest_json_skeleton_edges() {
+    let root = temp_project("package-dependency-index-spine");
+    let spine = root.join("assets/spine");
+    fs::create_dir_all(&spine).unwrap();
+    fs::write(
+        spine.join("hero.json"),
+        include_bytes!("../../rustlua-spine/tests/fixtures/no_clipping_sample.json"),
+    )
+    .unwrap();
+    fs::write(
+        spine.join("hero.spineatlas"),
+        "hero.png\nsize: 64, 64\nfilter: Linear, Linear\nregion\n\tbounds: 0, 0, 32, 32\n",
+    )
+    .unwrap();
+    fs::copy(
+        rustlua_infra::games_dir().join("examples/game_api/assets/spine/spineboy.png"),
+        spine.join("hero.png"),
+    )
+    .unwrap();
+    fs::write(
+        spine.join("hero.spine"),
+        "spine_version=4.3.75-beta\nskeleton=assets/spine/hero.json\natlas=assets/spine/hero.spineatlas\npage=assets/spine/hero.png\n",
+    )
+    .unwrap();
+    let out = temp_out("package-dependency-index-spine");
+    package(&root, &out, false, false, false).unwrap();
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
+    let edges = index["edges"]["assets/spine/hero.spine"]
+        .as_array()
+        .expect("Spine manifest edge list");
+    for expected in [
+        "assets/spine/hero.json",
+        "assets/spine/hero.spineatlas",
+        "assets/spine/hero.png",
+    ] {
+        assert!(
+            edges.iter().any(|path| path == expected),
+            "missing {expected}: {index}"
+        );
+    }
+    assert!(index["edges"]["assets/spine/hero.json"].is_null());
+    fs::remove_dir_all(&out).ok();
+    cleanup(&root);
+}
+
+#[test]
 fn package_dependency_index_records_static_edges_and_opaque_sources() {
     let root = temp_project("package-dependency-index");
     fs::write(
@@ -733,11 +780,26 @@ fn package_compresses_supported_assets_without_compressing_lua() {
 #[test]
 fn compressible_assets_cover_every_packaged_asset_format() {
     for name in [
-        "a.png", "a.jpg", "a.jpeg", "a.wav", "a.ogg", "a.mp3", "a.ttf", "a.otf", "a.glb", "A.MP3",
+        "a.png",
+        "a.jpg",
+        "a.jpeg",
+        "a.wav",
+        "a.ogg",
+        "a.mp3",
+        "a.ttf",
+        "a.otf",
+        "a.glb",
+        "A.MP3",
+        // M84 P3：Spine 三件套（实测 .skel -32%、.spineatlas -62%）。
+        "a.skel",
+        "a.spineatlas",
+        "a.spine",
     ] {
         assert!(is_compressible_asset(Path::new(name)), "{name} 应可压缩");
     }
-    for name in ["a.lua", "a.scene", "a.json", "a.txt"] {
+    // `.atlas` 是引擎自有图集格式（有专门的 cook 通道），**不进**这条白名单；
+    // Spine 的图集刻意改名 `.spineatlas` 正是为了不被这里误伤。
+    for name in ["a.lua", "a.scene", "a.json", "a.txt", "a.atlas"] {
         assert!(!is_compressible_asset(Path::new(name)), "{name} 不应进压缩");
     }
 }

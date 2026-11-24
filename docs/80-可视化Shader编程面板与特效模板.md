@@ -389,20 +389,178 @@ particle_softness = 0.08   # 深度单位；0 = 硬边（关），默认 0.02 = 
 
 同一帧可以叠加多层特效：`Renderer::push_effect_overlay(source)` 追加一层（编译失败不动现有层），`clear_effect_overlays()` 清空，`set_effect_overlay(...)` 保持"整层替换"语义；多层按 push 顺序绘制，时间与参数一次写给所有层。GPU 门 `multiple_overlays_stack_in_push_order` 断言：第二层追加后像素变化、单层替换后退回一层、清空后像素回到基线。
 
+### 特效预设：把特效做成预制体在逻辑里加载（M96，已落地）
+
+#### 在属性面板里直接看预览（M99）
+
+资源面板选中一份 `.sgraph`，右侧属性面板在资源详情下面直接跑一次真实 GPU 渲染：
+预览图 + 「⏸/▶」+ 渲染耗时 + 模板来源 + 「在 Shader Graph 面板中打开」。
+
+- **只在选中 `.sgraph` 时出现**：属性面板是"看当前选中项"的地方，没选中图不该常驻空预览。
+- **与 Shader Graph 面板共用一台离屏渲染器与同一份包装着色器**（
+  `shader_graph_preview::AssetShaderPreview`）：两边看到的观感不会漂移。
+- **按路径复用**：选中另一个文件才重编管线，反复点同一个文件不重建。
+- **坏图给红字而不是崩**：文件缺失 / JSON 半截 / 图非法都只写 `error`——
+  点一下资源就崩编辑器，等于让人再也不敢点资源面板。
+
+真窗口证据：`artifacts/shader-asset-preview/16-dpi1.5-1280x720-shader-asset.png`。
+
+> 一个措辞细节：手工合成的图（如示例的炎刃斩击）按名字匹配不到内置模板，此时显示
+> 「自定义图：<名字>（手工合成的节点图，不对应单个内置模板）」——匹配不到不是错误，
+> 措辞不能让人以为模板识别坏了。
+
+验证门：
+
+| 门 | 判据 |
+|---|---|
+| `asset_preview_reports_bad_files_without_panicking` | 缺文件 / 半截 JSON 都只返回错误字符串 |
+| `asset_preview_retargets_to_a_different_file` | 换文件必须重编（否则画面停在上一份图） |
+| `asset_preview_advances_time_only_while_playing` | 播放时时间推进、暂停后不动 |
+
+#### 在面板里生成预设
+
+预设**不用手写**。Shader Graph 面板工具栏点「生成预设」，画布下沿开一条抽屉：
+
+- 抽屉列出**全部**命名参数（不只是选中节点的），一行一个（宽屏一行两个）滑块，
+  初值取当前图上的值；
+- 拖滑块时右侧实时预览跟着变——预览读取的就是抽屉里的值，所以是"边调边看"而不是盲调；
+- 填预设名与路径（默认 `assets/fx/<图名>.prefab`），点「生成 .prefab」。
+
+生成时**先存 `.sgraph` 再写 `.prefab`**：预设引用的图必须和画面一致，否则会出现"参数对、
+画面对不上"。写盘前会先把文本解析一遍，解析不过就不落盘——半截预设留到运行时才报错，
+那时已经很难联想到是生成那一步写坏了。
+
+参数是**全量写出**的（每个命名参数都写一行），不是只写动过的：只写动过的会让预设默默依赖
+图的当前默认值，明天改了模板默认，这份预设就不再是"那一刻的样子"。
+
+真窗口证据：`artifacts/shader-preset-evidence/15-dpi1.5-1280x720-shader-preset.png`。
+这一版布局最初写成"一行排开 + 自适应宽度"，在 430px 宽的画布里「生成」按钮被挤出抽屉
+右边界、点不到；`preset_drawer_keeps_every_widget_inside_a_narrow_drawer` 用"每个形状都
+必须落在抽屉内"钉住了这件事，改成三行固定结构后通过。
+
+#### 3D 舞台演示：怪物循环出刀（api_fx）
+
+示例工程新增独立场景 `api_fx`（入口菜单卡片「Effect Presets」），三步看完：
+
+| 步骤 | 看什么 |
+|---|---|
+| `blade_loop` | 怪物每 1.95 秒出一刀：出刀瞬间按预设挂层 → 逐帧改 `spin`/`speed` → 收势 `stop_effect`；**暖色与冷蓝两份预设交替** |
+| `tune_params` | 锁定暖色预设，只让参数随时间走，能盯住"同一条弧在张缩" |
+| `preset_swap` | 换成冷蓝预设：不改代码、不改 `project.toml`、不重启 |
+
+实现要点（`scripts/demo_fx.lua`）：
+
+- 三步共用一套时序 `stance → swing → follow`，只有 `advance(dt, mode)` 的 `mode` 不同；
+  这样"循环释放"的逻辑只写一遍，三个步骤不会各走各的。
+- 出刀时**每帧都可以 `play_effect`**：同名重播是替换而不是叠加，所以天然幂等，重播还会把
+  刀光弧的相位重置成从头扫一遍。
+- `on_destroy` 里必须 `stop_effect()`：特效层是宿主侧全局状态，不带干净会让**下一个场景**
+  莫名其妙带着刀光。
+
+**一个必须知道的坐标事实**：叠加层是全屏坐标，而演示框架（`lab`）把屏幕分成了左右分栏，
+3D 视口只占中间/左侧一块。所以"怪物站在画面正中"并不等于"刀光弧圆心在怪物身上"——
+`sector` 节点原本把圆心写死 `(0.5, 0.5)`，现在多了 `center_x` / `center_y` 两个命名参数
+（默认仍是 0.5），预设里按视口位置调。示例预设用 `center_x=0.46` 把弧推到怪物身前。
+
+> 同理：`radius` 从 0.36 调到 0.16 是为了让弧贴着角色扫过；半径 0.95 那种大环会跑到
+> 屏幕边缘之外，看起来像"刀光消失了"。
+
+证据图：`artifacts/fx-demo/{00-stage,01-blade-warm,02-blade-frost}.png`。
+
+#### 预设文件格式与运行
+
+> **与场景预制体共用扩展名**：`.prefab` 现在有两种用途——场景预制体（有 `entity`/`component` 行）
+> 与特效预设（`kind=effect` + `graph=` + `param` 行）。凡是按 `assets/**/*.prefab` 枚举的工具，
+> 都要先用 `EffectPrefab::from_text` / `kind=effect` 判一下，否则会把特效预设当场景预制体去解析，
+> 报"unknown record"。（编辑器的 UI 布局报告测试就是这么被撞红的。）
+
+前面几节说的都是"工程级常驻特效"——一个工程只能挂一张图，改特效要改配置、重启。真做游戏时
+需要的是"这一下打出去，播一刀光"：**主动、可重复、有时机**。M96 把它做成预制体：
+
+```
+assets/fx/
+├── flame_blade_slash.sgraph      # 图：怎么画（唯一源）
+├── flame_blade_slash.prefab      # 预设：哪张图 + 一整套参数（暖色）
+└── frost_blade_slash.prefab      # 预设：同一张图 + 另一套参数（冷色、更细）
+```
+
+预设文件沿用普通预制体的文本格式（`key=value` 头 + 制表符分行），用 `kind=effect` 区分，
+因此资源扫描、编辑器预制体面板不需要为它加新分支：
+
+```text
+prefab_version=1
+kind=effect
+name=炎刃斩击
+graph=assets/fx/flame_blade_slash.sgraph
+overlay=true
+param	spin	2.4
+param	color_g	0.42
+```
+
+三个设计决定：
+
+1. **预设只存参数，不复制图**。同一张 `.sgraph` 可以有多份预设（`two_presets_on_one_graph_differ_only_in_values`
+   断言两份预设的槽位不同、命名参数表完全一致）。改画面 = 改参数，不重编管线。
+2. **参数覆盖在加载期就合进槽位**。脚本 `play_effect` 之后不用补一遍预设参数，只写它真正想改的那几个；
+   预设里写错名字（`spin_speeed`）在**加载期**就报错并列出可用参数，而不是运行时静默丢参数。
+3. **命名层与工程级层分开存**。`render.stop_effect` 撤不掉 `project.toml` 挂的那一层——那是配置的
+   意图；反过来工程级层也不会被 `play_effect` 替换掉。绘制顺序是先常驻后脚本，招式盖在氛围之上。
+
+Lua 面只有两个函数：
+
+```lua
+render.play_effect("assets/fx/flame_blade_slash.prefab")   -- 触发
+render.play_effect("assets/fx/frost_blade_slash.prefab", "hit")  -- 带实例名
+render.stop_effect("hit")   -- 撤这一层
+render.stop_effect()        -- 撤全部脚本层
+```
+
+`play_effect` 的幂等性是关键：**同名再播是替换**，所以可以每帧调它（像状态机那样"声明我想要
+这层在")，不会叠出两层越来越浓的残影。每层各自从 0 计时，重播一次刀光弧会从头扫，而不是接着
+上一次的相位。
+
+验证门：
+
+| 门 | 判据 |
+|---|---|
+| `effect_prefab_round_trips_and_rejects_bad_paths`（editor-core） | 面板写盘：文本能解析回去、只收 `.prefab`、逃逸路径被拒、坏文本写盘前就挡下 |
+| `generating_a_preset_saves_both_files_and_round_trips`（editor） | 生成预设先落 `.sgraph`；`.prefab` 含全部命名参数且能读回 |
+| `preset_drawer_keeps_every_widget_inside_a_narrow_drawer`（editor） | 430px 宽抽屉里每个控件都在边界内（抓"生成按钮被挤出"） |
+| `preset_drawer_lists_every_named_param_at_the_graphs_values`（editor） | 抽屉列全参数且初值等于图上的值；重开会重置 |
+| `loads_the_sample_preset_and_merges_overrides_into_slots`（visual-script） | 示例预设 → 编译真实图 → `spin`/`color_g` 落进槽位，没写的 `radius` 保持模板默认 |
+| `two_presets_on_one_graph_differ_only_in_values`（visual-script） | 两份预设指向同一张图、参数不同、结构一致 |
+| `unknown_param_is_rejected_at_load_time_with_the_known_list` | 拼错的参数名加载期报错，并列出可用参数 |
+| `scene_prefabs_are_rejected` | 普通场景预制体（`entity`/`component` 行）被判为"不是特效预设"，而不是报"第 2 行格式错误" |
+| `named_effect_overlay_draws_replaces_and_removes`（rustlua-gpu） | 挂上变像素、同名重播逐字节相同（没叠两层）、撤掉回基线 |
+| `named_layers_stack_on_top_of_the_project_overlay`（rustlua-gpu） | 两层并存；撤脚本层不影响工程级层 |
+| `effect_play_and_stop_record_intent_and_reject_bad_paths`（rustlua-scripting） | 只接受 `.prefab` 路径；意图取走即清空 |
+
+其中 `named_effect_overlay_draws_replaces_and_removes` 抓到过一个真 bug：快路径的判定写的是
+`!self.effect_overlays.is_empty()`（只看工程级层），只有脚本层时整段叠加 pass 被跳过，
+**挂上去一帧都不画**。改成 `effect_overlay_active()` 后修复，临时回退可稳定复现红灯。
+
+`named_effect_overlay_applies_params_at_mount_time` 抓到第二个：`EffectOverlay` 的槽位初值是
+**全 0**，而模板里 0 往往意味着"半径 0 / 厚度 0"。第一版实现是"先挂层、下一帧再推参数"，
+结果起手那一帧（最显眼的那一帧）整层透明——离屏验收图里数出的差异是 0 字节。修法是把参数
+并进挂载调用（`set_named_effect_overlay_with_params`），并在重挂时**显式清零**，否则换预设
+会粘住上一套的颜色与半径。
+
+离屏验收（`artifacts/effect-preset/`）：同一场景 `00-no-preset.png` vs `01-with-preset.png`，
+冷蓝预设挂上后 136587/2073600 字节（6.6%）变化，弧形刀光可见。
+
 ### 仍然存在的边界
 
-- **边界**：运行时宿主从配置挂载已通，但**参数还不能由 Lua 逐帧调**——面板/配置用的是槽位默认值；
-  `Renderer::set_effect_params` 已经是现成入口，差的是新增一个 Lua 函数与示例工程演示
-  （会触发 API 覆盖率门，单独一批做）。
-- 叠加层是**全屏层**：画在最终画面上，不采样场景颜色/深度，因此能"加光、加纹样、加边框"，
-  还不能做需要场景输入的折射/扭曲/描边（那要等场景颜色与深度绑定接进来）。
-- 参数仍是编译期常量之外的部分已 uniform 化；节点类型/连线变化仍要重编管线（编辑器里瞬时完成）。
-- 预览是"全屏三角 + 一张棋盘纹理"，没有真实场景物体、光照、深度与遮挡。
+- **边界**：运行时宿主从配置挂载已通，参数也可由 Lua 逐帧调（M94/M95），预设加载也已通（M96）；
+  剩下的缺口是**没有"播完自动停"的时长概念**——`.sgraph` 是无限循环的时间函数，收招要逻辑自己
+  `stop_effect()`。要做"播 0.6 秒"得在预设里加 `duration=`，由宿主到点撤层（下一阶段）。
+- 每层共用同一个 `set_effect_time`：引擎现状是单时钟，所以多层同时播时它们的相位是同步的
+  （现在取"最年轻那层"的年龄）。要各层独立节奏，得让 `set_effect_time` 变成按层写入。
+- 叠加层是**全屏层**，不遮挡也不跟随物体：特效固定在屏幕上，不做世界空间定位。
+- 参数仍是编译期常量之外的部分已 uniform 化；节点类型/连线变化仍要重编管线（加载预设时一次性完成）。
 
 ### 下一阶段（按价值排序）
 
-1. **Lua 逐帧调参数**：新增 `effect.set_params`/`effect.set_time`（含 examples/game_api 演示与
-   API 面快照更新），把 `set_effect_params` 接到脚本。
-2. **场景颜色/深度输入**：让叠加层能采样画面，解锁折射、扭曲、描边、热浪类模板。
-3. **节点扩展（第二批）**：屏幕 UV、法线、极坐标与旋转，解锁刀光/扇形技能类模板。
-4. **多叠加层**：同一帧叠加多个 `.sgraph`（当前只支持一条全屏叠加）。
+1. **预设带时长**：预设里加 `duration=` 与 `loop=`，宿主到点自动撤层，逻辑里就不必自己计时收招。
+2. **按层时钟**：`set_effect_time` 变成 `set_effect_time(layer, seconds)`，多层各走各的节奏。
+3. **编辑器内试播预设**：Shader 面板加"以这份预设预览"，所见即运行时所得。
+4. **世界空间特效**：把叠加层的位置/尺寸从投影里算出来，让刀光跟着角色而不是贴屏幕。

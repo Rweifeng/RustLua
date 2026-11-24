@@ -140,7 +140,7 @@ pub(crate) fn post_process_resources(
             push_constant_ranges: &[],
         });
     let post_process_pipeline = build_fullscreen_pipeline(
-        &device,
+        device,
         &post_process_pipeline_layout,
         &post_process_shader,
         format,
@@ -281,7 +281,7 @@ pub(crate) fn post_process_resources(
             source: wgpu::ShaderSource::Wgsl(TONEMAP_SHADER.into()),
         });
         Some(build_fullscreen_pipeline(
-            &device,
+            device,
             &tonemap_pipeline_layout,
             &tonemap_shader,
             format,
@@ -374,7 +374,7 @@ pub(crate) fn post_process_resources(
         source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO.source.into()),
     });
     let ssao_pipeline = build_fullscreen_pipeline(
-        &device,
+        device,
         &ssao_pipeline_layout,
         &ssao_shader,
         wgpu::TextureFormat::R8Unorm,
@@ -501,7 +501,7 @@ pub(crate) fn post_process_resources(
         source: wgpu::ShaderSource::Wgsl(crate::shader::SSAO_BLUR.source.into()),
     });
     let ssao_blur_pipeline = build_fullscreen_pipeline(
-        &device,
+        device,
         &ssao_blur_pipeline_layout,
         &ssao_blur_shader,
         wgpu::TextureFormat::R8Unorm,
@@ -564,7 +564,7 @@ pub(crate) fn post_process_resources(
         source: wgpu::ShaderSource::Wgsl(crate::shader::SSR.source.into()),
     });
     let ssr_pipeline = build_fullscreen_pipeline(
-        &device,
+        device,
         &ssr_pipeline_layout,
         &ssr_shader,
         wgpu::TextureFormat::Rgba16Float,
@@ -742,7 +742,7 @@ pub(crate) fn post_process_resources(
         source: wgpu::ShaderSource::Wgsl(crate::shader::SSR_BLUR.source.into()),
     });
     let ssr_blur_pipeline = build_fullscreen_pipeline(
-        &device,
+        device,
         &ssr_blur_pipeline_layout,
         &ssr_blur_shader,
         wgpu::TextureFormat::Rgba16Float,

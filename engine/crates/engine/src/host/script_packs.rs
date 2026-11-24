@@ -13,16 +13,21 @@
 //! 现在三处都由本模块接管：
 //!
 //! - 能力单元在这里创建，`rustlua-scripting` 拿不到它的类型；
-//! - VM 装配期由 [`LuaRuntime::add_deferred_installer`] 回调（世界作为参数传进来）；
-//! - 场景装配期由 [`LuaRuntime::add_component_applier`] 按组件名回调；
-//! - 切场景清理由 [`LuaRuntime::add_scene_transition_hook`] 回调。
+//! - VM 装配期由 [`rustlua_scripting::script::LuaRuntime::add_deferred_installer`] 回调
+//!   （世界作为参数传进来）；
+//! - 场景装配期由 [`rustlua_scripting::script::LuaRuntime::add_component_applier`] 按组件名回调；
+//! - 切场景清理由 [`rustlua_scripting::script::LuaRuntime::add_scene_transition_hook`] 回调。
+//!
+//! 链接写**完整路径**而不是 `LuaRuntime::…`：模块文档里没有 `use` 把它带进作用域，
+//! 短写会让 rustdoc 找不到该项（`cargo doc -D warnings` 判红）。
 //!
 //! ## 为什么宿主必须调这个函数
 //!
 //! 不调不会报错，只会让 `camera` / `camera2d` / `camera3d` 三张表**静默缺失**（脚本报
 //! `attempt to index a nil value`），场景里声明的 `Camera` 组件也会被当成未知组件跳过。
 //! 所以凡是自己建 `LuaRuntime` 的宿主（引擎运行时、示例工程、编辑器预览、离线工具）
-//! 都必须走 [`install`]；`tests/installers.rs` 那条 API 面断言就是防这个漏的。
+//! 都必须走 [`install`](crate::host::script_packs::install)；`tests/installers.rs`
+//! 那条 API 面断言就是防这个漏的。
 
 use rustlua_animation::animation_lua::AnimationState;
 use rustlua_camera::camera_state::CameraState;
@@ -31,6 +36,7 @@ use rustlua_ecs::world::World;
 use rustlua_lua_api::Handle;
 use rustlua_physics::physics_state::PhysicsState;
 use rustlua_scripting::script::LuaRuntime;
+use std::path::Path;
 use std::rc::Rc;
 
 /// 宿主需要留着自己驱动的那部分领域句柄。
@@ -52,6 +58,10 @@ pub struct ScriptDomainHandles {
     /// 宿主侧读存档面板、推时钟也读同一份——两边各造一份就会出现"脚本扣了钱、
     /// 面板没变"这类同源分裂（`docs/62` P1 阶段 4e）。
     pub gameplay: rustlua_scripting::script::GameplayHandles,
+    /// Spine 2D 的跨帧脚本可见状态（M84 P1）：本帧刚触发的动画事件。
+    /// 宿主每步把 `SpinePlayer::drain_events()` 推进这份句柄，Lua `spine.events()`
+    /// 取走的是同一份——两边各造一份会让"动画切了、脚本收不到"。
+    pub spine: Handle<rustlua_spine::SpineState>,
 }
 
 /// 建一个**带全部领域绑定**的运行时：`LuaRuntime::with_installers(..)` + [`install`]。
@@ -464,6 +474,38 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         Ok(())
     });
 
+    // ── ⑭ Spine 2D 域（M84 P1）────────────────────────────────────────────
+    // `spine` 表（动画切换/皮肤/速度/开关/事件/包围盒）+ `SpineSkeleton` 组件装配。
+    // 事实源是 ECS 里的 `SpinePlayer`；事件队列是组合根持有的 `SpineState`，宿主每步推进、
+    // Lua 取走的是同一份。
+    let spine = rustlua_spine::SpineState::handle();
+    let spine_installer = spine.clone();
+    script
+        .add_deferred_installer(Box::new(move |lua, world, _registry| {
+            rustlua_spine::spine_lua::install(lua, &spine_installer, world)
+        }))
+        .expect("spine 表安装失败：VM 已建好却装不进绑定，脚本会拿不到 spine.*");
+
+    // `SpineSkeleton` 组件：`.spine` 清单 → 骨骼/图集字节 → `SpineData` → `SpinePlayer`。
+    // 清单解析与资源读取在这里完成：组合根认识工程根，`rustlua-spine` 不认识。
+    script.add_component_applier("SpineSkeleton", |world, id, value, project_root| {
+        let component = rustlua_spine::SpineSkeletonComponent::from_component_str(value)
+            .map_err(|error| error.to_string())?;
+        let root = project_root
+            .ok_or_else(|| "needs a project root to load its .spine manifest".to_owned())?;
+        let player = load_spine_player(root, &component)?;
+        world
+            .insert(id, player)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+
+    // 切场景：旧实体 id 已失效，未取走的动画事件随世界一起作废。
+    let spine_transition = spine.clone();
+    script.add_scene_transition_hook(move || {
+        spine_transition.with_mut(|state| state.clear_for_scene_transition());
+    });
+
     ScriptDomainHandles {
         camera,
         animation,
@@ -471,5 +513,74 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
         ui,
         nav,
         gameplay,
+        spine,
     }
+}
+
+/// 从 `.spine` 清单装配一个 `SpinePlayer`（M84 P1）。
+///
+/// 清单（[`rustlua_spine::SpineManifest`]）引用三样东西：`.skel`/`.json` 骨骼、`.spineatlas`
+/// 图集文本、若干页 PNG。骨架与图集在这里读进内存，之后由 `SpineData` 持有不可变数据，
+/// 同一份骨架的多个实体共享它、各自持有独立骨架实例。
+fn load_spine_player(
+    root: &std::path::Path,
+    component: &rustlua_spine::SpineSkeletonComponent,
+) -> Result<rustlua_spine::SpinePlayer, String> {
+    let manifest_path = root.join(&component.data);
+    let manifest_text = read_text(&manifest_path).map_err(|error| {
+        format!(
+            "SpineSkeleton failed to read manifest {}: {error}",
+            component.data
+        )
+    })?;
+    let manifest = rustlua_spine::SpineManifest::parse(&manifest_text)
+        .map_err(|error| format!("invalid .spine manifest {}: {error}", component.data))?;
+
+    let skeleton_path = root.join(&manifest.skeleton);
+    let skeleton_bytes = rustlua_infra::vfs::read_resource(&skeleton_path).map_err(|error| {
+        format!(
+            "SpineSkeleton failed to read skeleton {}: {error}",
+            manifest.skeleton
+        )
+    })?;
+    // `.skel` 是 Spine 的二进制导出，`.json` 是文本导出；两者只有同一份清单里的
+    // `skeleton` 字段能区分，因此按扩展名判定而不是嗅探字节。
+    let binary = manifest
+        .skeleton
+        .rsplit('.')
+        .next()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("skel"));
+
+    let atlas_path = root.join(&manifest.atlas);
+    let atlas_text = read_text(&atlas_path).map_err(|error| {
+        format!(
+            "SpineSkeleton failed to read atlas {}: {error}",
+            manifest.atlas
+        )
+    })?;
+
+    // atlas 里的页名是相对 atlas 文件的，必须带上它所在目录，否则页会被当成工程根下的
+    // 同名文件（恰好存在时静默贴错图）。
+    let atlas_dir = Path::new(&manifest.atlas)
+        .parent()
+        .and_then(|parent| parent.to_str())
+        .unwrap_or("");
+    let data = rustlua_spine::SpineData::from_bytes(
+        &skeleton_bytes,
+        binary,
+        &atlas_text,
+        &manifest.spine_version,
+        atlas_dir,
+    )
+    .map_err(|error| format!("invalid spine skeleton {}: {error}", manifest.skeleton))?;
+    data.instantiate(component)
+        .map_err(|error| format!("cannot instantiate {}: {error}", component.data))
+}
+
+/// 读一份 UTF-8 文本资源；非 UTF-8 转成带路径的 IO 错误。
+fn read_text(path: &std::path::Path) -> std::io::Result<String> {
+    rustlua_infra::vfs::read_resource(path).and_then(|bytes| {
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
 }

@@ -43,6 +43,7 @@ const FLOOR_ROWS: std::ops::Range<u32> = 96..160;
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -62,8 +63,8 @@ fn ground_drawable() -> Scene3dDrawable {
     // 不需要像点光门那样绕 X 轴转 90°（那里是要把地面转成墙）。
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(9),
-        name: "Ground".to_owned(),
-        mesh_path: "__ground_plane__".to_owned(),
+        name: "Ground".to_owned().into(),
+        mesh_path: "__ground_plane__".to_owned().into(),
         material: None,
         mesh_handle: None,
         model: Mat4::scale(Vec3::new(4.0, 1.0, 4.0)),

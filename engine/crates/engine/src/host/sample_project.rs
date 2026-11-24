@@ -440,18 +440,29 @@ fn sample_project_render_capabilities_are_demonstrated() {
     let project_text =
         fs::read_to_string(root.join("project.toml")).expect("读取 project.toml 失败");
     let config = rustlua_render::render_config::RenderConfig::from_toml(&project_text);
-    assert_eq!(
-        config.effect_overlay.as_deref(),
-        Some("assets/fx/flame_blade_slash.sgraph"),
-        "project.toml [render] effect_overlay 没有指向演示用的 .sgraph"
+    // 叠加层属于**场景**语义：`[render]` 段不该再有这一项（有的话所有场景都会带上刀光）。
+    assert!(
+        !project_text.contains("effect_overlay"),
+        "特效叠加层应写在场景里（meta\teffect_overlay），不该留在 project.toml：{project_text}"
     );
     assert!(
         config.particle_softness > 0.0,
         "project.toml [render] particle_softness 应打开（0 = 硬边）"
     );
 
-    // `.sgraph` 必须能被运行时同一条路径编译，并且演示脚本用到的命名参数真的存在。
-    let relative = config.effect_overlay.expect("effect_overlay");
+    // 声明叠加层的场景必须真的声明它，而且能被运行时同一条路径编译。
+    // 演示工程里用炎刃斩击的那个场景（不是所有场景——这正是本次修的点）。
+    let relative = ["scenes/api_fx.scene", "scenes/index.scene"]
+        .iter()
+        .find_map(|relative_path| {
+            let scene = Scene::load(root.join(relative_path)).ok()?;
+            // 先取出字符串再交出 scene：`effect_overlay()` 借的是 scene 自己，直接元组会冲突。
+            let overlay = scene.effect_overlay()?.to_owned();
+            Some(overlay)
+        })
+        .unwrap_or_else(|| {
+            panic!("演示工程里没有任何场景声明 meta\teffect_overlay；炎刃斩击演示会失去特效")
+        });
     let (source, compiled) =
         rustlua_visual_script::shader_graph::ShaderGraph::load_runtime_overlay(&root, &relative)
             .unwrap_or_else(|error| panic!("{relative} 无法编译成运行时叠加层：{error}"));
@@ -490,6 +501,27 @@ fn sample_project_render_capabilities_are_demonstrated() {
         assert!(
             sources.contains(call),
             "演示脚本缺少对 {call}) 的真实调用（M94/M95 的运行时参数面没有演示）"
+        );
+    }
+
+    // M96：逻辑里按预设播特效。三条一起查——只有 `render.play_effect` 而没有预设资产，
+    // 演示跑起来会一路报"加载失败"却仍然是绿的。
+    for call in ["render.play_effect(", "render.stop_effect("] {
+        assert!(
+            sources.contains(call),
+            "演示脚本缺少对 {call}) 的真实调用（特效预设面没有演示）"
+        );
+    }
+    for preset in [
+        "assets/fx/flame_blade_slash.prefab",
+        "assets/fx/frost_blade_slash.prefab",
+    ] {
+        let effect = rustlua_visual_script::effect_prefab::EffectPrefab::load(&root, preset)
+            .unwrap_or_else(|error| panic!("{preset} 无法加载为特效预设：{error}"));
+        assert!(effect.overlay, "{preset} 应当挂到场景叠加层");
+        assert!(
+            !effect.compiled.slots.is_empty(),
+            "{preset} 编译后应当有参数槽（否则脚本调参全部落空）"
         );
     }
 }

@@ -848,6 +848,7 @@ fn gpu_particle_burst_first_frame_matches_cpu_at_one_thousand() {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

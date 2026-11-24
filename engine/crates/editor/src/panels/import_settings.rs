@@ -136,6 +136,11 @@ impl EditorApp {
         relative: &str,
     ) -> bool {
         let Some(family) = ImportFamily::from_kind(kind) else {
+            // Shader Graph 的"设置"就是它自己的节点图：在属性面板里只提示去哪儿改，
+            // 不必再说一句"这一类资源没有可导入设置"——那句话对着有预览的图很突兀。
+            if kind == ResourceKind::ShaderGraph {
+                return false;
+            }
             ui.weak(match kind {
                 ResourceKind::Texture => {
                     "贴图的采样设置在「贴图预览」窗里改（双击资源面板里的那张图）。"

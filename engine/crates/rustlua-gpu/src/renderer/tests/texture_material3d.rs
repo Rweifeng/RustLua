@@ -31,9 +31,9 @@ fn box_drawable(material: Option<&str>) -> Scene3dDrawable {
     let (min, max) = spec.bounds();
     Scene3dDrawable {
         entity: rustlua_ecs::spatial_transform::SceneEntityId(2),
-        name: "TexturedBox".to_owned(),
-        mesh_path: spec.mesh_path(),
-        material: material.map(str::to_owned),
+        name: "TexturedBox".to_owned().into(),
+        mesh_path: spec.mesh_path().into(),
+        material: material.map(std::sync::Arc::from),
         mesh_handle: None,
         model: Mat4::identity(),
         palette: Vec::new(),
@@ -50,6 +50,7 @@ fn box_drawable(material: Option<&str>) -> Scene3dDrawable {
 
 fn empty_mesh() -> SceneMesh {
     SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),

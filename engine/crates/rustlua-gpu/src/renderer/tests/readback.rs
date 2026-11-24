@@ -46,6 +46,7 @@ fn non_blocking_readback_eventually_yields_pixels() {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -130,6 +131,7 @@ fn capture_surface_png_writes_a_png() {
     renderer.config.width = 64;
     renderer.config.height = 64;
     let mesh = rustlua_render::frame::SceneMesh {
+        spines: rustlua_render::spine_mesh::SpineMesh::default(),
         vertices: Vec::new(),
         draws: Vec::new(),
         world_sprites: Vec::new(),
@@ -204,23 +206,8 @@ fn failed_readback_mapping_reports_error_and_clears_slot() {
         .finish();
     let submission = queue.submit([empty]);
     // 注入一个"映射失败"的槽（模拟 map_async 回调返回 Err）。
-    renderer.readback_slots.push(ReadbackSlot {
-        buffer: device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rustlua-test-readback-failed"),
-            size: 256 * 8,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        }),
-        submission: Some(submission),
-        map_result: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(2)),
-        map_error: std::sync::Arc::new(std::sync::Mutex::new(Some("注入的映射失败".to_owned()))),
-        width: 8,
-        height: 8,
-        row_bytes: 32,
-        bytes_per_row: 256,
-        pixels: Vec::new(),
-        generation: 0,
-    });
+    // P3 起回读槽收进 `AsyncReadback`，注入入口随之下移（同一个状态，同一条断言）。
+    renderer.inject_failed_readback_slot(submission, "注入的映射失败", 8, 8);
     match renderer.readback_pending() {
         ReadbackStatus::Failed(error) => assert!(error.contains("注入的映射失败")),
         _ => panic!("映射失败应上报 Failed 而非脏数据"),

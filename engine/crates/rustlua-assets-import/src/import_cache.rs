@@ -70,6 +70,12 @@ impl ImportCache {
             path: source.display().to_string(),
             reason: source_error.to_string(),
         })?;
+        importer
+            .validate_project_context(&self.root, source, &bytes)
+            .map_err(|reason| ImportCacheError::InvalidSource {
+                path: source.display().to_string(),
+                reason,
+            })?;
         let fingerprint = rustlua_assets::hash::content_hash(&bytes);
         let kind = importer.kind();
         let importer_version = importer.version();
