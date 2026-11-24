@@ -203,7 +203,7 @@
       "tier": "T0"
     },
     {
-      "description": "新建空场景。T3：会清空 Undo 栈，必须显式确认。",
+      "description": "新建空场景。T3：脏文档会挂起等待确认，确认前不改动当前文档、不清 Undo 栈。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -251,7 +251,7 @@
       "tier": "T3"
     },
     {
-      "description": "另存当前场景到新路径。T3：落盘不可撤销。",
+      "description": "另存当前场景到新路径。T3：落盘不可撤销；目标文件已存在时拒绝，不覆盖已有文件。",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

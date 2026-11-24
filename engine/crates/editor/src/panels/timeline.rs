@@ -111,26 +111,24 @@ pub(crate) struct TimelineState {
 impl TimelineState {
     /// 跟随选中实体同步预览。只在键变化时读盘；有未保存修改时暂缓切换。
     fn sync(&mut self, target: Option<TimelineTarget>, project_root: &Path) {
-        let Some(target) = target else {
-            self.key = None;
-            self.status = TimelineStatus::NoSelection;
-            return;
-        };
-        let next_key = target.payload.as_ref().map(|payload| TimelineKey {
-            entity: target.entity,
-            payload: payload.clone(),
+        let next_key = target.as_ref().and_then(|target| {
+            target.payload.as_ref().map(|payload| TimelineKey {
+                entity: target.entity,
+                payload: payload.clone(),
+            })
         });
         if let Some(next_key) = &next_key
             && self.key.as_ref() == Some(next_key)
+            && let Some(target) = target.as_ref()
         {
             // 同一个预览：只刷新显示名（重命名不该触发重新读盘）。
             match &mut self.status {
                 TimelineStatus::NoPlayer { name } => {
-                    *name = target.name;
+                    *name = target.name.clone();
                     return;
                 }
                 TimelineStatus::Ready(preview) => {
-                    preview.entity_name = target.name;
+                    preview.entity_name = target.name.clone();
                     preview.switch_blocked = false;
                     return;
                 }
@@ -139,12 +137,20 @@ impl TimelineState {
             }
         }
         // 脏会话不能因为选中变化被静默丢弃；保存/还原后下一帧再切。
+        //
+        // 这一支必须排在 `target == None` **之前**：清空选区 / 删掉选中实体 / 换场景
+        // 都会让 target 变成 None，若先把状态复位成 NoSelection，未保存的会话就没了。
         if let TimelineStatus::Ready(preview) = &mut self.status
             && preview.session.is_dirty()
         {
             preview.switch_blocked = true;
             return;
         }
+        let Some(target) = target else {
+            self.key = None;
+            self.status = TimelineStatus::NoSelection;
+            return;
+        };
         // 没有组件时没有可缓存的载荷；先于键比较返回，否则初始的 `key == None`
         // 会把"选中了一个没有 AnimationPlayer 的实体"当成同一预览而停在 NoSelection。
         let Some(payload) = target.payload else {
@@ -1270,6 +1276,41 @@ event=0.5:step
             TimelineStatus::NoPlayer { name } => assert_eq!(name, "other"),
             other => panic!("还原后应切到新选中实体，实际 {other:?}"),
         }
+    }
+
+    /// 清空选中（target=None）不得销毁未保存的动画会话；还原后才离开。
+    ///
+    /// 回归：`sync` 过去先把 None 复位成 `NoSelection` 再判脏，清空选区/删实体/换场景
+    /// 都会把未保存的关键帧静默丢掉。
+    #[test]
+    fn dirty_session_survives_clearing_the_selection() {
+        let mut app = app_with_entity(
+            "dirty-clear",
+            Some("clip=assets/anim/hero.anim"),
+            Some(CLIP),
+        );
+        app.sync_timeline_from_selection();
+        {
+            let preview = ready_mut(&mut app);
+            preview.player.seek(0.25).expect("seek");
+            preview.add_key_at_playhead();
+            assert!(preview.session.is_dirty());
+        }
+        app.selection.clear(SelectionSource::Command);
+        app.sync_timeline_from_selection();
+        {
+            let preview = ready(&app);
+            assert_eq!(
+                preview.entity,
+                SceneEntityId(1),
+                "清空选区不得静默丢弃未保存的动画会话"
+            );
+            assert!(preview.switch_blocked);
+        }
+        // 还原后没有可丢的东西，才允许跟随空选中离开。
+        ready_mut(&mut app).session.revert_to_saved();
+        app.sync_timeline_from_selection();
+        assert!(matches!(app.timeline.status, TimelineStatus::NoSelection));
     }
 
     /// 三种失败各有具体原因：组件配置坏、文件不在、片段解析失败。

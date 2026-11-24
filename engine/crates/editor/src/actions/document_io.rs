@@ -77,6 +77,21 @@ impl EditorApp {
     }
 
     pub(crate) fn save_scene_with_policy(&mut self, force: bool) -> bool {
+        self.save_scene_to(None, force)
+    }
+
+    /// 另存为：把当前文档写到**新路径**，成功后该路径成为文档路径。
+    ///
+    /// 与普通保存共用同一条保存管线（事务收尾 → 变体/嵌套覆盖重算 → 写盘 → 恢复快照清理），
+    /// 因此不会绕过任何保存保护。与普通保存的区别只有目标路径，以及**目标已存在时一律拒绝**：
+    /// 另存为不提供"覆盖别的文件"的确认出口（与产品撤销「强制保存」同一口径），
+    /// 拒绝文案会给出下一步。同路径另存等价于普通保存，仍走外部改动检查。
+    pub(crate) fn save_scene_as_policy(&mut self, target: PathBuf) -> bool {
+        self.save_scene_to(Some(target), false)
+    }
+
+    /// 保存的唯一实现：`target = None` 原地保存，`Some(path)` 另存为。
+    fn save_scene_to(&mut self, target: Option<PathBuf>, force: bool) -> bool {
         let started = std::time::Instant::now();
         // E07：保存前若正处于活动事务，先把最后一条 preview 提交为一条历史命令
         // （快照来自事务 before），保证落盘内容可被单条 Undo 收回。
@@ -98,6 +113,16 @@ impl EditorApp {
             self.status = "请先创建场景".into();
             return false;
         };
+        // 「原地保存」与「另存为」的分界：目标路径就是当前文档路径时按原地保存处理
+        // （含外部改动检查）；写到另一条路径时，才需要判断那条路径上是不是已有别的文件。
+        let same_path = match target.as_deref() {
+            None => true,
+            Some(path) => doc
+                .path
+                .as_deref()
+                .is_some_and(|current| paths_refer_to_same_file(current, path)),
+        };
+        let save_as_target = if same_path { None } else { target };
         // docs/55 阶段 3 的数据安全半边：**磁盘上的文件在外部被改过就不要静默覆盖**。
         //
         // `scenes/` 与 `scripts/` 本来就是外部工具会写的目录（生成器、git checkout、另一个编辑器），
@@ -109,26 +134,69 @@ impl EditorApp {
         // 用户就会照着一条不存在的路去找出口。当前真正能走通的只有两条：
         // 先在外部处理掉那个改动（还原/确认），或者在资源面板重开场景采用磁盘版本——
         // 后者会丢弃内存里的未保存改动，所以必须写明。
-        let disk_status = doc.disk_status();
-        if disk_status.blocks_overwrite() && !force {
+        if same_path {
+            let disk_status = doc.disk_status();
+            if disk_status.blocks_overwrite() && !force {
+                self.status = format!(
+                    "已阻止保存：{}（{}）。磁盘上的文件已被外部改动，这里不会静默覆盖：\
+                     先在外部确认或还原该文件，或在资源面板重开该场景采用磁盘版本（会丢弃未保存的改动）。",
+                    disk_status.describe(),
+                    doc.path
+                        .as_deref()
+                        .map(crate::util::display_path)
+                        .unwrap_or_else(|| "<未命名>".to_owned())
+                );
+                self.set_scene_view_diagnostic(self.status.clone());
+                self.profiler
+                    .record_command("save_scene_blocked", started.elapsed());
+                return false;
+            }
+        } else if let Some(target_path) = save_as_target.as_deref()
+            && target_path.exists()
+        {
+            // 另存为**不提供覆盖确认出口**（与「强制保存」被撤掉同一产品口径）：
+            // 目标已有文件时直接拒绝，绝不把"另存为"静默变成覆盖另一个文件。
             self.status = format!(
-                "已阻止保存：{}（{}）。磁盘上的文件已被外部改动，这里不会静默覆盖：\
-                 先在外部确认或还原该文件，或在资源面板重开该场景采用磁盘版本（会丢弃未保存的改动）。",
-                disk_status.describe(),
-                doc.path
-                    .as_deref()
-                    .map(crate::util::display_path)
-                    .unwrap_or_else(|| "<未命名>".to_owned())
+                "已阻止另存为：目标文件已存在（{}）。这里不会覆盖已有文件：\
+                 请换一个文件名，或先在外部确认后删除/移走该文件再另存为。",
+                crate::util::display_path(target_path)
             );
             self.set_scene_view_diagnostic(self.status.clone());
             self.profiler
-                .record_command("save_scene_blocked", started.elapsed());
+                .record_command("save_scene_as_blocked", started.elapsed());
             return false;
         }
+        // 未命名文档的"首次保存"同样有目标占用问题：默认落到 scenes/<场景名>.scene，
+        // 若这个文件已存在（例如 AI 用 `new_scene` 起了与旧场景同名的名字），
+        // 不能静默覆盖。UI 新建会先用 `next_new_scene_name` 去重，正常路径不会撞上。
+        if save_as_target.is_none() && doc.path.is_none() {
+            let default_target = self
+                .project
+                .root
+                .join("scenes")
+                .join(format!("{}.scene", doc.scene.name));
+            if default_target.exists() {
+                self.status = format!(
+                    "已阻止保存：默认目标文件已存在（{}）。这里不会覆盖已有文件：\
+                     请先给场景改名，或先在外部确认后删除/移走该文件。",
+                    crate::util::display_path(&default_target)
+                );
+                self.set_scene_view_diagnostic(self.status.clone());
+                self.profiler
+                    .record_command("save_scene_blocked", started.elapsed());
+                return false;
+            }
+        }
+        // 另存为的失败不得留下"预处理已改内存 metadata"的半提交：预处理前留一份副本，
+        // 任何一步失败都恢复到写盘前的文档状态（普通保存保持既有行为不变）。
+        let rollback = save_as_target.as_ref().map(|_| doc.clone());
         // 变体文档：保存前把「相对基础的真实差异」重算成覆盖记录。基础在同步后又动过时
         // 拒绝保存（否则基础的新值会被 diff 成变体自己的覆盖，把上游改动钉死）。
         if let Err(error) = super::prefab_variant::prepare_variant_for_save(doc, &self.project.root)
         {
+            if let Some(before) = rollback.clone() {
+                self.document.current_scene = Some(before);
+            }
             self.status = error;
             self.set_scene_view_diagnostic(self.status.clone());
             self.profiler
@@ -140,6 +208,9 @@ impl EditorApp {
         if let Err(error) =
             super::prefab_nested_sync::prepare_nested_for_document_save(doc, &self.project.root)
         {
+            if let Some(before) = rollback.clone() {
+                self.document.current_scene = Some(before);
+            }
             self.status = error;
             self.set_scene_view_diagnostic(self.status.clone());
             self.profiler
@@ -147,18 +218,36 @@ impl EditorApp {
             return false;
         }
         let is_prefab_document = doc.is_prefab_document();
-        let r = if doc.path.is_some() {
-            self.recovery.save_document(doc).map_err(|e| e.to_string())
-        } else {
-            doc.save_as(
-                self.project
-                    .root
-                    .join("scenes")
-                    .join(format!("{}.scene", doc.scene.name)),
-            )
-            .map_err(|e| e.to_string())
+        let r = match save_as_target.as_deref() {
+            Some(target_path) => {
+                // 旧路径的恢复快照要一起清掉：文档换了路径，旧 key 下的快照不会再被
+                // "保存后清理"命中，留在恢复列表里只会让人恢复出一份已迁走的文档。
+                let previous = doc.clone();
+                match doc.save_as(target_path) {
+                    Ok(()) => {
+                        let _ = self.recovery.clear_for(&previous);
+                        Ok(())
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            None if doc.path.is_some() => {
+                self.recovery.save_document(doc).map_err(|e| e.to_string())
+            }
+            None => doc
+                .save_as(
+                    self.project
+                        .root
+                        .join("scenes")
+                        .join(format!("{}.scene", doc.scene.name)),
+                )
+                .map_err(|e| e.to_string()),
         };
         let saved = r.is_ok();
+        if !saved && let Some(before) = rollback {
+            // 写盘失败：文档内容/路径/签名保持写盘前状态，不把预处理结果留在内存里。
+            self.document.current_scene = Some(before);
+        }
         if saved {
             // 未命名场景第一次 save_as 后才获得稳定 key；这里补写当前折叠状态。
             self.save_hierarchy_collapsed();
@@ -170,16 +259,24 @@ impl EditorApp {
                 }
                 self.autosave.reset();
                 self.refresh_recovery_scan();
-                if is_prefab_document {
-                    "预制体已保存".into()
-                } else {
-                    "场景已保存".into()
+                match (save_as_target.as_deref(), is_prefab_document) {
+                    (Some(target_path), _) => {
+                        format!("已另存为：{}", crate::util::display_path(target_path))
+                    }
+                    (None, true) => "预制体已保存".into(),
+                    (None, false) => "场景已保存".into(),
                 }
             }
             Err(error) => error,
         };
-        self.profiler
-            .record_command("save_scene", started.elapsed());
+        self.profiler.record_command(
+            if save_as_target.is_some() {
+                "save_scene_as"
+            } else {
+                "save_scene"
+            },
+            started.elapsed(),
+        );
         saved
     }
 
@@ -326,5 +423,20 @@ impl EditorApp {
         // E08：清空显示缓冲后，基线/脏标记一并复位，防止旧快照残留参与比较。
         self.inspector_edit = EditState::default();
         self.inspector_baseline.clear();
+    }
+}
+
+/// 两个路径是否指向同一个磁盘文件。
+///
+/// 先 `canonicalize`（能吃掉 `\\?\` 前缀、`..`、大小写与短名差异）；目标还不存在时
+/// 回退到"去掉逐字前缀后字面相等"，此时只用于判断"这次另存是不是原地保存"，
+/// 比较失败最多让另存走目标存在检查，不会造成覆盖。
+fn paths_refer_to_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => {
+            let strip = crate::util::strip_verbatim_prefix;
+            strip(a) == strip(b)
+        }
     }
 }

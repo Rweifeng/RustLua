@@ -293,6 +293,38 @@ fn material_editor_dirty_session_blocks_selection_switch() {
     assert_eq!(ready(&app).entity, SceneEntityId(2));
 }
 
+/// 清空选中不得销毁未保存的材质会话；还原后才离开（回归：`sync` 过去先复位
+/// `NoSelection` 再判脏，清空选区/删实体/换场景会把未保存的材质编辑静默丢掉）。
+#[test]
+fn material_editor_dirty_session_survives_clearing_the_selection() {
+    let (mut app, _root) = app_with_mesh(
+        "switch-clear",
+        "mesh=assets/models/ball.glb;material=assets/materials/rusted.material",
+    );
+    app.sync_material_from_selection();
+    ready_mut(&mut app).apply(false, |material| material.roughness = 0.2);
+    assert!(ready(&app).session.is_dirty());
+
+    app.selection.clear(SelectionSource::Command);
+    app.sync_material_from_selection();
+    {
+        let preview = ready(&app);
+        assert_eq!(
+            preview.entity,
+            SceneEntityId(1),
+            "清空选区不得静默丢弃未保存的材质会话"
+        );
+        assert!(preview.switch_blocked);
+    }
+
+    ready_mut(&mut app)
+        .session
+        .revert_to_saved()
+        .expect("revert");
+    app.sync_material_from_selection();
+    assert!(matches!(app.material.status, MaterialStatus::NoSelection));
+}
+
 #[test]
 fn material_editor_reports_broken_files_with_line_numbers() {
     let (mut app, root) = app_with_mesh(

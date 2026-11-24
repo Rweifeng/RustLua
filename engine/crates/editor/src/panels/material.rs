@@ -173,17 +173,15 @@ fn create_override(
 
 impl MaterialState {
     fn sync(&mut self, target: Option<MaterialTarget>, project_root: &Path) {
-        let Some(target) = target else {
-            self.key = None;
-            self.status = MaterialStatus::NoSelection;
-            return;
-        };
-        let next_key = target.payload.as_ref().map(|payload| MaterialKey {
-            entity: target.entity,
-            payload: payload.clone(),
+        let next_key = target.as_ref().and_then(|target| {
+            target.payload.as_ref().map(|payload| MaterialKey {
+                entity: target.entity,
+                payload: payload.clone(),
+            })
         });
         if let Some(next_key) = &next_key
             && self.key.as_ref() == Some(next_key)
+            && let Some(target) = target.as_ref()
         {
             match &mut self.status {
                 MaterialStatus::NoMeshRenderer { name } => {
@@ -204,12 +202,21 @@ impl MaterialState {
                 MaterialStatus::NoSelection => {}
             }
         }
+        // 脏会话不能因为选中变化被静默丢弃；保存/还原后下一帧再切。
+        //
+        // 这一支必须排在 `target == None` **之前**：清空选区 / 删掉选中实体 / 换场景
+        // 都会让 target 变成 None，若先把状态复位成 NoSelection，未保存的会话就没了。
         if let MaterialStatus::Ready(preview) = &mut self.status
             && preview.session.is_dirty()
         {
             preview.switch_blocked = true;
             return;
         }
+        let Some(target) = target else {
+            self.key = None;
+            self.status = MaterialStatus::NoSelection;
+            return;
+        };
         let Some(payload) = target.payload else {
             self.key = None;
             self.status = MaterialStatus::NoMeshRenderer { name: target.name };

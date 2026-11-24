@@ -76,16 +76,25 @@ impl EditorApp {
     /// 菜单里**没有场景名输入框**（与 Unity 的 File ▸ New Scene 一致）：名字由这里决定，
     /// 并在冲突时自动去重（见 [`Self::next_new_scene_name`]），因此不会默默覆盖已有场景文件。
     pub(crate) fn create_scene(&mut self) {
+        let name = self.next_new_scene_name();
+        let _ = self.request_create_scene(name);
+    }
+
+    /// 新建场景的**唯一请求入口**：前置校验 + 未保存切换闸门，返回命令结果。
+    ///
+    /// 菜单、快捷键、typed `EditorCommand::NewScene` 与 AI 的 `new_scene` 工具都走这里，
+    /// 保证任何入口都不会绕过「有未保存改动先确认」的保护、直接替换当前文档。
+    pub(crate) fn request_create_scene(&mut self, name: String) -> editor::CommandResult {
         if !self.project_loaded {
             self.status = "请先导入游戏工程再编辑".to_owned();
-            return;
+            return editor::CommandResult::Rejected(self.status.clone());
         }
         if self.is_playing() {
             self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
-            return;
+            return editor::CommandResult::Rejected(self.status.clone());
         }
-        let name = self.next_new_scene_name();
         self.request_document_change(crate::actions::PendingChange::CreateScene { name });
+        self.command_result_from_status("新建场景被挂起或失败")
     }
 
     /// 新建场景的默认名：`main`；若 `scenes/main.scene` 已存在（或当前文档已叫这个名字）

@@ -198,7 +198,7 @@ fn build_tools() -> Vec<ToolSpec> {
         // ── 写 tool（T1–T3）──────────────────────────────────────────────
         ToolSpec {
             name: "new_scene",
-            description: "新建空场景。T3：会清空 Undo 栈，必须显式确认。",
+            description: "新建空场景。T3：脏文档会挂起等待确认，确认前不改动当前文档、不清 Undo 栈。",
             tier: ToolTier::T3,
             input_schema: schema_object(
                 json!({"name": {"type": "string", "minLength": 1}}),
@@ -222,7 +222,7 @@ fn build_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "save_scene_as",
-            description: "另存当前场景到新路径。T3：落盘不可撤销。",
+            description: "另存当前场景到新路径。T3：落盘不可撤销；目标文件已存在时拒绝，不覆盖已有文件。",
             tier: ToolTier::T3,
             input_schema: schema_object(
                 json!({"path": {"type": "string", "minLength": 1}}),

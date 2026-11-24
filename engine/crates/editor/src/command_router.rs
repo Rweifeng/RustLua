@@ -6,11 +6,11 @@
 //! reporting), so behaviour stays identical no matter which widget triggered it.
 
 use crate::EditorApp;
-use editor::{CommandResult, EditorCommand, SceneDocument};
+use editor::{CommandResult, EditorCommand};
 use rustlua_scene::scene::SceneEntityId;
 
 #[cfg(test)]
-use editor::PlaySession;
+use editor::{PlaySession, SceneDocument};
 
 /// `EditorCommand` 的变体名（`Save`、`DeleteSelected` …），用于 trace 的 span 名。
 ///
@@ -71,22 +71,9 @@ impl EditorApp {
                 } else {
                     name.trim().to_owned()
                 };
-                self.document.current_scene = Some(SceneDocument::new_scene(name.clone()));
-                self.history.clear();
-                self.selection.clear(editor::SelectionSource::Command);
-                // P1-4：换文档是释放旧场景派生物的天然时机——新场景多半用不到旧网格/贴图，
-                // 留着只是占内存。释放不影响任何像素（下次绘制按需重建），代价只是首帧变慢。
-                let released = self.release_all_resources();
-                self.on_document_changed(crate::actions::DocumentChange::Created);
-                self.status = if released > 0 {
-                    format!(
-                        "已新建场景：{name}（未保存，释放缓存 {}）",
-                        crate::panels::performance::format_bytes(released)
-                    )
-                } else {
-                    format!("已新建场景：{name}（未保存）")
-                };
-                CommandResult::Applied
+                // 所有入口（菜单 / 快捷键 / typed 命令 / AI 工具）共用同一条未保存切换闸门：
+                // dirty 时挂起确认，**不得**直接替换当前场景与历史（此前本分支正是这样丢改动的）。
+                self.request_create_scene(name)
             }
             EditorCommand::OpenDocument { path } => {
                 // 走既有「未保存切换保护」网关：dirty 时挂起确认，确认前不改动任何状态。
@@ -104,19 +91,13 @@ impl EditorApp {
                 }
             }
             EditorCommand::SaveAs { path } => {
+                // 与普通 Save 同一条保存管线：事务收尾、变体/嵌套覆盖重算、外部改动检查；
+                // 目标是另一条已有文件时一律拒绝（另存为不提供静默覆盖出口）。
                 self.commit_inspector_edits_if_dirty();
-                let Some(document) = self.document.current_scene.as_mut() else {
-                    return CommandResult::Rejected("没有可保存的场景".to_owned());
-                };
-                match document.save_as(&path) {
-                    Ok(()) => {
-                        self.status = format!("场景已另存为：{}", crate::util::display_path(&path));
-                        CommandResult::Applied
-                    }
-                    Err(error) => {
-                        self.status = format!("另存失败：{error}");
-                        CommandResult::Rejected(self.status.clone())
-                    }
+                if self.save_scene_as_policy(path) {
+                    CommandResult::Applied
+                } else {
+                    CommandResult::Rejected(self.status.clone())
                 }
             }
             EditorCommand::Undo => {
@@ -455,7 +436,9 @@ impl EditorApp {
 
     /// Turn a guarded action's status text into a result: the guard paths report failures
     /// through `status`, so a failure is recognised by the status still describing a problem.
-    fn command_result_from_status(&self, _context: &str) -> CommandResult {
+    ///
+    /// `pub(crate)`：`request_create_scene`（UI 菜单与 typed 命令共用）也需要同一判定。
+    pub(crate) fn command_result_from_status(&self, _context: &str) -> CommandResult {
         if self.pending_document_change.is_some() {
             // 未保存切换保护已挂起：用户还没确认，什么都没改，不算失败。
             CommandResult::NoOp
@@ -1498,10 +1481,17 @@ mod tests {
         let _ = std::fs::remove_file(&scene_path);
     }
 
-    /// NewScene 清空历史与选择，并留下一个 dirty 的未保存文档。
+    /// NewScene 清空历史与选择，并留下一个 dirty 的未保存文档（clean 文档直接执行）。
     #[test]
     fn new_scene_resets_history_and_selection() {
         let mut app = test_app();
+        app.project_loaded = true;
+        // clean 文档：新建走"直接执行"分支；dirty 时挂起确认见下一条用例。
+        app.document
+            .current_scene
+            .as_mut()
+            .expect("scene")
+            .mark_clean();
         app.selection
             .set_single(SceneEntityId(1), editor::SelectionSource::Hierarchy);
         assert_eq!(
@@ -1515,6 +1505,102 @@ mod tests {
         assert!(document.is_dirty(), "新建场景必须标记为未保存");
         assert_eq!(app.history.undo_len(), 0);
         assert!(app.selection.is_empty());
+        assert!(app.pending_document_change.is_none());
+    }
+
+    /// 有未保存改动时 NewScene 必须挂起确认，不得静默丢弃当前场景与历史。
+    /// 菜单、快捷键、typed 命令与 AI `new_scene` 共用这条未保存切换闸门。
+    #[test]
+    fn new_scene_is_gated_by_unsaved_changes() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let id = SceneEntityId(1);
+        {
+            let scene = app.document.current_scene.as_mut().expect("scene");
+            let renamed = app
+                .history
+                .execute(scene, "Rename", CommandKind::Rename, |scene| {
+                    scene.scene.entities.get_mut(&id).expect("entity").name = "Dirty".to_owned();
+                    scene.mark_dirty();
+                    Ok::<(), String>(())
+                })
+                .expect("history");
+            assert!(renamed);
+        }
+        let before = app.document.current_scene.clone();
+        assert_eq!(
+            app.dispatch(EditorCommand::NewScene {
+                name: "level2".to_owned()
+            }),
+            editor::CommandResult::NoOp,
+            "脏文档的新建必须挂起（NoOp），不能直接返回 Applied"
+        );
+        assert!(
+            app.pending_document_change.is_some(),
+            "必须挂起未保存确认：{:?}",
+            app.pending_document_change
+        );
+        assert_eq!(
+            app.document.current_scene, before,
+            "挂起期间不得替换当前场景"
+        );
+        assert_eq!(app.history.undo_len(), 1, "历史不得被清空");
+
+        // 取消挂起：文档与历史原样，仍停在原场景。
+        app.cancel_pending_change();
+        assert!(app.pending_document_change.is_none());
+        assert_eq!(app.document.current_scene, before);
+        assert_eq!(app.history.undo_len(), 1);
+    }
+
+    /// 没有工程时 NewScene 被拒绝（与菜单新建一致），不得凭空造出文档。
+    #[test]
+    fn new_scene_requires_a_loaded_project() {
+        let mut app = test_app();
+        let before = app.document.current_scene.clone();
+        match app.dispatch(EditorCommand::NewScene {
+            name: "level2".to_owned(),
+        }) {
+            editor::CommandResult::Rejected(reason) => {
+                assert!(reason.contains("导入游戏工程"), "{reason}")
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        assert_eq!(app.document.current_scene, before);
+        assert!(app.pending_document_change.is_none());
+    }
+
+    /// 未命名文档首次保存默认写 scenes/<名称>.scene；该文件已存在时必须拒绝，
+    /// 不能静默覆盖旧场景（AI `new_scene` 不经过 UI 的重名去重）。
+    #[test]
+    fn save_refuses_to_overwrite_an_existing_default_scene_file() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let scenes = app.project.root.join("scenes");
+        std::fs::create_dir_all(&scenes).unwrap();
+        let existing = scenes.join("main.scene");
+        std::fs::write(&existing, "sentinel\n").unwrap();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
+
+        match app.dispatch(EditorCommand::Save) {
+            editor::CommandResult::Rejected(reason) => {
+                assert!(reason.contains("已存在"), "{reason}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&existing).unwrap(),
+            "sentinel\n",
+            "已存在的默认目标不得被覆盖"
+        );
+        assert!(
+            app.current_scene().unwrap().path.is_none(),
+            "被拒绝的保存不得绑定路径"
+        );
+        assert!(
+            app.current_scene().unwrap().is_dirty(),
+            "被拒绝的保存不得把文档标成已保存"
+        );
     }
 
     /// Undo/Redo 通过 typed 命令往返，且无历史时是 no-op。
@@ -1586,6 +1672,7 @@ mod tests {
     #[test]
     fn save_as_command_writes_to_requested_path() {
         let mut app = test_app();
+        app.project_loaded = true;
         let target = std::env::temp_dir().join(format!(
             "rustlua-command-router-saveas-{}.scene",
             std::process::id()
@@ -1602,6 +1689,79 @@ mod tests {
             app.current_scene().unwrap().path.as_deref(),
             Some(target.as_path())
         );
+        let _ = std::fs::remove_file(&target);
+    }
+
+    /// 另存为到**已存在**的文件必须拒绝：不覆盖目标、不改文档路径、文档仍留在原处。
+    ///
+    /// 回归：`SaveAs` 过去直接 `document.save_as`，目标已有文件时原子写会静默替换它。
+    #[test]
+    fn save_as_refuses_to_overwrite_an_existing_file() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let target = std::env::temp_dir().join(format!(
+            "rustlua-command-router-saveas-existing-{}.scene",
+            std::process::id()
+        ));
+        std::fs::write(&target, "sentinel\n").expect("target");
+        let before_path = app.current_scene().unwrap().path.clone();
+
+        match app.dispatch(EditorCommand::SaveAs {
+            path: target.clone(),
+        }) {
+            editor::CommandResult::Rejected(reason) => {
+                assert!(reason.contains("已存在"), "{reason}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "sentinel\n",
+            "目标文件不得被覆盖"
+        );
+        assert_eq!(
+            app.current_scene().unwrap().path,
+            before_path,
+            "被拒绝的另存为不得改变文档路径"
+        );
+        assert!(app.status.contains("不会覆盖"), "{}", app.status);
+        let _ = std::fs::remove_file(&target);
+    }
+
+    /// 另存为到当前文档自身路径等价于普通保存：保存一次之后再存同一路径必须成功，
+    /// 不能被"目标已存在"误拦。
+    #[test]
+    fn save_as_to_the_current_path_behaves_like_a_normal_save() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let target = std::env::temp_dir().join(format!(
+            "rustlua-command-router-saveas-same-{}.scene",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&target);
+        assert_eq!(
+            app.dispatch(EditorCommand::SaveAs {
+                path: target.clone()
+            }),
+            editor::CommandResult::Applied
+        );
+        // 改一处内容再对同一路径另存：这是"原地保存"，必须放行。
+        app.document
+            .current_scene
+            .as_mut()
+            .unwrap()
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(1))
+            .unwrap()
+            .name = "Renamed".to_owned();
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
+        let same_path = app.current_scene().unwrap().path.clone().unwrap();
+        assert_eq!(
+            app.dispatch(EditorCommand::SaveAs { path: same_path }),
+            editor::CommandResult::Applied
+        );
+        assert!(!app.current_scene().unwrap().is_dirty());
         let _ = std::fs::remove_file(&target);
     }
 

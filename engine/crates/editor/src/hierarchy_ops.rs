@@ -136,8 +136,18 @@ impl EditorApp {
         self.set_current_scene_document(editor::SceneDocument::new(name.clone()));
         self.history.clear();
         self.autosave.reset();
+        // P1-4：换文档是释放旧场景派生物的天然时机——新场景多半用不到旧网格/贴图，
+        // 留着只是占内存。释放不影响任何像素（下次绘制按需重建），代价只是首帧变慢。
+        let released = self.release_all_resources();
         self.on_document_changed(crate::actions::DocumentChange::Created);
-        self.status = format!("已创建场景 {name}（未保存）");
+        self.status = if released > 0 {
+            format!(
+                "已创建场景 {name}（未保存，释放缓存 {}）",
+                crate::panels::performance::format_bytes(released)
+            )
+        } else {
+            format!("已创建场景 {name}（未保存）")
+        };
     }
 
     /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。

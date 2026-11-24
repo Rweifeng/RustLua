@@ -604,7 +604,15 @@ impl EditorAiHost<'_> {
         match name {
             "new_scene" => {
                 let scene_name = string_arg(args, "name")?.to_owned();
-                self.dispatch(EditorCommand::NewScene { name: scene_name })
+                let result = self.dispatch(EditorCommand::NewScene { name: scene_name })?;
+                // 与 open_scene 同一口径：新建会被未保存保护挂起时，AI 必须拿到明确拒绝，
+                // 而不是一个看起来成功的 noop（当前场景此刻原样未动，等人在编辑器里确认）。
+                if self.app.pending_document_change.is_some() {
+                    return Err(ToolError::Rejected(
+                        "当前场景有未保存修改，新建操作已挂起等待确认".to_owned(),
+                    ));
+                }
+                Ok(result)
             }
             "open_scene" => {
                 let path = self.project_path(string_arg(args, "path")?)?;
@@ -1364,6 +1372,59 @@ mod tests {
             .expect("拒绝后原场景必须还在");
         assert_eq!(scene.scene.name, "main", "拒绝不得改动文档");
         assert_eq!(scene.dirty, dirty_before, "拒绝不得改变文档的脏状态");
+    }
+
+    /// AI `new_scene` 不得绕过未保存保护：脏文档时工具明确拒绝，文档原样并挂起确认。
+    #[test]
+    fn new_scene_tool_is_gated_by_unsaved_changes() {
+        let (mut app, _root) = test_app("ai-new-scene-dirty");
+        // `test_app` 的文档由 `new_scene` 造出，默认 dirty。
+        assert!(app.document.current_scene.as_ref().unwrap().dirty);
+        let before = app.document.current_scene.clone();
+        let policy = GatePolicy {
+            allow_t3: true,
+            ..GatePolicy::HEADLESS
+        };
+        let error = call_tool_direct(&mut app, policy, "new_scene", json!({"name": "other"}))
+            .expect_err("脏文档的新建必须挂起并报拒绝");
+        assert!(
+            error.message().contains("未保存修改"),
+            "{}",
+            error.message()
+        );
+        assert_eq!(app.document.current_scene, before, "不得替换当前场景");
+        assert!(app.pending_document_change.is_some(), "必须挂起未保存确认");
+        app.cancel_pending_change();
+    }
+
+    /// AI `save_scene_as` 不得静默覆盖已存在的目标文件。
+    #[test]
+    fn save_scene_as_tool_refuses_to_overwrite_an_existing_file() {
+        let (mut app, root) = test_app("ai-save-as-existing");
+        let target = root.join("scenes/existing.scene");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "sentinel\n").expect("target");
+        let policy = GatePolicy {
+            allow_t3: true,
+            ..GatePolicy::HEADLESS
+        };
+        let error = call_tool_direct(
+            &mut app,
+            policy,
+            "save_scene_as",
+            json!({"path": "scenes/existing.scene"}),
+        )
+        .expect_err("目标已存在必须拒绝");
+        assert!(error.message().contains("已存在"), "{}", error.message());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "sentinel\n",
+            "目标文件不得被覆盖"
+        );
+        assert!(
+            app.document.current_scene.as_ref().unwrap().path.is_none(),
+            "被拒绝的另存为不得改变文档路径"
+        );
     }
 
     /// `open_project` 是 T3：显式放行确认门才进得了宿主侧的前置校验。
