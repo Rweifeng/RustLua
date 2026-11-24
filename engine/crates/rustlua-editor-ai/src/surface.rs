@@ -642,6 +642,38 @@ pub fn resource_surface_json() -> String {
     serde_json::to_string_pretty(&resources_json()).expect("resource surface 序列化") + "\n"
 }
 
+/// 递归按字典序重建对象、数组保持原序，再序列化成稳定文本。
+///
+/// 两个用途：比对时消除 `serde_json::Map` 的迭代顺序差异；`BLESS` 时产出
+/// 与构建 feature 无关的基线。解析失败直接 panic——基线/生成器坏了应当当场暴露，
+/// 不能静默退化成"总是相等"。
+#[cfg(test)]
+fn stable_surface_json(text: &str) -> String {
+    let value: Value = serde_json::from_str(text).expect("工具面必须是合法 JSON");
+    let sorted = sorted_value(&value);
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&sorted).expect("工具面序列化")
+    )
+}
+
+#[cfg(test)]
+fn sorted_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut sorted = serde_json::Map::new();
+            for key in keys {
+                sorted.insert(key.clone(), sorted_value(&map[key]));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted_value).collect()),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +755,13 @@ mod tests {
 
     /// 工具面快照门：**先红后刷**。改签名会先在这里变红；确认是有意变更后
     /// `AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai snapshot` 刷新基线。
+    ///
+    /// 比对前把对象键序规范化：`serde_json::Map` 的迭代顺序由 `preserve_order` feature
+    /// 决定，而 **Cargo feature 是全局并集**——workspace 里 `spine2d` 打开了
+    /// `serde_json/preserve_order`，于是同一个 `surface_json()` 在
+    /// `-p rustlua-editor-ai`（无该 feature，键有序）与 `--workspace --all-features`
+    /// （有该 feature，插入序）下输出不同顺序。键序不是工具面契约（增删工具、签名、
+    /// 描述才是），不能让依赖图的 feature 并集决定这条门红不红。
     #[test]
     fn tool_surface_matches_baseline() {
         // 基线文件历史上以 CRLF 入库（Windows checkout 转化后提交）；include_str! 保留原始
@@ -730,18 +769,31 @@ mod tests {
         let baseline = include_str!("../ai_tool_surface.json").replace("\r\n", "\n");
         let current = surface_json();
         if std::env::var("AI_TOOL_SURFACE_BLESS").as_deref() == Ok("1") {
+            // 基线也写成**键有序**的稳定形态，不随构建 feature 翻转。
             std::fs::write(
                 concat!(env!("CARGO_MANIFEST_DIR"), "/ai_tool_surface.json"),
-                &current,
+                stable_surface_json(&current),
             )
             .expect("刷新 tool surface 基线");
             return;
         }
         assert_eq!(
-            current, baseline,
-            "AI tool 面与基线不一致。确认是有意增删/改签名后，跑\n\
+            stable_surface_json(&current),
+            stable_surface_json(&baseline),
+            "AI tool 面与基线不一致（键序已规范化）。确认是有意增删/改签名后，跑\n\
              AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai tool_surface\n\
              刷新 ai_tool_surface.json 并随提交说明理由。"
+        );
+    }
+
+    #[test]
+    fn surface_baseline_comparison_ignores_object_key_order() {
+        let ordered = r#"{"version":1,"tools":[{"name":"a","tier":"T0"}]}"#;
+        let reordered = r#"{"tools":[{"tier":"T0","name":"a"}],"version":1}"#;
+        assert_eq!(
+            stable_surface_json(ordered),
+            stable_surface_json(reordered),
+            "对象键序不同不应判红（见 tool_surface_matches_baseline 的说明）"
         );
     }
 }
