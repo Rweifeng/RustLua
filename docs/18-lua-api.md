@@ -333,6 +333,22 @@ enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨�
 含脚本内 `set_animation` **当场**入队的那一批）；timeline 自定义事件与 `complete` 留给 P2。
 切场景时未取走的事件随旧世界一起作废，与 `animation.events()` 同语义。
 
+**支持范围（2026-11-24 核对；导入期与运行时各管一段）**：
+
+| 能力 | 状态 |
+| --- | --- |
+| Spine 4.3.x JSON / `.skel` 解析、slot draw order、多页图集、动画/皮肤/倍率/循环 | **支持**；版本冻结 4.3.x，不承诺 4.4/5.x |
+| clipping 附件（stencil 裁剪） | **导入期硬拒绝**（`rustlua_spine::validate::reject_unsupported_features`），错误带 skin/slot/attachment 定位——静默放行会变成"该裁没裁"的画面错误 |
+| 混合模式 | 仅 **Normal / Additive**；PMA 预乘、Multiply、Screen 在绘制时跳过并计入 `dropped_draws`（性能面板标红）。不会静默按 Normal 画错色 |
+| tint black 的 dark 通道 | **未支持**：`SpineVertex` 只有 light color，双色 tint 的 dark 部分被忽略（画面偏亮） |
+| 骨骼 Physics（Spine 内的 physics constraint） | **未接入**（采样时 `Physics::None`），靠它摆动的头发/挂饰不会动 |
+| timeline 自定义事件、`complete` 事件 | **未接入**（P2）；目前只有 `start` |
+| 编辑器骨骼/关键帧编辑 | **明确不做**：只读预览，不提供 Spine Editor 的替代 |
+
+> 边界口径：导入期只拦"能读但一定画错"的硬特性（目前是 clipping），
+> 混合模式与 tint black 属"运行时可降级"——用 `dropped_draws` 与性能面板观察，
+> 而不是让资产在没有任何提示的情况下静默漏画。
+
 所有函数出错路径都是 `api_error`（实体不存在 / 没有 `SpineSkeleton` / 名字不存在），
 不会返回 `nil` 让脚本继续在错误状态上跑。
 
