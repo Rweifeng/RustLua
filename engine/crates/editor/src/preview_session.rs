@@ -1749,10 +1749,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// M95：工程配置 `[render] effect_overlay` 后，Play 会话必须真的挂上叠加层，
+    /// M95：场景声明 `meta\teffect_overlay` 后，Play 会话必须真的挂上叠加层，
     /// 并把命名参数表 + 默认值推给运行时（否则编辑器 Play 里 `render.set_effect_param` 不可用）。
+    ///
+    /// 注意口径：叠加层是**场景级**配置（`rustlua_scene::scene::EFFECT_OVERLAY_META_KEY`），
+    /// 不是 `project.toml [render]`。M88 最初写在工程级，后来改成场景级——否则切到任何
+    /// 场景（含纯 2D / 纯音频场景）都会共用同一个特效。本用例过去还写着工程级配置，
+    /// 于是断言恒红；现在按真实口径把键写在场景 meta 上。
     #[test]
-    fn play_session_mounts_configured_effect_overlay_and_pushes_named_params() {
+    fn play_session_mounts_scene_effect_overlay_and_pushes_named_params() {
         let Some((device, queue)) = test_device() else {
             return;
         };
@@ -1760,13 +1765,13 @@ mod tests {
             std::env::temp_dir().join(format!("rustlua-play-overlay-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("assets/fx")).expect("mkdir");
-        std::fs::write(
-            root.join("project.toml"),
-            "[project]\nname = \"demo\"\n[render]\neffect_overlay = \"assets/fx/demo.sgraph\"\n",
-        )
-        .expect("write project.toml");
+        std::fs::write(root.join("project.toml"), "[project]\nname = \"demo\"\n")
+            .expect("write project.toml");
         let graph = rustlua_visual_script::shader_graph::ShaderTemplate::Fire.graph();
         std::fs::write(root.join("assets/fx/demo.sgraph"), graph.to_json()).expect("write sgraph");
+        // 叠加层声明在**启动场景**上：渲染器要读的是这一关的特效。
+        let mut scene = Scene::new("fx");
+        scene.set_effect_overlay(Some("assets/fx/demo.sgraph"));
 
         let ctx = egui::Context::default();
         let mut session = PreviewSession::create(
@@ -1774,7 +1779,7 @@ mod tests {
             &queue,
             None,
             &root,
-            &Scene::new("fx"),
+            &scene,
             (64, 64),
             None,
             FontAtlasMap::default(),
@@ -1785,7 +1790,7 @@ mod tests {
         .expect("create preview session");
         assert!(
             session.renderer.effect_overlay_active(),
-            "配置了 .sgraph 就必须在 Play 渲染器上挂叠加层"
+            "场景声明了 .sgraph 就必须在 Play 渲染器上挂叠加层"
         );
         let slots = session
             .runtime

@@ -85,6 +85,12 @@ const THUMB_H: u32 = 60;
 pub struct ShaderGraphPanel {
     graph: ShaderGraph,
     saved: Option<ShaderGraph>,
+    /// 上次**载入或保存**时的图内容，用于判定"是否有用户未保存的编辑"。
+    ///
+    /// 为什么不直接用 `graph != saved`：刚载入模板时 `saved = None`，面板会显示
+    /// 「未保存」（提示该模板还没落盘），但那并不是用户编辑。换模板/打开别的图
+    /// 如果按那个口径拦，第一次点进来的人会被莫名其妙挡住。
+    baseline: ShaderGraph,
     template: usize,
     selected: Option<String>,
     pan: Vec2,
@@ -119,6 +125,7 @@ impl Default for ShaderGraphPanel {
         let mut graph = template.graph();
         auto_layout(&mut graph);
         Self {
+            baseline: graph.clone(),
             graph,
             saved: None,
             template: 0,
@@ -155,13 +162,47 @@ impl ShaderGraphPanel {
         self.saved.as_ref() != Some(&self.graph)
     }
 
-    fn load_template(&mut self, index: usize) {
+    /// 用户是否在当前图上有**未保存的编辑**（相对上次载入/保存的内容）。
+    ///
+    /// 与 [`Self::is_dirty`] 的区别：刚载入、还没落盘的模板 `is_dirty()` 为真（徽标
+    /// 显示「未保存」提醒落盘），但没有"用户编辑"。换模板/打开别的图只应被后者拦住。
+    fn has_unsaved_edits(&self) -> bool {
+        self.graph != self.baseline
+    }
+
+    /// 替换当前图之前的统一闸门：有未保存编辑就拒绝并给出可达出口。
+    /// 返回 `false` 表示本次替换被拦下（当前图原样保留）。
+    fn can_replace_graph(&mut self) -> bool {
+        if self.has_unsaved_edits() {
+            self.status =
+                "当前图有未保存修改：先点「保存 .sgraph」保存，或点「还原」放弃修改，再换模板/打开别的图。"
+                    .into();
+            return false;
+        }
+        true
+    }
+
+    /// 放弃当前图的未保存编辑，回到上次载入/保存的内容（与时间线/材质的「还原」同一口径）。
+    fn revert_edits(&mut self) {
+        self.graph = self.baseline.clone();
+        self.selected = None;
+        self.undo_stack.clear();
+        self.redo.clear();
+        self.status = "已放弃未保存修改，回到上次载入/保存的图".into();
+    }
+
+    /// 载入模板；当前图有未保存编辑时拒绝替换（返回 `false`，`template` 不变）。
+    fn load_template(&mut self, index: usize) -> bool {
+        if !self.can_replace_graph() {
+            return false;
+        }
         let all = Self::templates();
         self.template = index % all.len();
         let template = all[self.template];
         let mut graph = template.graph();
         auto_layout(&mut graph);
-        self.graph = graph;
+        self.graph = graph.clone();
+        self.baseline = graph;
         self.saved = None;
         self.path = suggested_path(template);
         self.selected = None;
@@ -169,6 +210,7 @@ impl ShaderGraphPanel {
         self.redo.clear();
         self.intensity = 1.0;
         self.status = format!("已载入模板「{}」", template.name_zh());
+        true
     }
 
     fn push_history(&mut self) {
@@ -199,6 +241,8 @@ impl ShaderGraphPanel {
         match editor::shader_graph_ops::save_shader_graph(root, &self.path, &self.graph) {
             Ok(path) => {
                 self.saved = Some(self.graph.clone());
+                // 保存即新的"已确认内容"：之后的换模板/打开图不再被旧编辑挡住。
+                self.baseline = self.graph.clone();
                 // 顺手导出可审阅的 WGSL。它**不会**自动生效：运行时只认
                 // `shaders/<内置文件名>.wgsl` 覆盖，自定义材质 pass 是后续工作。
                 let wgsl_path = self.path.replace(".sgraph", ".wgsl");
@@ -453,27 +497,42 @@ impl ShaderGraphPanel {
             });
     }
 
-    fn open(&mut self, root: &Path) {
+    /// 打开 `.sgraph`；当前图有未保存编辑时拒绝替换（返回 `false`，文件名/图不变）。
+    fn open(&mut self, root: &Path) -> bool {
+        if !self.can_replace_graph() {
+            return false;
+        }
         match editor::shader_graph_ops::load_shader_graph(root, &self.path) {
             Ok(mut graph) => {
                 if graph.nodes.iter().all(|node| node.position == [0.0, 0.0]) {
                     auto_layout(&mut graph);
                 }
                 self.graph = graph.clone();
-                self.saved = Some(graph);
+                self.saved = Some(graph.clone());
+                self.baseline = graph;
                 self.selected = None;
                 self.undo_stack.clear();
                 self.redo.clear();
                 self.status = format!("已打开 {}", self.path);
+                true
             }
-            Err(error) => self.status = format!("打开失败：{error}"),
+            Err(error) => {
+                self.status = format!("打开失败：{error}");
+                false
+            }
         }
     }
 
     /// 按工程内相对路径打开（资源面板双击 `.sgraph` 的入口）。
+    ///
+    /// 有未保存编辑时不改 `path`：面板继续指向当前图并给出"保存或还原"的提示，
+    /// 与模板切换同一道闸门。
     pub(crate) fn open_relative(&mut self, root: &Path, relative: &str) {
+        if !self.can_replace_graph() {
+            return;
+        }
         self.path = relative.to_owned();
-        self.open(root);
+        let _ = self.open(root);
     }
 
     fn compile_preview(&mut self) {
@@ -799,15 +858,15 @@ impl ShaderGraphPanel {
                             last_category = template.category_zh();
                         }
                         let label = format!("{}  L{}", template.name_zh(), template.perf_level());
-                        if ui
-                            .selectable_value(&mut self.template, index, label)
-                            .clicked()
-                        {
+                        // 用 selectable_label 而不是 selectable_value：后者会先改
+                        // `self.template` 再让我们判脏，被拦下时下拉框已经跳到新模板了。
+                        if ui.selectable_label(self.template == index, label).clicked() {
                             self.load_template(index);
                         }
                     }
                 });
             if ui.button("载入模板").clicked() {
+                // 载入当前下拉选中的模板同样受未保存保护（`load_template` 内部判脏）。
                 self.load_template(self.template);
             }
             if ui.button("模板画廊").clicked() {
@@ -830,6 +889,15 @@ impl ShaderGraphPanel {
             }
             if ui.button("重做").clicked() {
                 self.redo();
+            }
+            // 未保存编辑的显式出口：换模板/打开别的图被挡住时，用户不必靠保存一个
+            // 试验品才能离开（与时间线/材质面板的「还原」同一口径）。
+            if ui
+                .add_enabled(self.has_unsaved_edits(), egui::Button::new("还原"))
+                .on_disabled_hover_text("没有未保存修改")
+                .clicked()
+            {
+                self.revert_edits();
             }
             if ui.button("适配视图").clicked() {
                 self.pan = Vec2::ZERO;
@@ -1047,6 +1115,8 @@ impl ShaderGraphPanel {
             self.gallery_open = false;
         }
         if let Some(index) = pick {
+            // 被未保存编辑挡住时也关掉画廊：状态栏画在画布上，画廊盖着就看不到
+            // "为什么没换"；当前图本身不会被替换。
             self.load_template(index);
             self.gallery_open = false;
             // 重新载入后缩略图保留：下次打开画廊不必全部重渲。
@@ -1589,6 +1659,95 @@ mod tests {
         let mut saved_panel = ShaderGraphPanel::default();
         saved_panel.saved = Some(saved_panel.graph.clone());
         assert!(!saved_panel.is_dirty(), "与保存快照相同即不脏");
+    }
+
+    /// 有未保存编辑时换模板必须被拦下（模板选择不被预改），保存/还原后才放行。
+    ///
+    /// 回归：`load_template` 过去直接换图并清 undo/redo，下拉框还会先把
+    /// `self.template` 改成新值——一次误点就丢图且看不到"为什么没换"。
+    #[test]
+    fn unsaved_edits_block_template_switch_until_saved_or_reverted() {
+        let mut panel = ShaderGraphPanel::default();
+        assert!(!panel.has_unsaved_edits(), "刚载入模板不算用户编辑");
+        assert!(panel.is_dirty(), "但还没落盘，徽标仍显示未保存");
+
+        panel.push_history();
+        panel.graph.nodes[0].position = [123.0, 45.0];
+        assert!(panel.has_unsaved_edits());
+
+        let other = if panel.template == 0 { 1 } else { 0 };
+        assert!(!panel.load_template(other), "未保存编辑必须拦住换模板");
+        assert_eq!(panel.template, 0, "被拦下时下拉选中不得改变");
+        assert_eq!(
+            panel.graph.nodes[0].position,
+            [123.0, 45.0],
+            "当前图不得被替换"
+        );
+        assert!(panel.status.contains("未保存"), "{}", panel.status);
+
+        // 「还原」是显式出口：回到上次载入内容并清掉本地面板历史。
+        panel.revert_edits();
+        assert!(!panel.has_unsaved_edits());
+        assert!(panel.undo_stack.is_empty() && panel.redo.is_empty());
+        assert!(panel.load_template(other), "还原后应能换模板");
+        assert_eq!(panel.template, other);
+        assert!(!panel.has_unsaved_edits(), "新模板是干净的载入状态");
+    }
+
+    /// 有未保存编辑时打开别的 `.sgraph` 必须被拦下，且面板路径不得偷偷改指。
+    #[test]
+    fn unsaved_edits_block_opening_another_graph() {
+        let root = temp_root("dirty-open");
+        let mut first = ShaderTemplate::Scanlines.graph();
+        auto_layout(&mut first);
+        editor::shader_graph_ops::save_shader_graph(&root, "assets/fx/first.sgraph", &first)
+            .expect("save first");
+        let mut second = ShaderTemplate::Fire.graph();
+        auto_layout(&mut second);
+        editor::shader_graph_ops::save_shader_graph(&root, "assets/fx/second.sgraph", &second)
+            .expect("save second");
+
+        let mut panel = ShaderGraphPanel::default();
+        panel.open_relative(&root, "assets/fx/first.sgraph");
+        assert_eq!(panel.path, "assets/fx/first.sgraph");
+        assert!(!panel.has_unsaved_edits());
+
+        panel.push_history();
+        panel.graph.nodes[0].position = [7.0, 8.0];
+        panel.open_relative(&root, "assets/fx/second.sgraph");
+        assert_eq!(
+            panel.path, "assets/fx/first.sgraph",
+            "被拒绝时路径不得改指别的图"
+        );
+        assert_eq!(panel.graph.nodes[0].position, [7.0, 8.0]);
+        assert!(panel.status.contains("未保存"), "{}", panel.status);
+
+        panel.revert_edits();
+        panel.open_relative(&root, "assets/fx/second.sgraph");
+        assert_eq!(panel.path, "assets/fx/second.sgraph", "还原后应能打开新图");
+        assert!(!panel.has_unsaved_edits());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 保存成功后 `has_unsaved_edits` 归零：不会因为"刚保存过"反而被自己挡住。
+    #[test]
+    fn saving_clears_the_unsaved_edit_gate() {
+        let root = temp_root("save-gate");
+        let mut panel = ShaderGraphPanel {
+            path: "assets/fx/demo.sgraph".into(),
+            ..ShaderGraphPanel::default()
+        };
+        panel.push_history();
+        panel.graph.nodes[0].position = [1.0, 2.0];
+        assert!(panel.has_unsaved_edits());
+        panel.save(&root);
+        assert!(
+            !panel.has_unsaved_edits(),
+            "保存即新的确认内容：{}",
+            panel.status
+        );
+        assert!(panel.load_template(1), "保存后换模板不应再被拦");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 画一帧面板，返回本帧上传的纹理图像（预览重渲时会出现在这里）。

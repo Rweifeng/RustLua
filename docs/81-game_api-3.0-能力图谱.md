@@ -22,7 +22,7 @@
 
 | 引擎变化 | 落点 | 2.0 的缺口 |
 |---|---|---|
-| Shader Graph 运行时叠加层（M88） | `project.toml [render] effect_overlay` + `render.set_effect_params/param/time`（M94/M95），`.prefab` 特效预设 + `render.play_effect/stop_effect`（M96） | 已覆盖：槽位/命名参数/时间三条路都有真实调用点，两份预设资产随演示工程发布 |
+| Shader Graph 运行时叠加层（M88） | 场景 `meta\teffect_overlay`（场景级配置）+ `render.set_effect_params/param/time`（M94/M95），`.prefab` 特效预设 + `render.play_effect/stop_effect`（M96） | 已覆盖：槽位/命名参数/时间三条路都有真实调用点，两份预设资产随演示工程发布 |
 | 项目级渲染配置（M98 等） | `[render]` 的 `particle_softness` 等键 | 只在引擎单测里；演示工程没有一份"项目级渲染键"的样例 |
 | 3D 渲染管线跨档 | 地形 splat、连续水面、点光阴影、SSAO/SSR/接触阴影/雾/神光/景深 | `api_3d` 只有 `__ground_plane__` 与三角形；地形/水面/体素只在脚本采样里出现，**没有一张能看的画** |
 | UI 子系统收口（M80） | 文本排版（align/valign/overflow/rich_text）、ButtonStates 的 tint/transition、Mask/CanvasGroup、值控件 | 组件覆盖到了，但能力层面没有"这一条对应哪个演示步骤"的索引 |
@@ -83,14 +83,20 @@ return {
 | `effect_overlay` | 特效预设（`.prefab`）在逻辑里加载播放：触发/停止/换预设 | `render.play_effect`、`render.stop_effect`、`set_effect_params`、`set_effect_param`、`set_effect_time` | 预设驱动刀光弧（火/冷两份预设同一张图）；脚本每帧声明"我要这层在"，重播即替换 |
 | `voxel_cells` | 逐格体素网格（外露面剔除） | `cells3d.build/dig/count`、`mesh.set` | 挖空中心的 3×3×3 体素：满格 54 面、挖中心 60 面 |
 
-项目级渲染键写在 `examples/game_api/project.toml`：
+工程级渲染键写在 `examples/game_api/project.toml`：
 
 ```toml
 [render]
-# M88/M91/M92/M94/M95：炎刃斩击叠加层——火焰流动 + 刀光弧 + 冲击波合成一张 `.sgraph`。
-effect_overlay = "assets/fx/flame_blade_slash.sgraph"
 # M98：GPU 粒子软边（0 = 硬边；默认 0.02）。
 particle_softness = 0.04
+```
+
+特效叠加层是**场景级**声明——`meta\teffect_overlay\t<工程内 .sgraph 路径>`，**不写** `project.toml`：
+工程级会让切到任何场景（含纯 2D / 纯音频场景）都带同一个特效。演示工程写在
+`scenes/api_fx.scene`：
+
+```text
+meta	effect_overlay	assets/fx/flame_blade_slash.sgraph
 ```
 
 `.sgraph` 是 JSON 图（`rustlua_visual_script::shader_graph::ShaderGraph`）：演示用的
@@ -115,7 +121,7 @@ render.stop_effect("hit")
 ```
 
 同名再 `play` 是**替换**而不是叠加，因此可以每帧声明"我要这层在"；`stop_effect()`（无参）
-只撤脚本层，`project.toml` 的工程级常驻特效不受影响。预设里的参数覆盖在加载期就合进槽位，
+只撤脚本层，场景声明的常驻叠加层不受影响。预设里的参数覆盖在加载期就合进槽位，
 写错名字（如 `spin_speeed`）会立刻报错并列出可用参数，而不是静默丢参数。
 
 **反面对照**（自检里真跑）：`render.set_effect_params(16, …)` 拒非法槽位、NaN 值拒、

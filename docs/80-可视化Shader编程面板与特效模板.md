@@ -21,7 +21,8 @@
 `radius` 决定弧的向心位置——取 0.36 左右弧才落在画面内，0.5 会贴边被裁掉一半。
 只用一层 `smoothstep` 的 sector 当 alpha 会得到"一团暗雾"，必须靠幂次链压出锐边。
 
-它不是"加载三个模板再叠三层"——`project.toml` 只有一个 `effect_overlay`，M90 的多层 API 只服务
+它不是"加载三个模板再叠三层"——场景只能声明一个 `meta\teffect_overlay`（M88 时是 `project.toml`
+的一个 `effect_overlay`），M90 的多层 API 只服务
 编辑器手动叠加。正确做法是在一张图里用 `Multiply`/`Add` 把几种效果合成，输出一个 tint 与一个 alpha
 （见该文件节点：`blade2/blade4/blade8` 幂次链 → `hot → white`、`fire → fire_body`、`shock → halo`
 汇入 `tintmix → final → out.tint`，`blade → out.alpha`）。
@@ -304,6 +305,12 @@ WGSL 交给真实 `Renderer` 后能改变渲染像素、关档能回到基线。
 
 ### 项目配置接入（M88，已落地）
 
+> **2026-11-24 修订（`c75b7fa8`）**：本节记录的是 M88 的**工程级**接入，已经不再是现行口径——
+> 叠加层已从 `project.toml [render] effect_overlay` **搬到场景级**：由 `.scene` 的
+> `meta\teffect_overlay\t<工程内 .sgraph 路径>` 声明（工程级会让切到任何场景都共用同一个特效）。
+> 代码侧入口是 `rustlua_scene::Scene::effect_overlay` / `set_effect_overlay`；现行示例见
+> `examples/game_api/scenes/api_fx.scene` 与 `docs/81`。下文读作"M88 当时的设计"。
+
 `project.toml` 的 `[render]` 段新增一个键：
 
 ```toml
@@ -474,7 +481,7 @@ particle_softness = 0.08   # 深度单位；0 = 硬边（关），默认 0.02 = 
 > 都要先用 `EffectPrefab::from_text` / `kind=effect` 判一下，否则会把特效预设当场景预制体去解析，
 > 报"unknown record"。（编辑器的 UI 布局报告测试就是这么被撞红的。）
 
-前面几节说的都是"工程级常驻特效"——一个工程只能挂一张图，改特效要改配置、重启。真做游戏时
+前面几节说的都是"常驻特效"——同一时刻只能挂一张图，改特效要改场景声明（M88 时是工程配置）。真做游戏时
 需要的是"这一下打出去，播一刀光"：**主动、可重复、有时机**。M96 把它做成预制体：
 
 ```
@@ -503,8 +510,9 @@ param	color_g	0.42
    断言两份预设的槽位不同、命名参数表完全一致）。改画面 = 改参数，不重编管线。
 2. **参数覆盖在加载期就合进槽位**。脚本 `play_effect` 之后不用补一遍预设参数，只写它真正想改的那几个；
    预设里写错名字（`spin_speeed`）在**加载期**就报错并列出可用参数，而不是运行时静默丢参数。
-3. **命名层与工程级层分开存**。`render.stop_effect` 撤不掉 `project.toml` 挂的那一层——那是配置的
-   意图；反过来工程级层也不会被 `play_effect` 替换掉。绘制顺序是先常驻后脚本，招式盖在氛围之上。
+3. **命名层与常驻层分开存**。`render.stop_effect` 撤不掉场景声明的那一层——那是配置的
+   意图（M88 的 `project.toml` 工程级，现为 `.scene` 的 `meta\teffect_overlay`）；
+   反过来常驻层也不会被 `play_effect` 替换掉。绘制顺序是先常驻后脚本，招式盖在氛围之上。
 
 Lua 面只有两个函数：
 
