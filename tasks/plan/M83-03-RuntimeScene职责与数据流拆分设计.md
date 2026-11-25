@@ -1,8 +1,8 @@
 # 任务：RuntimeScene 职责与数据流拆分设计
 
 - 任务 ID：M83-03
-- 状态：验收①②证据盘点已完成（2026-11-25）；**候选 2（纹理身份表）已落地（`20b626a5`）**，
-  候选 1/3 未开始
+- 状态：验收①②证据盘点已完成（2026-11-25）；候选 2 已落地（`20b626a5`）、
+  候选 1 **第一步已落地（`45059416`）**，候选 1 第二步（text/mesh_ui）与候选 3 未开始
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -65,11 +65,16 @@
 ### 3. 候选（按收益/风险排序；均要求 API 快照与调度顺序不变）
 
 1. **帧提取只读输入视图 `FrameExtractInput`（推荐先做）**
-   收 `viewport_width/height`、`view_world_mask`、`view_overlay_mask`、`sprite_culling`、
-   `tilemap_culling`、`sprite_parallelism`、`world_sprite_depth`、`text_render_mode`、
-   `render_scale`、`ui_reference`、`render_ui_overlay`、`camera`、`frame_view_3d`、
-   `spatial_index`/`spatial_index_cell_size`（全部当前 ≥2 消费者、全部 `Copy`）。
-   先例：`FrameView3d`（`mod.rs:96-101`）已经是"只读视图 struct + 同帧多消费方"。
+   - **第一步已落地（2026-11-25，`45059416`）**：`FrameExtractInput` 收
+     `camera` / `frame_view_3d` / `viewport` / `view_world_mask` / `sprite_culling` /
+     `tilemap_culling` / `sprite_parallelism` / `world_sprite_depth` / `text_render_mode` /
+     `render_ui_overlay` / `spatial_index` / `spatial_index_cell_size`（全部 `Copy`）。
+     `vertices()` 的精灵/Quad/粒子/世界通道/文字开关读点 + `append_tilemap_vertices`
+     （签名改收 `&FrameExtractInput`）+ `scene_3d_with_camera` 的视图/遮罩读点已改读 input。
+     验证：engine 270 lib + 全部集成测试绿、`cargo check --workspace` 通过。
+   - **第二步（未做）**：`text.rs` / `mesh_ui.rs` 的文本与 UI 提取仍读 `self`；
+     `render_scale` / `ui_reference` / `view_overlay_mask` 届时再放进 input。
+     先例：`FrameView3d`（`mod.rs:96-101`）已经是"只读视图 struct + 同帧多消费方"。
    验证：`tests/frame_view.rs` 4 条、`tests/frame_ledger.rs` 2 条、
    `tests/frame_extraction.rs`、`tests/world_depth.rs` 2 条、`wp0_*_golden` 像素门。
 2. **帧内纹理身份表 `TextureIdentities`——✅ 已落地（2026-11-25，`20b626a5`）**
