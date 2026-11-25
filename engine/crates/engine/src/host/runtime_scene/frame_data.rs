@@ -17,8 +17,8 @@ use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::{Transform, Vec2};
 use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::frame::{
-    BoundsSource, CustomFontAtlasPixels, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds,
-    Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
+    BoundsSource, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable,
+    SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::{Light, LightKind, MAX_POINT_LIGHTS, PointLight};
@@ -27,7 +27,6 @@ use rustlua_render::quad::Quad;
 use rustlua_render::sprite::{Sprite, SpriteAsset, SpriteSorting};
 use rustlua_render::sprite_batch::{SpriteBatchItem, SpriteDrawBatch};
 use rustlua_scene::scene::SceneEntityId;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{FrameExtractInput, FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws};
@@ -1567,131 +1566,6 @@ impl RuntimeScene {
             }
         }
         mesh
-    }
-
-    /// 生成本帧用到（且自上次上报后版本变化）的自定义字体图集像素，随 SceneMesh
-    /// 交给渲染器上传/重绑。`pixels` 空 = 未变化（与默认图集 `font_atlas` 语义一致）。
-    ///
-    /// `will_draw` 必须与默认图集用同一个判据（本帧 `vertices` 非空）：渲染器在
-    /// `vertices` 为空时**整体跳过** 2D 通道，自定义字体的上传与 bind 建立也随之
-    /// 跳过。若此时仍把版本记为"已上报"，下一个可绘制帧会以"未变化"（空像素）
-    /// 发送，而渲染器从未上传过该版本 → 该自定义字体永久不显示。
-    fn snapshot_custom_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let keys: Vec<String> = std::mem::take(&mut self.text_fonts.frame_font_keys)
-            .into_iter()
-            .filter(|key| seen.insert(key.clone()))
-            .collect();
-        let mut out = Vec::new();
-        for key in keys {
-            // docs/60 §10.7 定性：这里原本把**两种完全不同的原因**合并成一个 `None` ——
-            //   ① 锁中毒（`Err`）：真出事了，而且此后**这个字体永远进不了快照**；
-            //   ② 映射里还没这个 key：**正常的"未就绪"**（字体本帧稍后才建 / 首帧还没建），下一帧就好。
-            // 合并的后果是 ① 这种硬失败**没有任何痕迹**，症状与"那种字体的文字不渲染、日志无字"同族。
-            // 现在分开：① 告警（带 key 与错误）、② debug（不刷屏）。
-            //
-            // 为什么不跟着下面那句 `expect("font atlas lock")` 一起 panic：**wasm 上 panic 是硬 abort**
-            // （docs/60 §4.3 的同一条教训），而"某个自定义字体不可用"不该把整个游戏带走。
-            // （顺带记一笔：同一个锁在这里被捕获、在两行后被 `expect`，两套口径——本轮只统一到"留痕"这一层。）
-            let handle = match self.text_fonts.custom_font_atlases.lock() {
-                Ok(map) => map.get(&key).cloned(),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "render",
-                        key = %key,
-                        %error,
-                        "[runtime] custom font atlas lock poisoned; font dropped from the snapshot"
-                    );
-                    continue;
-                }
-            };
-            let Some(handle) = handle else {
-                tracing::debug!(
-                    target: "render",
-                    key = %key,
-                    "[render] custom font not registered yet; skipping this frame"
-                );
-                continue;
-            };
-            let atlas = handle.lock().expect("font atlas lock");
-            let version = atlas.version();
-            let changed = self.text_fonts.custom_font_versions.get(&key).copied() != Some(version);
-            if will_draw {
-                self.text_fonts
-                    .custom_font_versions
-                    .insert(key.clone(), version);
-            }
-            out.push(CustomFontAtlasPixels {
-                key,
-                pixels: FontAtlasPixels {
-                    width: atlas.width(),
-                    height: atlas.height(),
-                    // 未被绘制的帧不复制像素：既不浪费内存，也不推进"已上报"版本。
-                    pixels: if changed && will_draw {
-                        atlas.pixels().to_vec()
-                    } else {
-                        Vec::new()
-                    },
-                    version,
-                },
-            });
-        }
-        out
-    }
-
-    /// 本帧用到（且自上次上报后版本变化）的 hinting 覆盖率图集。语义与
-    /// [`Self::snapshot_custom_fonts`] 相同：key 是 `font://hinted/<ppem>/<asset>`，
-    /// 渲染器按同一个“自定义字体”上传通道收（Rgba8Unorm + Nearest 绑定）。
-    fn snapshot_hinted_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
-        let mut seen: HashSet<String> = HashSet::new();
-        let keys: Vec<String> = std::mem::take(&mut self.text_fonts.frame_hinted_keys)
-            .into_iter()
-            .filter(|key| seen.insert(key.clone()))
-            .collect();
-        let mut out = Vec::new();
-        for key in keys {
-            let handle = match self.text_fonts.hinted_atlases.lock() {
-                Ok(map) => map.get(&key).cloned(),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "render",
-                        key = %key,
-                        %error,
-                        "[runtime] hinted atlas lock poisoned; atlas dropped from the snapshot"
-                    );
-                    continue;
-                }
-            };
-            let Some(handle) = handle else {
-                tracing::debug!(
-                    target: "render",
-                    key = %key,
-                    "[render] hinted atlas not registered yet; skipping this frame"
-                );
-                continue;
-            };
-            let atlas = handle.lock().expect("hinted atlas lock");
-            let version = atlas.version();
-            let changed = self.text_fonts.hinted_versions.get(&key).copied() != Some(version);
-            if will_draw {
-                self.text_fonts.hinted_versions.insert(key.clone(), version);
-            }
-            out.push(CustomFontAtlasPixels {
-                key,
-                pixels: FontAtlasPixels {
-                    width: atlas.width(),
-                    height: atlas.height(),
-                    // 未被绘制的帧不复制像素，也不推进“已上报”版本（同自定义字体）。
-                    pixels: if changed && will_draw {
-                        atlas.pixels().to_vec()
-                    } else {
-                        Vec::new()
-                    },
-                    version,
-                },
-            });
-        }
-        out
     }
 
     /// Pushes every active particle as a small white-texture quad in world

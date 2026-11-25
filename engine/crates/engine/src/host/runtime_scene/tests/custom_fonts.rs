@@ -458,3 +458,65 @@ fn measure_text_quantizes_to_hinted_ppem() {
         "非 hinted 档度量必须不量化：restored={restored} design={design}"
     );
 }
+/// 默认字体图集的“空网格帧不推进已上报版本”握手：**不依赖 examples/sourcehan_test**。
+///
+/// 既有覆盖 `sourcehan_sdf_mode_emits_default_font_draws` 用的是外部示例工程资产，
+/// 资产缺失时整条用例直接跳过；这条用仓库内字体 + 合成场景，保证握手逻辑在纯
+/// `cargo test -p engine` 下也被钉住：空网格帧既不上报像素、也不推进版本，
+/// 否则下一个可绘制帧会以“未变化”发送空像素，而渲染器从未上传过该版本。
+#[test]
+fn empty_frames_never_consume_the_default_font_version() {
+    let font_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
+    if !font_src.is_file() {
+        return;
+    }
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-font-version-handshake-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("assets/fonts")).expect("fonts dir");
+    fs::copy(&font_src, root.join("assets/fonts/font.ttf")).expect("copy font");
+    fs::write(
+        root.join("project.toml"),
+        "[project]\nfont = \"assets/fonts/font.ttf\"\n",
+    )
+    .expect("project.toml");
+
+    // ① 空网格帧：版本与“上次上报”不同，也不得消费它。
+    let mut empty =
+        RuntimeScene::from_scene_edit(Some(&root), Scene::new("empty")).expect("empty runtime");
+    empty.set_font_atlas(load_project_font_atlas(Some(&root)));
+    empty.text_fonts.last_font_version = 42;
+    let mesh = empty.vertices(320, 240).expect("empty vertices");
+    let font = mesh.font_atlas.expect("font atlas reported");
+    assert!(font.pixels.is_empty(), "空网格帧不得上报像素");
+    assert_eq!(
+        empty.text_fonts.last_font_version, 42,
+        "空网格帧不得推进已上报版本"
+    );
+
+    // ② 可绘制帧：携带全量像素，并把版本推进到图集当前版本。
+    // 用一个 Lua 动态 UI 面板把顶点"顶"起来（不依赖相机位置或磁盘贴图）。
+    let mut drawable = RuntimeScene::from_scene_edit(Some(&root), Scene::new("drawable"))
+        .expect("drawable runtime");
+    let atlas = load_project_font_atlas(Some(&root)).expect("atlas");
+    let version = atlas.lock().expect("atlas").version();
+    drawable.set_font_atlas(Some(atlas));
+    drawable.text_fonts.last_font_version = 42;
+    drawable
+        .with_script(|lua| lua.execute_console("ui.panel('probe', 8, 8, 32, 18, 1, 1, 1, 1)"))
+        .expect("ui.panel probe");
+    let mesh = drawable.vertices(320, 240).expect("drawable vertices");
+    assert!(!mesh.vertices.is_empty(), "UI 面板帧应有可绘制顶点");
+    let font = mesh.font_atlas.expect("font atlas reported");
+    assert!(!font.pixels.is_empty(), "可绘制帧必须携带全量图集像素");
+    assert_eq!(font.version, version);
+    assert_eq!(drawable.text_fonts.last_font_version, version);
+
+    let _ = fs::remove_dir_all(&root);
+}
