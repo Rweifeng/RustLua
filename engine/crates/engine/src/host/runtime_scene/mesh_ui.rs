@@ -704,7 +704,9 @@ impl RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
+        let config = input.text_config();
         let texts = self.with_ui(|texts, _| texts.clone());
         let visible: Vec<_> = texts
             .values()
@@ -721,7 +723,7 @@ impl RuntimeScene {
             return Ok(());
         }
         for (position, text, scale) in visible {
-            let use_hinted = self.should_render_hinted(None);
+            let use_hinted = self.should_render_hinted(config, None);
             if use_hinted {
                 let style = rustlua_render::text::TextStyle {
                     scale,
@@ -729,6 +731,7 @@ impl RuntimeScene {
                     ..Default::default()
                 };
                 match self.push_hinted_text_run_styled(
+                    config,
                     vertices,
                     draws,
                     &text,
@@ -751,7 +754,7 @@ impl RuntimeScene {
                     }
                 }
             }
-            let use_vector = self.should_render_vector(None, scale, text.chars().count());
+            let use_vector = self.should_render_vector(config, None, scale, text.chars().count());
             // 路径判定为 false 时**不能**调用 push_vector_text_run：顶点只要进了
             // vector_vertices 就会被矢量通道画出来，于是像素字体在同一帧里被点阵档
             // 与轮廓档各画一遍（双层字形互相错位），而日志一个字都没有。
@@ -976,6 +979,7 @@ impl RuntimeScene {
         input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
+        let config = input.text_config();
         let (texts, masked) = self.scene_ui_text_candidates(input.view_overlay_mask);
         self.view_filtered.set(self.view_filtered.get() + masked);
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
@@ -983,7 +987,7 @@ impl RuntimeScene {
         // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的
         // 网格会用旧尺寸的 UV 在更大的图集里采样到 2 倍坐标处的错误字形，表现为
         // 白块 / 缺笔画。预热后图集尺寸在本帧保持稳定。
-        self.prewarm_frame_glyphs(&texts);
+        self.prewarm_frame_glyphs(config, &texts);
         for (id, text) in texts {
             let rect = self.scene_ui_layout_rect(id, viewport);
             if let Some(rect) = rect {
@@ -1011,6 +1015,7 @@ impl RuntimeScene {
                 // 先判断渲染路径，measure 必须与渲染走同一路径，否则字体度量不一致。
                 let use_vector = clip.is_none()
                     && self.should_render_vector(
+                        config,
                         Some(text.font.as_str()),
                         text.effective_scale(),
                         text.text.chars().count(),
@@ -1025,8 +1030,9 @@ impl RuntimeScene {
                 }
                 // hinting 覆盖率档（显式 `text_render_mode = "hinted"`）：与矢量档同一
                 // 牙齿——不走这条档就不能生成它的顶点，否则同一帧两条通道各画一遍。
-                if self.should_render_hinted(Some(text.font.as_str())) {
+                if self.should_render_hinted(config, Some(text.font.as_str())) {
                     match self.layout_hinted_text(
+                        config,
                         &text.text,
                         position,
                         super::text::ui_text_style(&text, box_size, group_alpha),
@@ -1096,7 +1102,7 @@ impl RuntimeScene {
                     continue;
                 }
                 let (mut mesh, is_sdf, font_key) =
-                    match self.layout_scene_text(&text, position, group_alpha, box_size) {
+                    match self.layout_scene_text(config, &text, position, group_alpha, box_size) {
                         Ok(result) => result,
                         Err(error) => {
                             tracing::warn!(

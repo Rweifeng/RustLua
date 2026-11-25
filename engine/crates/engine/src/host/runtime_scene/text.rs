@@ -21,6 +21,8 @@ use rustlua_render::text::{TextAtlas, TextLayout, TextMesh, TextStyle};
 use rustlua_ui::ui::UiText;
 use rustlua_ui::world_text::WorldText;
 
+use super::{FrameExtractInput, TextExtractConfig};
+
 use rustlua_render::text::{TextAlign, TextOverflow, TextVAlign, TextVOverflow};
 
 /// 场景 `Text` 组件 → 渲染排版样式（M80-03）。`box_size` 非空时启用矩形对齐/
@@ -220,11 +222,12 @@ impl super::RuntimeScene {
     /// 字形也就失去了像素字体的意义（判据见 `FontVectorAtlas::is_pixel_font`）。
     pub(crate) fn should_render_vector(
         &mut self,
+        config: TextExtractConfig,
         font_asset: Option<&str>,
         scale: f32,
         chars: usize,
     ) -> bool {
-        match self.text_render_mode {
+        match config.text_render_mode {
             TextRenderMode::Vector => {}
             TextRenderMode::Sdf | TextRenderMode::Hinted => return false,
             TextRenderMode::Auto => {
@@ -241,8 +244,8 @@ impl super::RuntimeScene {
 
     /// 当前字号在本帧 `render_scale`（设计像素 → 物理像素的 contain 比例）下的整数
     /// ppem。hinting 只在 1 texel = 1 物理像素时锐利，ppem 必须按物理像素取整。
-    fn hinted_ppem(&self, scale: f32) -> u16 {
-        (EM_PX * scale * self.render_scale)
+    fn hinted_ppem(&self, config: TextExtractConfig, scale: f32) -> u16 {
+        (EM_PX * scale * config.render_scale)
             .round()
             .clamp(1.0, 255.0) as u16
     }
@@ -252,8 +255,12 @@ impl super::RuntimeScene {
     ///
     /// 像素字体（硬边点阵）例外，与 [`Self::should_render_vector`] 同一判据：点阵字体
     /// 的目标尺寸由作者决定，再过一遍 hinting 只会把它拉成别的网格。
-    pub(crate) fn should_render_hinted(&mut self, font_asset: Option<&str>) -> bool {
-        if self.text_render_mode != TextRenderMode::Hinted {
+    pub(crate) fn should_render_hinted(
+        &mut self,
+        config: TextExtractConfig,
+        font_asset: Option<&str>,
+    ) -> bool {
+        if config.text_render_mode != TextRenderMode::Hinted {
             return false;
         }
         let pixel = self
@@ -329,10 +336,14 @@ impl super::RuntimeScene {
     /// 把本帧三条文字通道（世界文字、Lua 动态 UI、场景实体 Text）的 hinting 字形
     /// 一次性预热进各自图集。**必须在任何文字网格构建之前**调用：图集增长只重缩放
     /// 已缓存字形的 UV，不回改已写进顶点缓冲的 UV（同 `prewarm_frame_glyphs` 的理由）。
-    pub(crate) fn prewarm_frame_hinted_glyphs(&mut self) {
+    pub(crate) fn prewarm_frame_hinted_glyphs(
+        &mut self,
+        config: TextExtractConfig,
+        overlay_mask: u32,
+    ) {
         let mut entries: Vec<(String, String, f32)> = Vec::new();
         // 世界深度通道（`world_sprite_depth`）走 SDF/矢量档，hinting 只接屏幕空间通道。
-        if !self.world_sprite_depth {
+        if !config.world_sprite_depth {
             self.script.with_world(|world| {
                 world.for_each::<WorldText>(|_, text| {
                     entries.push((
@@ -344,7 +355,7 @@ impl super::RuntimeScene {
             });
         }
         // 动态 UI 与场景实体 Text 只在 `render_ui_overlay` 打开时才绘制（编辑器场景视图关着）。
-        if self.render_ui_overlay {
+        if config.render_ui_overlay {
             self.with_ui(|texts, _| {
                 for text in texts.values().filter(|text| text.visible) {
                     entries.push((
@@ -355,15 +366,15 @@ impl super::RuntimeScene {
                     ));
                 }
             });
-            for (_, text) in self.scene_ui_text_candidates(self.view_overlay_mask).0 {
+            for (_, text) in self.scene_ui_text_candidates(overlay_mask).0 {
                 entries.push((text.font.clone(), text.text.clone(), text.effective_scale()));
             }
         }
         for (font, text, scale) in entries {
-            if !self.should_render_hinted(Some(font.as_str())) {
+            if !self.should_render_hinted(config, Some(font.as_str())) {
                 continue;
             }
-            let ppem = self.hinted_ppem(scale);
+            let ppem = self.hinted_ppem(config, scale);
             if let Some(handle) = self.ensure_hinted_font(&font, ppem) {
                 let mut atlas = handle.lock().expect("hinted atlas lock");
                 atlas.prewarm(text.chars());
@@ -384,13 +395,17 @@ impl super::RuntimeScene {
         text: &UiText,
         box_size: Option<[f32; 2]>,
     ) -> ([f32; 2], [f32; 4]) {
+        // 度量与渲染共用同一份只读配置：hinting 度量必须与绘制同路径。
+        let config = TextExtractConfig::capture(self);
         let style = ui_text_style(text, box_size, 1.0);
-        if self.should_render_hinted(Some(text.font.as_str()))
-            && let Some(measured) = self.measure_hinted_text_styled(&text.text, style, &text.font)
+        if self.should_render_hinted(config, Some(text.font.as_str()))
+            && let Some(measured) =
+                self.measure_hinted_text_styled(config, &text.text, style, &text.font)
         {
             return measured;
         }
         let use_vector = self.should_render_vector(
+            config,
             Some(text.font.as_str()),
             style.scale,
             text.text.chars().count(),
@@ -436,15 +451,17 @@ impl super::RuntimeScene {
     /// 否则点锚点文字会按 SDF 的度量居中、却按 hinting 的字形画出来，肉眼可见偏移。
     fn measure_hinted_text_styled(
         &mut self,
+        config: TextExtractConfig,
         text: &str,
         style: TextStyle,
         font_asset: &str,
     ) -> Option<([f32; 2], [f32; 4])> {
-        let ppem = self.hinted_ppem(style.scale);
+        let ppem = self.hinted_ppem(config, style.scale);
         let handle = self.ensure_hinted_font(font_asset, ppem)?;
         let mut atlas = handle.lock().expect("hinted atlas lock");
-        let mesh = TextLayout::build_hinted(text, [0.0, 0.0], style, &mut atlas, self.render_scale)
-            .ok()?;
+        let mesh =
+            TextLayout::build_hinted(text, [0.0, 0.0], style, &mut atlas, config.render_scale)
+                .ok()?;
         if mesh.vertices.is_empty() {
             return None;
         }
@@ -468,7 +485,9 @@ impl super::RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
+        input: &FrameExtractInput,
     ) -> anyhow::Result<()> {
+        let config = input.text_config();
         // WP2：世界文字锚在**世界**位置上——继承开启时读传播结果，关闭时读局部值。
         // 两条路径都是 `for_each2`，因此不额外多做一次 `get`。
         let inherit = self.spatial_active;
@@ -494,16 +513,16 @@ impl super::RuntimeScene {
             .iter()
             .map(|(id, _, text)| (*id, text.text.clone()))
             .collect::<Vec<_>>();
-        self.prewarm_frame_glyphs(&prewarm);
+        self.prewarm_frame_glyphs(config, &prewarm);
 
         let viewport = Viewport::new(width.max(1) as f32, height.max(1) as f32)?;
         // 预算项与世界通道要用的**逆矩阵**都在循环外算一次：此前每个世界文字实体各算一次
         // `view_projection` + `Mat4::inverse()`，实体一多就是每帧成百上千次 4×4 求逆。
-        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+        let Ok(camera) = OrthoTerms::new(input.camera, viewport) else {
             return Ok(());
         };
-        let world_inverse = if self.world_sprite_depth {
-            CameraView::from_camera2d(self.camera, viewport)
+        let world_inverse = if config.world_sprite_depth {
+            CameraView::from_camera2d(input.camera, viewport)
                 .ok()
                 .and_then(CameraView::inverse)
         } else {
@@ -517,6 +536,7 @@ impl super::RuntimeScene {
                 origin[0] -= size[0] * 0.5;
             }
             let use_vector = self.should_render_vector(
+                config,
                 Some(text.text.font.as_str()),
                 text.text.effective_scale(),
                 text.text.text.chars().count(),
@@ -538,9 +558,10 @@ impl super::RuntimeScene {
             }
             // hinting 档：世界深度通道要把屏幕顶点逆投影回世界坐标，覆盖率图集这条
             // 只接屏幕空间通道（与 SDF 同一条 overlay 路径）。
-            if !self.world_sprite_depth
-                && self.should_render_hinted(Some(text.text.font.as_str()))
+            if !config.world_sprite_depth
+                && self.should_render_hinted(config, Some(text.text.font.as_str()))
                 && self.push_hinted_text_run_ui(
+                    config,
                     vertices,
                     draws,
                     &text.text,
@@ -554,8 +575,9 @@ impl super::RuntimeScene {
             {
                 continue;
             }
-            let (mesh, is_sdf, font_key) = self.layout_scene_text(&text.text, origin, 1.0, None)?;
-            if self.world_sprite_depth {
+            let (mesh, is_sdf, font_key) =
+                self.layout_scene_text(config, &text.text, origin, 1.0, None)?;
+            if config.world_sprite_depth {
                 // WP6：世界文字也进世界坐标深度通道。做法是把**像素空间**的字形顶点经
                 // `view_projection` 的逆映射回世界坐标——因此屏幕上的观感与 overlay 路径
                 // 逐个像素一致（字号仍是像素大小、随 zoom 换算成世界尺寸），但它有了世界
@@ -786,6 +808,7 @@ impl super::RuntimeScene {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_hinted_text_run_ui(
         &mut self,
+        config: TextExtractConfig,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
         text: &UiText,
@@ -798,6 +821,7 @@ impl super::RuntimeScene {
     ) -> anyhow::Result<bool> {
         let style = ui_text_style(text, box_size, alpha);
         self.push_hinted_text_run_styled(
+            config,
             vertices,
             draws,
             &text.text,
@@ -814,6 +838,7 @@ impl super::RuntimeScene {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_hinted_text_run_styled(
         &mut self,
+        config: TextExtractConfig,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
         text: &str,
@@ -824,7 +849,9 @@ impl super::RuntimeScene {
         height: u32,
         render_layer: RenderLayer,
     ) -> anyhow::Result<bool> {
-        let Some((mesh, key)) = self.layout_hinted_text(text, position, style, font_asset)? else {
+        let Some((mesh, key)) =
+            self.layout_hinted_text(config, text, position, style, font_asset)?
+        else {
             return Ok(false);
         };
         self.emit_hinted_text(vertices, draws, mesh, &key, width, height, render_layer);
@@ -835,18 +862,19 @@ impl super::RuntimeScene {
     /// 的 hinting 图集，调用方继续回退矢量/SDF。
     pub(crate) fn layout_hinted_text(
         &mut self,
+        config: TextExtractConfig,
         text: &str,
         position: [f32; 2],
         style: TextStyle,
         font_asset: Option<&str>,
     ) -> anyhow::Result<Option<(TextMesh, String)>> {
         let asset = font_asset.unwrap_or_default();
-        let ppem = self.hinted_ppem(style.scale);
+        let ppem = self.hinted_ppem(config, style.scale);
         let Some(handle) = self.ensure_hinted_font(asset, ppem) else {
             return Ok(None);
         };
         let key = hinted_texture_path(asset, ppem);
-        let scale = self.render_scale;
+        let scale = config.render_scale;
         let mesh = {
             let mut atlas = handle.lock().expect("hinted atlas lock");
             // 同一帧内图集尺寸必须在本条排版前就稳定：先把自己要的字形光栅化掉，
@@ -890,15 +918,20 @@ impl super::RuntimeScene {
 
     /// 在构建任何文本网格之前，把本帧全部文本所需字形光栅化进各自字体图集，
     /// 使图集在本帧增长到最终尺寸。见 `push_scene_ui` 调用处注释。
-    pub(crate) fn prewarm_frame_glyphs(&mut self, texts: &[(EntityId, UiText)]) {
+    pub(crate) fn prewarm_frame_glyphs(
+        &mut self,
+        config: TextExtractConfig,
+        texts: &[(EntityId, UiText)],
+    ) {
         let mut default_chars: Vec<char> = Vec::new();
         let mut custom_chars: HashMap<&str, Vec<char>> = HashMap::new();
         for (_, text) in texts {
             // hinting 档的文本用覆盖率图集，不进 SDF/点阵图集（预热只为实际绘制的档付钱）。
-            if self.should_render_hinted(Some(text.font.as_str())) {
+            if self.should_render_hinted(config, Some(text.font.as_str())) {
                 continue;
             }
             if self.should_render_vector(
+                config,
                 Some(text.font.as_str()),
                 text.effective_scale(),
                 text.text.chars().count(),
@@ -933,6 +966,7 @@ impl super::RuntimeScene {
     /// 内置位图）。返回 `(mesh, is_sdf, font_key)`。
     pub(crate) fn layout_scene_text(
         &mut self,
+        _config: TextExtractConfig,
         text: &UiText,
         position: [f32; 2],
         alpha: f32,

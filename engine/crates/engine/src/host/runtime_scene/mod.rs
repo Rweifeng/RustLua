@@ -124,10 +124,35 @@ pub(crate) struct FrameExtractInput {
     sprite_parallelism: Parallelism,
     world_sprite_depth: bool,
     text_render_mode: TextRenderMode,
+    render_scale: f32,
     ui_reference: [f32; 2],
     render_ui_overlay: bool,
     spatial_index: bool,
     spatial_index_cell_size: f32,
+}
+
+/// 文本提取的只读配置（从 [`FrameExtractInput`] 派生，也可由公开度量 API 从场景直接取）。
+///
+/// 为什么单独一层：`measure_*` 是编辑器/脚本用的公开 API，没有"一帧的视口与相机"这个概念，
+/// 但同样需要这几个开关。让度量与渲染构造**同一份**配置，才不会出现"度量按 A 模式、
+/// 渲染按 B 模式"的分叉（hinting 档的度量尤其必须与绘制同路径）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TextExtractConfig {
+    text_render_mode: TextRenderMode,
+    render_scale: f32,
+    world_sprite_depth: bool,
+    render_ui_overlay: bool,
+}
+
+impl TextExtractConfig {
+    pub(crate) fn capture(scene: &RuntimeScene) -> Self {
+        Self {
+            text_render_mode: scene.text_render_mode,
+            render_scale: scene.render_scale,
+            world_sprite_depth: scene.world_sprite_depth,
+            render_ui_overlay: scene.render_ui_overlay,
+        }
+    }
 }
 
 impl FrameExtractInput {
@@ -144,10 +169,21 @@ impl FrameExtractInput {
             sprite_parallelism: scene.sprite_parallelism,
             world_sprite_depth: scene.world_sprite_depth,
             text_render_mode: scene.text_render_mode,
+            render_scale: scene.render_scale,
             ui_reference: scene.ui_reference,
             render_ui_overlay: scene.render_ui_overlay,
             spatial_index: scene.spatial_index,
             spatial_index_cell_size: scene.spatial_index_cell_size,
+        }
+    }
+
+    /// 本帧文本提取用的只读配置（与 [`TextExtractConfig::capture`] 同值，但复用已快照的输入）。
+    pub(crate) fn text_config(&self) -> TextExtractConfig {
+        TextExtractConfig {
+            text_render_mode: self.text_render_mode,
+            render_scale: self.render_scale,
+            world_sprite_depth: self.world_sprite_depth,
+            render_ui_overlay: self.render_ui_overlay,
         }
     }
 }

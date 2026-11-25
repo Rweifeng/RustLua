@@ -1231,7 +1231,7 @@ impl RuntimeScene {
         // 只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV。三条文字通道（世界 /
         // Lua 动态 UI / 场景实体 Text）一次预热完，后一趟就不会把前一趟的 UV 弄坏。
         if input.text_render_mode == TextRenderMode::Hinted {
-            self.prewarm_frame_hinted_glyphs();
+            self.prewarm_frame_hinted_glyphs(input.text_config(), input.view_overlay_mask);
         }
         self.push_world_text(
             &mut vertices,
@@ -1243,6 +1243,7 @@ impl RuntimeScene {
             &mut vector_segments,
             width,
             height,
+            &input,
         )?;
         // Screen-space UI (health bars, prompt text) draws last, on top。
         // 编辑器场景视图置 render_ui_overlay=false：UI 由 egui 在设计分辨率包围框内
@@ -1268,6 +1269,7 @@ impl RuntimeScene {
                 &mut vector_segments,
                 width,
                 height,
+                &input,
             )?;
             // 场景文字仍在最最后：`prewarm_frame_glyphs` 必须是本帧最后一个会撑大字体
             // 图集的人（图集增长不回改已写入顶点的 UV）。
