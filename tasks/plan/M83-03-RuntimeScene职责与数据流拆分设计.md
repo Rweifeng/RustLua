@@ -2,7 +2,7 @@
 
 - 任务 ID：M83-03
 - 状态：验收①②证据盘点已完成（2026-11-25）；候选 2 已落地（`20b626a5`）、
-  候选 1 **第一步已落地（`45059416`）**，候选 1 第二步（text/mesh_ui）与候选 3 未开始
+  候选 1 第一/二步已落地（`45059416` / `ad94743a`），候选 1 第三步（文本提取）与候选 3 未开始
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -72,11 +72,17 @@
      `vertices()` 的精灵/Quad/粒子/世界通道/文字开关读点 + `append_tilemap_vertices`
      （签名改收 `&FrameExtractInput`）+ `scene_3d_with_camera` 的视图/遮罩读点已改读 input。
      验证：engine 270 lib + 全部集成测试绿、`cargo check --workspace` 通过。
-   - **第二步（未做）**：`text.rs` / `mesh_ui.rs` 的文本与 UI 提取仍读 `self`；
-     `render_scale` / `ui_reference` / `view_overlay_mask` 届时再放进 input。
+   - **第二步已落地（2026-11-25，`ad94743a`）**：UI 提取并入同一输入——
+     `push_ui_panels` / `push_ui_images` / `push_ui_grids` / `push_scene_ui_images` /
+     `push_scene_ui_text` 改收 `&FrameExtractInput`；`scene_ui_image_candidates` /
+     `scene_ui_text_candidates` 改收 `overlay_mask`；`push_image_quad` 收
+     `ui_reference`；测试侧新增 `extract_input(scene, w, h)`。
+   - **第三步（未做）**：`text.rs` 的文本提取仍读 `self`（`text_render_mode` /
+     `render_scale` 读点）；迁移时把 `render_scale` 放进 input。
      先例：`FrameView3d`（`mod.rs:96-101`）已经是"只读视图 struct + 同帧多消费方"。
    验证：`tests/frame_view.rs` 4 条、`tests/frame_ledger.rs` 2 条、
-   `tests/frame_extraction.rs`、`tests/world_depth.rs` 2 条、`wp0_*_golden` 像素门。
+   `tests/frame_extraction.rs`、`tests/world_depth.rs` 2 条、`ui*` 四文件、
+   `wp0_*_golden` 像素门。
 2. **帧内纹理身份表 `TextureIdentities`——✅ 已落地（2026-11-25，`20b626a5`）**
    收 `assets` / `texture_paths` / `texture_lookup` / `texture_handles` 为一个
    `pub(crate)` 单元（`runtime_scene/mod.rs`），`texture_id_of` 变 `id_of` 方法；
