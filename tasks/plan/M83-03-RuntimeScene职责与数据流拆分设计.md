@@ -141,5 +141,35 @@
 - 若后续做同类拆分，按"≥2 消费者"判据：`document+history+pending_*+autosave/recovery`
   具备抽 `DocumentSession` 的资格；`command_palette_*` 只有 1 个面板消费者，不抽。
 
+#### 5.1 实测读数（2026-11-25，`editor/src` 全量 grep `app.<字段>`/`self.<字段>`）
+
+| 字段 | 读/写点 | 涉及文件 | 判读 |
+|---|---:|---:|---|
+| `document` | 451 | 67 | 面板/命令/AI/门全在用；**抽结构前必须先收敛访问** |
+| `history` | 226 | 40 | 同上（与 document 强相关） |
+| `play` | 52 | 13 | 预览编排，跨 actions/panels |
+| `play_session` | 46 | 16 | 同上 |
+| `pending_document_change` | 44 | 9 | 已有 `request_document_change` 网关；余下多为门/测试只读 |
+| `prefab_stage` | 26 | 7 | 20 处在 prefab 自己的 actions/测试，单特性 owner |
+| `edit_transaction` | 19 | 3 | 13/19 在 `actions/transaction.rs`，已是单 owner |
+| `pending_save_failed` | 12 | 3 | 集中在 `document_gate.rs` |
+| `recovery` / `autosave` / `recovery_scan` | 9/8/7 | 6/6/3 | 只是几个布尔 + 扫描时间戳，散布在菜单/头部/导入，抽单元收益弱 |
+| `quit_approved` | 3 | 3 | 退出编排标记 |
+
+**结论与下一步（2026-11-25）**
+
+1. **暂不抽 `DocumentSession`**：`document`+`history` 共 677 个读写点、跨 70+ 文件，
+   抽结构会把一次提交变成全 crate 机械改动，回归面远大于收益；"≥2 消费者"只是必要条件，
+   这次被"单点改动爆炸半径"否决。
+2. 若要做，先做**访问收敛**：给 `document`/`history` 加 `document()/document_mut()/
+   history_mut()` 一层，把跨模块直接字段访问降下来并分批提交；收敛达标后再评估抽结构。
+   这一步本身也按 `editor-core` → `actions` → `panels` 分批，不能一把梭。
+3. 小单元（`RecoveryState` 之类）**不做**：字段太少（3 个布尔 + 1 个时间戳）、
+   消费者分散在菜单/头部/导入，抽出来只是搬字段名。
+4. `edit_transaction` 已是单 owner（`actions/transaction.rs` 13/19），不抽。
+5. 下一批 EditorApp 工作若继续：先测量 `command_router`/`ai_host` 对面板私有字段的
+   直读（已知各 1 处），给面板加只读查询 API，减少跨模块写面——这是比抽 Session
+   更小、可独立验收的一步。
+
 > 现状结论：本任务验收①②的**证据已齐**（本节），③④的结论是"只有候选 1-3 值得立项"。
 > 实施仍按"先补缺口测试 → 单候选单提交 → 逐条跑 API/像素/性能门"推进。
