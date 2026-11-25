@@ -1143,6 +1143,10 @@ impl RuntimeScene {
     ///
     /// `clip` 是滚动视口的裁剪矩形（屏幕像素）：矩形按它收窄、UV 同步重映射，
     /// 九宫格的每一格各自裁。无裁剪时走原路径，顶点逐字节不变。
+    ///
+    /// `ui_reference` 由调用方从 [`super::FrameExtractInput`] 传入（与 `push_ui_*` 的
+    /// 只读输入同源）；参数多一列是"显式传配置"的代价，本文件其余 `push_*` 同形。
+    #[allow(clippy::too_many_arguments)]
     fn push_image_quad(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
