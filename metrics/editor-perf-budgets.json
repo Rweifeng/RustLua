@@ -38,6 +38,7 @@
     "inspector_schema_path": { "p95_ms": 15, "why": "Inspector 行构建+解析路径；实测 p95 2.0ms" },
     "ui_virtual_list_1k": { "p95_ms": 2, "why": "1000 项虚拟列表逐帧绑定；实测 p95 0.02ms" },
     "startup_headless_project_load": { "p95_ms": 1000, "why": "无头启动：open_project + EditorApp 构造 + 布局加载；预算 1s 只拦数量级回归" },
-    "play_scene_redraw_frame_1k": { "p95_ms": 20, "why": "Play/Scene 每帧 CPU 提取（1000 实体 vertices + scene_3d，不含 GPU）；实测 debug p95 4.0~5.2ms（同一 HEAD 两跑）" }
+    "play_scene_redraw_frame_1k": { "p95_ms": 20, "why": "Play/Scene 每帧 CPU 提取（1000 实体 vertices + scene_3d，不含 GPU）；实测 debug p95 4.0~5.2ms（同一 HEAD 两跑）" },
+    "memory_five_windows": { "p95_ms": 5, "why": "五窗口 RSS 采样（startup/steady/scene_switch_large/scene_switch_back/load_document/exit）；p95 记的是窗口切换耗时，实测 0.000ms，预算只拦数量级回归" }
   }
 }

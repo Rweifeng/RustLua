@@ -34,7 +34,8 @@ Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/mod.rs' 'pub dropped_dra
 # 2) 三条静默链的根因告警：字体图集上传失败 / 矢量文字字形缺失 / 自定义字体快照锁中毒
 Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/passes.rs' 'font atlas upload failed' 1
 Assert-Contains 'engine/crates/engine/src/host/runtime_scene/text.rs' 'glyph missing from atlas' 1
-Assert-Contains 'engine/crates/engine/src/host/runtime_scene/frame_data.rs' 'custom font atlas lock poisoned' 1
+Assert-Contains 'engine/crates/engine/src/host/runtime_scene/text.rs' 'custom font atlas lock poisoned' 1
+Assert-Contains 'engine/crates/engine/src/host/runtime_scene/text.rs' 'hinted atlas lock poisoned' 1
 # 3) GPU 用例的"跳过"必须留痕（默认静默跳过 = 假绿）
 Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/tests/mod.rs' 'fn gpu_skipped(' 1
 Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/tests/mod.rs' 'RUSTLUA_REQUIRE_GPU' 1
