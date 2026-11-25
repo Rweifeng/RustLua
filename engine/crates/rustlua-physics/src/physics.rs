@@ -20,6 +20,9 @@ pub enum PhysicsError {
     DuplicateBody(EntityId),
     #[error("invalid collider component string: {0}")]
     Malformed(String),
+    /// 3D 刚体姿态写入收到非有限/零长度四元数（`PhysicsWorld3d::set_rotation`）。
+    #[error("entity {0} got a non-finite or zero-length rotation")]
+    InvalidRotation(EntityId),
 }
 
 /// One collider as it currently sits in the physics world, for debug drawing.

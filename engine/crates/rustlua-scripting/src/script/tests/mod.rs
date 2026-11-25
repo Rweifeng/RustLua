@@ -511,7 +511,17 @@ impl TestRuntime {
     pub(crate) fn step_physics3d(&self, delta_seconds: f32) {
         self.physics.with_mut(|physics| {
             let moved = physics.world3d_mut().step(delta_seconds);
-            physics.set_pending_writeback_3d(moved);
+            let poses = moved
+                .into_iter()
+                .map(|(entity, position)| {
+                    let rotation = physics
+                        .world3d()
+                        .rotation(entity)
+                        .unwrap_or_else(rustlua_math::math3d::Quat::identity);
+                    (entity, position, rotation)
+                })
+                .collect();
+            physics.set_pending_writeback_3d(poses);
         });
     }
 
@@ -538,12 +548,13 @@ impl TestRuntime {
             .physics
             .with_mut(|physics| physics.take_pending_writeback_3d());
         let mut written = 0;
-        for (entity, position) in moved {
+        for (entity, position, rotation) in moved {
             self.runtime.with_world_mut(|world| {
                 if let Ok(Some(transform)) =
                     world.get_mut::<rustlua_ecs::transform::Transform3D>(entity)
                 {
                     transform.position = position;
+                    transform.rotation = rotation;
                     written += 1;
                 }
             });
@@ -580,9 +591,13 @@ impl TestRuntime {
         let physics = self.physics.clone();
         let mut synced = 0;
         self.runtime.with_world(|world| {
-            let targets: Vec<_> = physics.with(|p| p.world3d().kinematic_positions(world));
-            for (entity, position) in targets {
-                if physics.with_mut(|p| p.world3d_mut().set_position(entity, position).is_ok()) {
+            let targets: Vec<_> = physics.with(|p| p.world3d().kinematic_poses(world));
+            for (entity, position, rotation) in targets {
+                let positioned =
+                    physics.with_mut(|p| p.world3d_mut().set_position(entity, position).is_ok());
+                let rotated =
+                    physics.with_mut(|p| p.world3d_mut().set_rotation(entity, rotation).is_ok());
+                if positioned && rotated {
                     synced += 1;
                 }
             }

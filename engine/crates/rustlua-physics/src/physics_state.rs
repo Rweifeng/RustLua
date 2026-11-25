@@ -16,7 +16,7 @@ use crate::physics3d::{ColliderDebugShape3d, PhysicsWorld3d};
 use rustlua_ecs::entity::EntityId;
 use rustlua_lua_api::Handle;
 use rustlua_math::math2d::Vec2;
-use rustlua_math::math3d::Vec3;
+use rustlua_math::math3d::{Quat, Vec3};
 
 /// 物理域的全部可变状态。
 #[derive(Debug, Default)]
@@ -25,7 +25,9 @@ pub struct PhysicsState {
     world3d: PhysicsWorld3d,
     /// `Physics` 阶段推进后被移动的动态刚体，等 `Writeback` 阶段再写进 ECS。
     pending_writeback_2d: Vec<(EntityId, Vec2)>,
-    pending_writeback_3d: Vec<(EntityId, Vec3)>,
+    /// 3D 的待回写项带姿态：3D 动态体保留旋转（见 `physics3d` 文件头），
+    /// 宿主要把位置与姿态一起写进 `Transform3D`，否则碰撞朝向与渲染朝向分叉。
+    pending_writeback_3d: Vec<(EntityId, Vec3, Quat)>,
     /// collider 调试绘制的**请求值**。绘制开关属于宿主（渲染在那里发生），这里只登记
     /// Lua 的请求、由宿主每帧取走，与 `camera2d` 的请求/消费模式一致。
     collider_debug_request: Option<bool>,
@@ -78,12 +80,14 @@ impl PhysicsState {
         std::mem::take(&mut self.pending_writeback_2d)
     }
 
-    pub fn set_pending_writeback_3d(&mut self, moved: Vec<(EntityId, Vec3)>) {
+    /// 暂存 3D 一步的移动结果（位置 + 姿态），等 `Writeback` 阶段消费。
+    pub fn set_pending_writeback_3d(&mut self, moved: Vec<(EntityId, Vec3, Quat)>) {
         self.pending_writeback_3d = moved;
     }
 
+    /// 取走 3D 的待回写项（取走即清空）。每项带姿态，宿主写进 `Transform3D`。
     #[must_use]
-    pub fn take_pending_writeback_3d(&mut self) -> Vec<(EntityId, Vec3)> {
+    pub fn take_pending_writeback_3d(&mut self) -> Vec<(EntityId, Vec3, Quat)> {
         std::mem::take(&mut self.pending_writeback_3d)
     }
 
@@ -159,7 +163,7 @@ mod tests {
         let mut state = PhysicsState::default();
         let entity = EntityId::from_raw(1, 1);
         state.set_pending_writeback_2d(vec![(entity, Vec2::new(3.0, 4.0))]);
-        state.set_pending_writeback_3d(vec![(entity, Vec3::new(1.0, 2.0, 3.0))]);
+        state.set_pending_writeback_3d(vec![(entity, Vec3::new(1.0, 2.0, 3.0), Quat::identity())]);
         assert_eq!(state.take_pending_writeback_2d().len(), 1);
         assert!(state.take_pending_writeback_2d().is_empty());
         assert_eq!(state.take_pending_writeback_3d().len(), 1);

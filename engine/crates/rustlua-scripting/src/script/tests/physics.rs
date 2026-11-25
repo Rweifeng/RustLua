@@ -528,7 +528,7 @@ fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
         runtime.writeback_physics3d();
     }
 
-    let positions: Vec<_> = runtime.with_world(|world| {
+    let poses: Vec<_> = runtime.with_world(|world| {
         world
             .entities_with::<Transform3D>()
             .into_iter()
@@ -537,12 +537,16 @@ fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
                     .get::<Transform3D>(id)
                     .ok()
                     .flatten()
-                    .map(|t| t.position)
+                    .map(|t| (t.position, t.rotation))
             })
             .collect()
     });
-    assert_eq!(positions.len(), 2);
-    let ball_pos = positions.iter().find(|p| p.y > 0.5).copied().unwrap();
+    assert_eq!(poses.len(), 2);
+    let (ball_pos, ball_rotation) = poses
+        .iter()
+        .copied()
+        .find(|(position, _)| position.y > 0.5)
+        .expect("找得到落地的那颗球");
     // Ball radius 1 resting on the ground top (y=0) => y ≈ 1; it also moved +z.
     assert!(
         (ball_pos.y - 1.0).abs() < 0.1,
@@ -553,6 +557,11 @@ fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
         ball_pos.z > 2.0,
         "ball should have moved in +z, got z={}",
         ball_pos.z
+    );
+    // 姿态也必须回写：3D 动态体保留旋转，滚动靠它；只在 2D 侧锁旋转。
+    assert!(
+        (ball_rotation.w.abs() - 1.0).abs() > 1e-2,
+        "ball should have rotated and the pose must be written back, got {ball_rotation:?}"
     );
 
     // Collision events reached Lua via the physics3d table.

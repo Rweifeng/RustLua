@@ -63,23 +63,40 @@ impl RuntimeScene {
     }
 
     /// 3D 物理一步（只推进，回写见 [`RuntimeScene::writeback_physics3d`]）。
+    ///
+    /// `step()` 只回传位置；姿态在**同一把锁**里从刚体读出来一并暂存：既避免回写时
+    /// 再进一次物理域，也保证"这一步的位置与姿态"是同一瞬间的数据。
     pub fn step_physics3d(&self, delta_seconds: f32) {
         self.physics_state.with_mut(|physics| {
             let moved = physics.world3d_mut().step(delta_seconds);
-            physics.set_pending_writeback_3d(moved);
+            let poses = moved
+                .into_iter()
+                .map(|(entity, position)| {
+                    let rotation = physics
+                        .world3d()
+                        .rotation(entity)
+                        .unwrap_or_else(rustlua_math::math3d::Quat::identity);
+                    (entity, position, rotation)
+                })
+                .collect();
+            physics.set_pending_writeback_3d(poses);
         });
     }
 
-    /// 3D 物理回写。
+    /// 3D 物理回写：**位置与姿态**一起写进 `Transform3D`。
+    ///
+    /// 3D 动态体保留旋转（见 `rustlua-physics::physics3d` 文件头）：只写位置会让
+    /// 滚动/翻滚的碰撞体与画面朝向分叉。`scale` 仍由场景拥有。
     pub fn writeback_physics3d(&mut self) -> usize {
         let moved = self
             .physics_state
             .with_mut(|physics| physics.take_pending_writeback_3d());
         let mut written = 0;
-        for (entity, position) in moved {
+        for (entity, position, rotation) in moved {
             self.script.with_world_mut(|world| {
                 if let Ok(Some(transform)) = world.get_mut::<Transform3D>(entity) {
                     transform.position = position;
+                    transform.rotation = rotation;
                     written += 1;
                 }
             });
@@ -111,13 +128,21 @@ impl RuntimeScene {
     }
 
     /// 静态/运动学同步（**3D**，与 2D 同构）。
+    ///
+    /// 3D 多用 [`rustlua_physics::physics3d::PhysicsWorld3d::kinematic_poses`] 把**姿态**也推过去：
+    /// `authority = Script` 时脚本转动动态体后，碰撞体必须跟着转（3D 动态体保留旋转，
+    /// 见 `physics3d` 文件头）。
     pub fn sync_kinematic_bodies_3d(&self) -> usize {
         let physics = self.physics_state.clone();
         let mut synced = 0;
         self.script.with_world(|world| {
-            let targets: Vec<_> = physics.with(|p| p.world3d().kinematic_positions(world));
-            for (entity, position) in targets {
-                if physics.with_mut(|p| p.world3d_mut().set_position(entity, position).is_ok()) {
+            let targets: Vec<_> = physics.with(|p| p.world3d().kinematic_poses(world));
+            for (entity, position, rotation) in targets {
+                let positioned =
+                    physics.with_mut(|p| p.world3d_mut().set_position(entity, position).is_ok());
+                let rotated =
+                    physics.with_mut(|p| p.world3d_mut().set_rotation(entity, rotation).is_ok());
+                if positioned && rotated {
                     synced += 1;
                 }
             }

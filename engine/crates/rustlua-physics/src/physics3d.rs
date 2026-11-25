@@ -1,13 +1,17 @@
 //! Rapier-backed 3D physics: rigid bodies, colliders (ball/cuboid/capsule),
 //! sensors, ray/overlap queries, and collision events surfaced to Lua. Uses
 //! the ADR-0007 right-handed +Y-up convention; gravity defaults to −Y.
-//! Dynamic bodies sync their translations back to ECS `Transform3D` each fixed
-//! step; rotation and scale stay owned by the scene.
+//! Dynamic bodies sync their **translation and rotation** back to ECS `Transform3D`
+//! each fixed step; `scale` stays owned by the scene.
 //!
-//! 动态刚体一律 `lock_rotations()`（与 2D 侧同一决定）：`step()` 不回传姿态，
-//! 朝向由 `Transform3D` 拥有。若放开旋转，碰撞体会绕实体坐标自旋、带 `;offset`
-//! 的碰撞体还会公转，而画面纹丝不动——碰撞形状与看到的形状会静默分叉。
-//! 需要翻滚的玩法应先补齐"姿态回写 + 渲染消费"整条链路，而不是只放开这里的锁。
+//! 3D 动态刚体**保留旋转**，姿态也一起回写：`step()` 给出位置，宿主用
+//! [`PhysicsWorld3d::rotation`] 取姿态写进 `Transform3D.rotation`，渲染的
+//! `model_matrix()` 会消费它。碰撞体的朝向与看到的朝向因此是同一份数据
+//! （滚动/翻滚的球、被撞歪的箱子）；`scale` 仍由场景拥有（Rapier 没有缩放）。
+//!
+//! 2D 侧维持既有裁定（动态刚体 `lock_rotations()`、回写只有位置，理由见
+//! `physics.rs::PhysicsWorld::add_body`）：那条链路的姿态通道不同，不能把这套
+//! 3D 口径直接套过去。
 
 use std::{collections::HashMap, fmt};
 
@@ -513,10 +517,9 @@ impl PhysicsWorld3d {
             return Err(PhysicsError::DuplicateBody(entity));
         }
         let mut builder = if dynamic {
-            // 与 2D 同一理由（见文件头）：`step()` 只回传位置，姿态由场景拥有。
-            // 不锁的话，带 offset 的碰撞体会绕实体坐标公转、普通刚体自旋，
-            // 而 ECS/渲染里的朝向始终不变——碰撞形状与画面静默分叉。
-            RigidBodyBuilder::dynamic().lock_rotations()
+            // 3D 动态体保留旋转：宿主把姿态回写进 `Transform3D.rotation`，
+            // 渲染与碰撞因此共用同一份朝向（见文件头）。
+            RigidBodyBuilder::dynamic()
         } else {
             RigidBodyBuilder::fixed()
         };
@@ -763,6 +766,45 @@ impl PhysicsWorld3d {
         Ok(())
     }
 
+    /// 动态刚体当前的世界姿态（ECS 回写用）。没有该实体的刚体时返回 `None`。
+    ///
+    /// `step()` 只回传位置；宿主在 `Writeback` 阶段用本方法取姿态，与位置一起写进
+    /// `Transform3D`，渲染才与碰撞体同向。
+    #[must_use]
+    pub fn rotation(&self, entity: EntityId) -> Option<Quat> {
+        let handle = self.entity_bodies.get(&entity)?;
+        let rotation = self.bodies.get(*handle)?.rotation();
+        Some(Quat {
+            x: rotation.coords.x,
+            y: rotation.coords.y,
+            z: rotation.coords.z,
+            w: rotation.coords.w,
+        })
+    }
+
+    /// 把 ECS 的姿态推给刚体（`authority = Script` 时物理步之前同步）。
+    ///
+    /// 非有限/零长度四元数返回 [`PhysicsError::InvalidRotation`]，不把 NaN 喂给
+    /// Rapier——那会让整张岛的计算变成 NaN，症状离根因很远。
+    pub fn set_rotation(&mut self, entity: EntityId, rotation: Quat) -> Result<(), PhysicsError> {
+        let handle = self
+            .entity_bodies
+            .get(&entity)
+            .ok_or(PhysicsError::UnknownBody(entity))?;
+        let unit = rotation
+            .normalized()
+            .map_err(|_| PhysicsError::InvalidRotation(entity))?;
+        if let Some(body) = self.bodies.get_mut(*handle) {
+            body.set_rotation(
+                rapier3d::na::Unit::new_normalize(rapier3d::na::Quaternion::new(
+                    unit.w, unit.x, unit.y, unit.z,
+                )),
+                true,
+            );
+        }
+        Ok(())
+    }
+
     /// 刚体当前是否开启连续碰撞检测（读 Rapier 的真实状态）。
     pub fn ccd_enabled(&self, entity: EntityId) -> Result<bool, PhysicsError> {
         let handle = self
@@ -869,6 +911,19 @@ impl PhysicsWorld3d {
     /// 只取动态刚体：静态体是场景数据、运动学体由调用方自己同步（与 `set_position` 的既有语义
     /// 一致）。没有 `Transform3D` 的实体跳过。
     pub fn kinematic_positions(&self, world: &World) -> Vec<(EntityId, Vec3)> {
+        self.kinematic_poses(world)
+            .into_iter()
+            .map(|(entity, position, _)| (entity, position))
+            .collect()
+    }
+
+    /// 与 [`Self::kinematic_positions`] 同源，但把姿态也带出来。
+    ///
+    /// `authority = Script` 时宿主用它同时把位置与朝向推给物理世界：脚本转动一个
+    /// 动态体后，碰撞体也必须跟着转，否则碰撞形状与画面又分叉。排序键仍是实体，
+    /// 保证确定性。
+    #[must_use]
+    pub fn kinematic_poses(&self, world: &World) -> Vec<(EntityId, Vec3, Quat)> {
         let mut out = Vec::new();
         for (entity, handle) in &self.entity_bodies {
             let Some(body) = self.bodies.get(*handle) else {
@@ -878,10 +933,10 @@ impl PhysicsWorld3d {
                 continue;
             }
             if let Ok(Some(transform)) = world.get::<Transform3D>(*entity) {
-                out.push((*entity, transform.position));
+                out.push((*entity, transform.position, transform.rotation));
             }
         }
-        out.sort_by_key(|(entity, _)| *entity);
+        out.sort_by_key(|(entity, _, _)| *entity);
         out
     }
 
@@ -1324,57 +1379,77 @@ mod tests {
         );
     }
 
-    /// 动态刚体必须锁旋转：`step()` 只回传位置，姿态由 ECS `Transform3D` 拥有。
+    /// 3D 动态刚体会旋转，且宿主能取到姿态用于 ECS 回写。
     ///
-    /// 构造"偏心碰撞体压在另一物体上"——不锁旋转时接触力不过质心会产生力矩，
-    /// 刚体会绕实体坐标自旋（带 offset 的碰撞体甚至会公转），而场景里的朝向不变，
-    /// 碰撞形状与画面就会静默分叉。
+    /// 用零重力 + 直接给角速度：碰撞力矩的构造容易被"质心与碰撞体中心重合"消掉
+    /// （单一 offset 碰撞体的 COM 会跟着偏），这条用例要钉的是"旋转不被锁、且能读出"。
     #[test]
-    fn dynamic_bodies_are_rotation_locked_so_collider_orientation_matches_the_scene() {
-        let mut world = PhysicsWorld3d::new();
-        // 静态台面：顶面在 y = 0。
-        world
-            .add_body(
-                entity(2),
-                Vec3::ZERO,
-                false,
-                vec![ColliderDesc3d {
-                    shape: ColliderShape3d::Cuboid(Vec3::new(20.0, 0.5, 20.0)),
-                    offset: Vec3::new(0.0, -0.5, 0.0),
-                    sensor: false,
-                    layer: 0xFF,
-                    mask: 0xFF,
-                    ccd: false,
-                    dynamic: false,
-                }],
-            )
-            .unwrap();
-        // 质心在实体坐标，碰撞球偏到 +X 侧：落地时接触力不过质心。
+    fn dynamic_bodies_rotate_and_expose_a_pose_for_ecs_writeback() {
+        let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
         let body = entity(1);
         world
-            .add_body(
-                body,
-                Vec3::new(0.0, 5.0, 0.0),
-                true,
-                vec![ColliderDesc3d {
-                    shape: ColliderShape3d::Ball(1.0),
-                    offset: Vec3::new(2.0, 0.0, 0.0),
-                    sensor: false,
-                    layer: 0xFF,
-                    mask: 0xFF,
-                    ccd: false,
-                    dynamic: true,
-                }],
-            )
+            .add_body(body, Vec3::ZERO, true, vec![ball(1.0)])
             .unwrap();
-        for _ in 0..600 {
+        // 模块内测试可以碰 Rapier 刚体，不为了测试扩生产 API（与 2D 调试绘制用例同法）。
+        if let Some(handle) = world.entity_bodies.get(&body).copied()
+            && let Some(body) = world.bodies.get_mut(handle)
+        {
+            body.set_angvel(Vector::new(0.0, 0.0, 2.0), true);
+        }
+        for _ in 0..60 {
             world.step(1.0 / 60.0);
         }
-        let handle = world.entity_bodies[&body];
-        let rotation = world.bodies[handle].rotation().quaternion();
+        let rotation = world.rotation(body).expect("动态刚体应有姿态");
         assert!(
-            (rotation.w.abs() - 1.0).abs() < 1e-5,
-            "动态刚体必须锁旋转，实际姿态四元数 = {rotation:?}"
+            (rotation.w.abs() - 1.0).abs() > 1e-2,
+            "刚体应在转，且姿态能从物理世界读出，实际四元数 = {rotation:?}"
+        );
+    }
+
+    /// `set_rotation` 拒绝非有限/零长度四元数，并把合法姿态真的写进刚体。
+    #[test]
+    fn set_rotation_validates_and_reaches_the_body() {
+        let mut world = PhysicsWorld3d::new_with_gravity(Vec3::ZERO);
+        let body = entity(1);
+        world
+            .add_body(body, Vec3::ZERO, true, vec![ball(1.0)])
+            .unwrap();
+        for bad in [
+            Quat {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            },
+            Quat {
+                x: f32::NAN,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+        ] {
+            assert!(
+                matches!(
+                    world.set_rotation(body, bad),
+                    Err(PhysicsError::InvalidRotation(entity)) if entity == body
+                ),
+                "非法四元数必须被拒绝：{bad:?}"
+            );
+        }
+        let half = std::f32::consts::FRAC_PI_2 / 2.0;
+        let rotation = Quat {
+            x: 0.0,
+            y: half.sin(),
+            z: 0.0,
+            w: half.cos(),
+        };
+        world
+            .set_rotation(body, rotation)
+            .expect("单位四元数应当接受");
+        let applied = world.rotation(body).expect("刚体姿态");
+        assert!(
+            (applied.y - rotation.y).abs() < 1e-4 && (applied.w - rotation.w).abs() < 1e-4,
+            "写入的姿态必须回读得到：{applied:?}"
         );
     }
 
