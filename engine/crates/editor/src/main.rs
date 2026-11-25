@@ -125,10 +125,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if arguments.perf_baseline {
         // ER-01：无窗口基线报告；有场景不达标时退出码 2（可当质量门）。
-        let ok = perf_baseline::run_and_write_report(
-            arguments.perf_report.as_deref(),
-            arguments.perf_trace.as_deref(),
-        )?;
+        //
+        // 2026-11-25 现场记录：`run_baseline` 在 debug 构建里把多个 `EditorApp`
+        // （`size_of` 约 80 KB/个）作为局部变量放在同一个函数帧里，O0 下这些栈槽不会
+        // 复用；主线程默认 1 MB 栈在进入函数时就溢出（0xC00000FD，连第一条场景都跑不到）。
+        // 换一条显式大栈线程跑同一套场景：场景语义/读数不变，只是不让栈大小成为门槛。
+        // release 构建的帧会小得多，但这条线程化对两者都成立、也不依赖平台链接参数。
+        let report_path = arguments.perf_report.clone();
+        let trace_path = arguments.perf_trace.clone();
+        let handle = std::thread::Builder::new()
+            .name("editor-perf-baseline".to_owned())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                perf_baseline::run_and_write_report(report_path.as_deref(), trace_path.as_deref())
+            })?;
+        let ok = handle
+            .join()
+            .map_err(|_| "性能基线线程异常退出（panic）".to_owned())??;
         if !ok {
             std::process::exit(2);
         }
