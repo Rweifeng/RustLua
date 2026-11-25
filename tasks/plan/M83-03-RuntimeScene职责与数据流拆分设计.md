@@ -2,7 +2,8 @@
 
 - 任务 ID：M83-03
 - 状态：验收①②证据盘点已完成（2026-11-25）；候选 2 已落地（`20b626a5`）、
-  候选 1 **三步全部落地**（`45059416` / `ad94743a` / 文本步），候选 3 未开始
+  候选 1 三步全部落地（`45059416` / `ad94743a` / 文本步）、候选 3 第一阶段落地
+  （`TextFontCache` 单元），候选 3 第二/三阶段未开始
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -102,10 +103,15 @@
    --workspace`、`cargo fmt`。跳过项与 clippy 红来自并发会话在制品，与候选 2 无关。
    下一步在它之上做候选 1：`vertices()`/`scene_3d()` 已只剩一个身份表字段要传。
 3. **文本/字体缓存单元 `TextFontCache`（16 字段）**
-   3 个模块消费者（`text.rs`/`frame_data.rs`/`scene.rs`）+ 2 个跨 crate 注入方
-   （editor `preview_session.rs:215-223`/`scene_view/render.rs:463-466`、`game_web`）。
-   注意：`frame_data.rs:1355-1361` 的"空网格帧不推进字体版本"只有注释**没有测试**，
-   动之前先补一条断言。
+   - **第一阶段已落地（2026-11-25）**：14 个缓存/账字段（四类图集句柄、
+     `last_font_version` 与各版本账、`frame_*_keys`、`missing_*`、`hinted_font_bytes`）
+     收成 `TextFontCache`；`render_scale`/`text_render_mode` 留在 `RuntimeScene` 当配置；
+     编辑器注入 setter 签名不变。引用搬家涉及 `text.rs` / `frame_data.rs` / `scene.rs`。
+     验证：engine 270 lib + 全部集成测试绿、`cargo check --workspace` 通过。
+   - **第二/三阶段（未做）**：像素快照生成（`snapshot_custom_fonts` /
+     `snapshot_hinted_fonts`）从 `frame_data.rs` 移入文本模块；补一条**不依赖外部资产**的
+     版本握手回归（现覆盖依赖 `examples/sourcehan_test`，资产缺失时显式跳过）。
+   注意：`frame_data.rs` 的"空网格帧不推进字体版本"注释必须逐字保留。
 4. **延后：相机定帧单元 `CameraFrame`**：字段消费者最多（8 文件）但账本门
    （`tests/frame_ledger.rs:51-154`）精确钉住 `camera3d_resolutions=1/view_3d=1`，
    先做完候选 1 再评估。
