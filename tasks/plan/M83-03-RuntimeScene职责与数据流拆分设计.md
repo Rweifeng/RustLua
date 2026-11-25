@@ -2,8 +2,8 @@
 
 - 任务 ID：M83-03
 - 状态：验收①②证据盘点已完成（2026-11-25）；候选 2 已落地（`20b626a5`）、
-  候选 1 三步全部落地（`45059416` / `ad94743a` / 文本步）、候选 3 第一/二阶段落地
-  （`TextFontCache` 单元 + 像素快照迁移与不依赖外部资产的握手回归），候选 3 第三阶段未开始
+  候选 1 三步全部落地（`45059416` / `ad94743a` / 文本步）、候选 3 三阶段**全部落地**
+  （`TextFontCache` 单元 + 像素快照迁移与握手回归 + 默认图集握手方法化）
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -108,13 +108,13 @@
      收成 `TextFontCache`；`render_scale`/`text_render_mode` 留在 `RuntimeScene` 当配置；
      编辑器注入 setter 签名不变。引用搬家涉及 `text.rs` / `frame_data.rs` / `scene.rs`。
      验证：engine 270 lib + 全部集成测试绿、`cargo check --workspace` 通过。
-   - **第二/三阶段（第二阶段的“迁移”与“回归”已完成 2026-11-25）**：
+   - **第二/三阶段（第三阶段已完成 2026-11-25）**：
      `snapshot_custom_fonts` / `snapshot_hinted_fonts` 已从 `frame_data.rs` 移入 `text.rs`；
      新增不依赖 `examples/sourcehan_test` 资产的回归
-     `empty_frames_never_consume_the_default_font_version`（空网格帧不推进版本、
-     可绘制帧上报全量像素并推进版本）。剩余（第三阶段）：把默认图集版本握手的
-     上报判断也收进 `TextFontCache` 的方法（现在仍在 `frame_data::vertices` 内联），
-     以及评估 `TextFontCache` 的注入接口是否需要一个整体 `replace` 入口。
+     `empty_frames_never_consume_the_default_font_version`；默认图集的版本握手判断也收成
+     `TextFontCache::snapshot_default_atlas(will_draw)` 方法（`frame_data` 只留调用点，
+     原"为什么空网格帧不能推进版本"注释保留）。
+     注入接口评估：**不加整体 `replace`**——编辑器只在 4 处按字段注入，没有整单元替换的消费者。
    注意：`frame_data.rs` 的"空网格帧不推进字体版本"注释必须逐字保留。
 4. **延后：相机定帧单元 `CameraFrame`**：字段消费者最多（8 文件）但账本门
    （`tests/frame_ledger.rs:51-154`）精确钉住 `camera3d_resolutions=1/view_3d=1`，
