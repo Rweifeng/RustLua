@@ -10,7 +10,6 @@ use rustlua_animation::anim_asset::{AnimPath, AnimValue, TransformChannel};
 use rustlua_animation::animation::{AnimationFrameEvent, AnimationStateMachine};
 use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
-use rustlua_assets::asset_handle::AssetRecord;
 use rustlua_audio::spatial::Listener;
 use rustlua_camera::camera::Camera3D;
 use rustlua_ecs::entity::EntityId;
@@ -356,20 +355,14 @@ impl RuntimeScene {
                 // 且只在**首次**登记时才分配字符串。收集一轮键的做法本身就会给每帧每实体各来一次
                 // String 分配——那正是本批要修掉的那类开销。
                 {
-                    let mut assets = scene.assets.borrow_mut();
+                    let textures = &scene.textures;
                     scene.script.with_world(|world| {
                         world.for_each::<AnimationStateMachine>(|_, machine| {
                             let key = machine.clip_resource_key();
-                            if assets.handle_of(key).is_none() {
-                                assets.intern(
-                                    key,
-                                    AssetRecord {
-                                        path: key.to_owned(),
-                                        kind:
-                                            rustlua_assets::resource_kind::ResourceKind::Animation,
-                                    },
-                                );
-                            }
+                            textures.intern_asset(
+                                key,
+                                rustlua_assets::resource_kind::ResourceKind::Animation,
+                            );
                         });
                     });
                 }
@@ -426,20 +419,14 @@ impl RuntimeScene {
                 // 几十个），而 `Animation3D` 不知道网格路径、没有可缓存的完整键——这条与 2D 热路径
                 // （成千上万精灵）刻意不同，2D 那边是缓存键 + 就地查表、零分配。
                 {
-                    let mut assets = scene.assets.borrow_mut();
+                    let textures = &scene.textures;
                     scene.script.with_world(|world| {
                         world.for_each2::<MeshRenderer, Animation3D>(|_, renderer, animation| {
                             let key = animation.resource_key(&renderer.mesh);
-                            if assets.handle_of(&key).is_none() {
-                                assets.intern(
-                                    key.clone(),
-                                    AssetRecord {
-                                        path: key,
-                                        kind:
-                                            rustlua_assets::resource_kind::ResourceKind::Animation,
-                                    },
-                                );
-                            }
+                            textures.intern_asset(
+                                &key,
+                                rustlua_assets::resource_kind::ResourceKind::Animation,
+                            );
                         });
                     });
                 }

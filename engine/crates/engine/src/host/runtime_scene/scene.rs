@@ -7,7 +7,7 @@
 
 use super::ui_virtual_list::VirtualListFrame;
 use crate::host::gamepad::GamepadPoller;
-use rustlua_assets::asset_handle::{AssetHandle, AssetRecord, AssetStore};
+use rustlua_assets::asset_handle::{AssetHandle, AssetRecord};
 use rustlua_camera::camera::{Camera2D, OrthoTerms, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::{Parent, SpatialReport};
@@ -133,18 +133,13 @@ impl RuntimeScene {
     /// 借用作用域没法延长到调用方。
     #[must_use]
     pub fn asset_entries(&self) -> Vec<AssetRecord> {
-        self.assets
-            .borrow()
-            .entries()
-            .into_iter()
-            .map(|(_, record)| record.clone())
-            .collect()
+        self.textures.entries()
     }
 
     /// 运行时资源身份表里的活条目数（不克隆整张表；性能面板常驻读数用）。
     #[must_use]
     pub fn asset_count(&self) -> usize {
-        self.assets.borrow().len()
+        self.textures.count()
     }
 
     /// 场景声明的实体数（不含脚本运行期 spawn 的实体）。
@@ -186,7 +181,7 @@ impl RuntimeScene {
     /// 某个路径当前的运行时句柄（未登记则 `None`）。
     #[must_use]
     pub fn asset_handle(&self, path: &str) -> Option<AssetHandle> {
-        self.assets.borrow().handle_of(path)
+        self.textures.handle_of(path)
     }
 
     /// WP7 ②：collider 调试绘制开关。默认关闭；Lua 可用 `physics.debug_draw(true)` 打开。
@@ -854,10 +849,7 @@ impl RuntimeScene {
             spine_pose_snapped: false,
             environment,
             texture_dims: HashMap::new(),
-            texture_paths: Vec::new(),
-            texture_lookup: HashMap::new(),
-            assets: std::cell::RefCell::new(AssetStore::new()),
-            texture_handles: Vec::new(),
+            textures: super::TextureIdentities::new(),
             overlay_batch: SpriteBatch::with_capacity(16),
             screen_batch: SpriteBatch::with_capacity(16),
             render_mode_routed: (0, 0, 0),

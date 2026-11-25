@@ -383,9 +383,9 @@ fn runtime_scene_create_step_drop_100_cycles() {
             mesh.vertices.len()
         );
         assert!(
-            runtime.texture_paths.len() < 512,
+            runtime.textures.paths().len() < 512,
             "cycle {cycle}: 纹理路径容器应有界: {}",
-            runtime.texture_paths.len()
+            runtime.textures.paths().len()
         );
         // drop 释放 Lua/世界/字体资源。
     }

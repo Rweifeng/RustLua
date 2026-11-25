@@ -9,7 +9,6 @@
 use rustlua_animation::animation::AnimationStateMachine;
 use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
-use rustlua_assets::asset_handle::AssetRecord;
 use rustlua_camera::camera::Camera3D;
 use rustlua_camera::camera::{CameraSelection, CameraView, DEFAULT_3D_CLEAR, RenderView, Viewport};
 use rustlua_ecs::entity::EntityId;
@@ -31,7 +30,7 @@ use rustlua_scene::scene::SceneEntityId;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws, texture_id_of};
+use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws};
 use crate::host::runtime_scene::tilemap::sort_world_ranges;
 
 impl RuntimeScene {
@@ -41,20 +40,12 @@ impl RuntimeScene {
     fn model_handle_for(&self, path: &str) -> rustlua_assets::asset_handle::AssetHandle {
         // 借用必须先落地成自有值再放掉：`if let` 的临时值活到整条 `if`，会在下一句
         // `borrow_mut` 时撞上 RefCell 的独占借用。
-        let existing = self.assets.borrow().handle_of(path);
+        let existing = self.textures.handle_of(path);
         if let Some(handle) = existing {
             return handle;
         }
-        self.assets
-            .borrow_mut()
-            .intern(
-                path,
-                AssetRecord {
-                    path: path.to_owned(),
-                    kind: rustlua_assets::resource_kind::ResourceKind::Model,
-                },
-            )
-            .0
+        self.textures
+            .intern_asset(path, rustlua_assets::resource_kind::ResourceKind::Model)
     }
 
     /// Gathers the per-frame 3D render state from the runtime world: the active
@@ -248,26 +239,15 @@ impl RuntimeScene {
                 // 一并消除）。先借用身份表做零分配的 `handle_of` 查找，未注册时才走
                 // intern（首帧/换网格各一次）；`mesh_path` 直接 move 进 drawable。
                 let mesh_handle = {
-                    let assets = self.assets.borrow();
-                    assets.handle_of(&mesh_path)
+                    let existing = self.textures.handle_of(&mesh_path);
+                    Some(match existing {
+                        Some(handle) => handle,
+                        None => self.textures.intern_asset(
+                            &mesh_path as &str,
+                            rustlua_assets::resource_kind::ResourceKind::Model,
+                        ),
+                    })
                 };
-                let mesh_handle = Some(match mesh_handle {
-                    Some(handle) => handle,
-                    None => {
-                        self.assets
-                            .borrow_mut()
-                            .intern(
-                                &mesh_path as &str,
-                                AssetRecord {
-                                    // 身份表要一份自有的 `String`（它跨帧存活）；
-                                    // 只在**首次登记**这个网格时才付这一次克隆。
-                                    path: mesh_path.to_string(),
-                                    kind: rustlua_assets::resource_kind::ResourceKind::Model,
-                                },
-                            )
-                            .0
-                    }
-                });
                 // P2：材质路径同样走整帧复用表（同一材质的多个实体共享一个 Arc）。
                 let material = renderer
                     .material
@@ -745,10 +725,8 @@ impl RuntimeScene {
             None
         };
         self.sprite_batch.set_cull_bounds(cull_bounds);
-        self.texture_paths.clear();
         // docs/54 §4.4：本帧的路径与去重表重建，但**身份表不清空**——句柄因此跨帧稳定。
-        self.texture_lookup.clear();
-        self.texture_handles.clear();
+        self.textures.begin_frame();
         // docs/54 §4.3：显式模式的批次每帧重建；没有实体声明模式时它们恒为空（零成本）。
         self.overlay_batch.clear();
         self.screen_batch.clear();
@@ -786,10 +764,7 @@ impl RuntimeScene {
                 sprite_batch,
                 overlay_batch,
                 screen_batch,
-                texture_paths,
-                texture_lookup,
-                assets,
-                texture_handles,
+                textures,
                 ..
             } = self;
             let mut failure: Option<anyhow::Error> = None;
@@ -912,16 +887,7 @@ impl RuntimeScene {
                             }
                         };
                         match world.get::<SpriteAsset>(id).ok().flatten() {
-                            Some(asset) => (
-                                texture_id_of(
-                                    asset.path(),
-                                    assets,
-                                    texture_paths,
-                                    texture_lookup,
-                                    texture_handles,
-                                ),
-                                sampled,
-                            ),
+                            Some(asset) => (textures.id_of(asset.path()), sampled),
                             None => return,
                         }
                     } else {
@@ -936,16 +902,7 @@ impl RuntimeScene {
                                     }
                                 };
                                 let sheet = machine.current_clip().sheet.as_str();
-                                (
-                                    texture_id_of(
-                                        sheet,
-                                        assets,
-                                        texture_paths,
-                                        texture_lookup,
-                                        texture_handles,
-                                    ),
-                                    sampled,
-                                )
+                                (textures.id_of(sheet), sampled)
                             }
                             None => match world.get::<SpriteAsset>(id).ok().flatten() {
                                 Some(asset) => {
@@ -974,27 +931,9 @@ impl RuntimeScene {
                                                     return;
                                                 }
                                             };
-                                            (
-                                                texture_id_of(
-                                                    &page,
-                                                    assets,
-                                                    texture_paths,
-                                                    texture_lookup,
-                                                    texture_handles,
-                                                ),
-                                                sampled,
-                                            )
+                                            (textures.id_of(&page), sampled)
                                         }
-                                        None => (
-                                            texture_id_of(
-                                                asset.path(),
-                                                assets,
-                                                texture_paths,
-                                                texture_lookup,
-                                                texture_handles,
-                                            ),
-                                            *sprite,
-                                        ),
+                                        None => (textures.id_of(asset.path()), *sprite),
                                     }
                                 }
                                 None => return,
@@ -1063,10 +1002,7 @@ impl RuntimeScene {
                 sprite_batch,
                 overlay_batch,
                 screen_batch,
-                texture_paths,
-                texture_lookup,
-                assets,
-                texture_handles,
+                textures,
                 ..
             } = self;
             let mut failure: Option<anyhow::Error> = None;
@@ -1102,8 +1038,7 @@ impl RuntimeScene {
                     // 贴图注册与精灵同一张表：同一个路径只会得到一个下标，因此 Quad 与 Sprite
                     // 引用同一张贴图时能合进同一个绘制段（不会因为"类型不同"而多一次 draw）。
                     let path = quad.texture.as_deref().unwrap_or(white);
-                    let texture =
-                        texture_id_of(path, assets, texture_paths, texture_lookup, texture_handles);
+                    let texture = textures.id_of(path);
                     let layer = if quad.sorting == rustlua_render::sprite::SpriteSorting::default()
                     {
                         // 与精灵同一套默认层规则（按序号）。两个集合的序号各自从 0 起，因此同层时
@@ -1347,7 +1282,7 @@ impl RuntimeScene {
             "[render] mesh vertices={} draws={} paths={}",
             vertices.len(),
             draws.len(),
-            self.texture_paths.len()
+            self.textures.paths().len()
         );
         let font_atlas = if let Some(atlas) = &self.font_atlas {
             let atlas = atlas.lock().expect("font atlas lock");
@@ -1382,7 +1317,7 @@ impl RuntimeScene {
         sort_world_ranges(&mut world_sprites, &mut world_sprite_draws);
         // M84 P1：Spine 三角网格。与 world sprite 共用相机/深度/视口，但保留自己的索引
         // 与 draw order（不能塞进 SpriteBatch 的按纹理合批里）。纹理路径在这里登记进
-        // 本帧的 `texture_paths`，于是 `texture_id_of` 与 Sprite 走同一套身份表。
+        // 本帧的身份表（`textures`），于是与 Sprite 走同一套身份。
         let spines = self.collect_spine_mesh();
         Ok(SceneMesh {
             spines,
@@ -1390,9 +1325,9 @@ impl RuntimeScene {
             draws,
             world_sprites,
             world_sprite_draws,
-            paths: self.texture_paths.clone(),
+            paths: self.textures.paths().to_vec(),
             // docs/54 §4.4：与 `paths` 同序的稳定身份，交给渲染器做 O(1) 的贴图缓存查找。
-            path_handles: self.texture_handles.clone(),
+            path_handles: self.textures.handles().to_vec(),
             font_atlas,
             custom_font_atlases,
             vector_vertices,
@@ -1604,13 +1539,7 @@ impl RuntimeScene {
             mesh.indices.extend(merged_indices);
             for (draw, (first_index, _)) in output.draws.iter().zip(merged_draw_ranges) {
                 // Spine 的 texture 是图集页路径：登记进本帧纹理表，渲染器按同一套身份表解析。
-                let texture = texture_id_of(
-                    &draw.texture,
-                    &self.assets,
-                    &mut self.texture_paths,
-                    &mut self.texture_lookup,
-                    &mut self.texture_handles,
-                );
+                let texture = self.textures.id_of(&draw.texture);
                 mesh.draws.push(SpineDraw {
                     texture,
                     first_index,
@@ -1760,19 +1689,10 @@ impl RuntimeScene {
         let RuntimeScene {
             script,
             sprite_batch,
-            texture_paths,
-            texture_lookup,
-            assets,
-            texture_handles,
+            textures,
             ..
         } = self;
-        let texture = texture_id_of(
-            WHITE_TEXTURE_PATH,
-            assets,
-            texture_paths,
-            texture_lookup,
-            texture_handles,
-        );
+        let texture = textures.id_of(WHITE_TEXTURE_PATH);
         let mut failure: Option<anyhow::Error> = None;
         script.with_particles(|particles| {
             for particle in particles {

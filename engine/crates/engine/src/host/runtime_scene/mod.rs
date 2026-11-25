@@ -100,6 +100,106 @@ pub(crate) struct FrameView3d {
     view: RenderView,
 }
 
+/// 运行时资源身份表（docs/54 §4.4）：把"本帧路径表"与"跨帧稳定句柄表"收成一处。
+///
+/// - `assets` **不清空**：同一路径在进程内恒同句柄；资源释放后旧句柄失效，而不是悄悄
+///   指向别人——这是"这一帧的 draw 引用的是哪个资源"可以跨帧比较的前提。
+/// - `paths` / `handles` / `lookup` 每帧重建（[`Self::begin_frame`]）：下标只在本帧有意义，
+///   与跨帧身份分开，渲染器按句柄做 O(1) 缓存查找。
+///
+/// 三类消费者共享同一张身份表：2D 贴图（[`Self::id_of`]）、3D 网格（`intern_asset` +
+/// `handle_of`）与动画片段（`intern_asset`）。以前这四张表散在 `RuntimeScene` 上、由自由
+/// 函数 `texture_id_of` 逐处 destructure 传入；现在归单元所有，`RuntimeScene` 只留
+/// 一个 `textures` 字段。
+pub(crate) struct TextureIdentities {
+    assets: std::cell::RefCell<AssetStore<AssetRecord>>,
+    paths: Vec<String>,
+    lookup: HashMap<String, u32>,
+    handles: Vec<AssetHandle>,
+}
+
+impl TextureIdentities {
+    pub(crate) fn new() -> Self {
+        Self {
+            assets: std::cell::RefCell::new(AssetStore::new()),
+            paths: Vec::new(),
+            lookup: HashMap::new(),
+            handles: Vec::new(),
+        }
+    }
+
+    /// 每帧开始：清空本帧三张表（不动跨帧 `assets`）。
+    pub(crate) fn begin_frame(&mut self) {
+        self.paths.clear();
+        self.lookup.clear();
+        self.handles.clear();
+    }
+
+    /// 本帧路径下标（同路径同帧恒同下标）；同时把稳定句柄追加进 `handles`（与 `paths` 同序）。
+    ///
+    /// 身份表（跨帧）与路径表（本帧）各查一次哈希、都是 O(1)：批量精灵档不会因为引入
+    /// 身份而多出线性扫描。
+    pub(crate) fn id_of(&mut self, path: &str) -> u32 {
+        if let Some(index) = self.lookup.get(path) {
+            return *index;
+        }
+        let handle = self.intern_asset(path, ResourceKind::from_path(path));
+        let index = self.paths.len() as u32;
+        self.paths.push(path.to_owned());
+        self.handles.push(handle);
+        self.lookup.insert(path.to_owned(), index);
+        index
+    }
+
+    /// 跨帧稳定句柄（未登记则 `None`；只借用身份表，不分配）。
+    pub(crate) fn handle_of(&self, path: &str) -> Option<AssetHandle> {
+        self.assets.borrow().handle_of(path)
+    }
+
+    /// 登记一个资源身份；已存在则返回旧句柄（幂等）。只在**首次**登记时分配路径字符串。
+    pub(crate) fn intern_asset(&self, path: &str, kind: ResourceKind) -> AssetHandle {
+        if let Some(handle) = self.assets.borrow().handle_of(path) {
+            return handle;
+        }
+        self.assets
+            .borrow_mut()
+            .intern(
+                path,
+                AssetRecord {
+                    path: path.to_owned(),
+                    kind,
+                },
+            )
+            .0
+    }
+
+    /// 本帧路径表（与 `handles` 同序）。
+    pub(crate) fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
+    /// 本帧与 `paths` 同序的稳定句柄（交给渲染器做 O(1) 贴图缓存查找）。
+    pub(crate) fn handles(&self) -> &[AssetHandle] {
+        &self.handles
+    }
+
+    /// 跨帧身份表里的全部资源（按句柄排序）。返回克隆：身份表在 `RefCell` 里
+    /// （3D 提取是 `&self`，也要能登记网格身份），借用作用域没法延长到调用方。
+    pub(crate) fn entries(&self) -> Vec<AssetRecord> {
+        self.assets
+            .borrow()
+            .entries()
+            .into_iter()
+            .map(|(_, record)| record.clone())
+            .collect()
+    }
+
+    /// 跨帧身份表里的活条目数（不克隆整张表；性能面板常驻读数用）。
+    pub(crate) fn count(&self) -> usize {
+        self.assets.borrow().len()
+    }
+}
+
 /// P3-R246/R273：本帧提取登记的一条运动批次 `(实体, 批次, 场景时刻, 可选 LOD)`。
 pub type StagedMotionBatch = (
     u64,
@@ -220,17 +320,8 @@ pub struct RuntimeScene {
     pub(crate) environment: Option<environment::RuntimeSceneEnvironment>,
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
     pub(crate) texture_dims: HashMap<String, (u32, u32)>,
-    pub(crate) texture_paths: Vec<String>,
-    /// 本帧的路径去重表（每帧清空）：把"同一路径只注册一次"保持成 O(1)，与身份表分开。
-    pub(crate) texture_lookup: HashMap<String, u32>,
-    /// docs/54 §4.4：**跨帧稳定**的运行时资源身份表（`路径 → 句柄`）。
-    ///
-    /// 与每帧重建的 `texture_paths` 不同，它**不清空**：同一路径因此在进程内恒同句柄，
-    /// "这一帧的 draw 引用的是哪个资源"跨帧可比；资源释放后旧句柄失效，而不是悄悄指向别人
-    /// 放在同一个下标上的贴图。
-    pub(crate) assets: std::cell::RefCell<AssetStore<AssetRecord>>,
-    /// 本帧与 `texture_paths` **同序**的句柄（交给渲染器做 O(1) 的贴图缓存查找）。
-    pub(crate) texture_handles: Vec<AssetHandle>,
+    /// 每帧纹理/网格/动画的运行时身份表（docs/54 §4.4）：本帧路径表 + 跨帧稳定句柄表。
+    pub(crate) textures: TextureIdentities,
     /// docs/54 §4.3：声明了 `mode=overlay` 的实体（屏幕空间，落 `Overlay2D` 桶）。
     pub(crate) overlay_batch: SpriteBatch,
     /// docs/54 §4.3：声明了 `mode=screen` 的实体（屏幕空间，落 `ScreenUI` 桶）。
@@ -869,40 +960,6 @@ fn push_screen_line(
         OverlayVertex::from_ndc(ndc_from_screen(corners[corner], viewport), [0.0; 2], color)
     };
     vertices.extend_from_slice(&[n(0), n(1), n(2), n(0), n(2), n(3)]);
-}
-
-/// 纹理路径 → 每帧下标注册。
-///
-/// 抽成自由函数是为了让 `vertices` 能在 `world` 借用内部直接写入这几张表，而不必先
-/// 克隆一份中间表——那样每帧要为每个精灵克隆一次资源路径（见该处注释）。
-///
-/// docs/54 §4.4：返回的是**本帧路径下标**（渲染器据此取路径）。同时把该路径的**稳定句柄**追加进
-/// `handles`（与 `paths` 同序），并保证同一路径在进程内恒同句柄——身份因此跨帧可比（`assets`
-/// 不清空，而 `paths`/`handles` 每帧重建）。
-fn texture_id_of(
-    path: &str,
-    assets: &std::cell::RefCell<AssetStore<AssetRecord>>,
-    paths: &mut Vec<String>,
-    lookup: &mut HashMap<String, u32>,
-    handles: &mut Vec<AssetHandle>,
-) -> u32 {
-    if let Some(index) = lookup.get(path) {
-        return *index;
-    }
-    // 身份表（跨帧）与路径表（本帧）各查一次哈希，都是 O(1)：批量精灵档因此不会因为引入身份
-    // 而多出任何线性扫描。
-    let (handle, _) = assets.borrow_mut().intern(
-        path,
-        AssetRecord {
-            path: path.to_owned(),
-            kind: ResourceKind::from_path(path),
-        },
-    );
-    let index = paths.len() as u32;
-    paths.push(path.to_owned());
-    handles.push(handle);
-    lookup.insert(path.to_owned(), index);
-    index
 }
 
 /// Captures the serialized scene hierarchy and UI layout data once. Runtime

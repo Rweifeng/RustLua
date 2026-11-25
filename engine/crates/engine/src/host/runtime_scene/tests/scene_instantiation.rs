@@ -246,9 +246,9 @@ fn sample_project_gameplay_scene_instantiates_gameplay_entities() {
     assert!(counts.2 >= 1, "玩法场景应有世界文字（FieldSign）");
     assert_eq!(counts.3, 0, "玩法场景不声明场景 UI 事件");
     assert!(
-        runtime.texture_paths.len() >= 3,
+        runtime.textures.paths().len() >= 3,
         "玩法场景应加载地块/玩家/史莱姆纹理，实际 {:?}",
-        runtime.texture_paths
+        runtime.textures.paths()
     );
     assert!(
         mesh.draws.len() >= 3,

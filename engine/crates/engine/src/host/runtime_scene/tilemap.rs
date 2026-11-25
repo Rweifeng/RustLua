@@ -19,7 +19,7 @@ use rustlua_render::sprite_batch::{
     OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen,
 };
 
-use super::{CachedTileSprite, CachedTilemapLayer, RuntimeScene, TileChunk, texture_id_of};
+use super::{CachedTileSprite, CachedTilemapLayer, RuntimeScene, TileChunk};
 
 /// WP4 ④ chunk 级脏重建：瓦片块边长（格数）。块行主序拼接 == 原整层行主序。
 pub(super) const TILE_CHUNK_SIZE: usize = 32;
@@ -421,13 +421,7 @@ pub(super) fn sort_world_ranges(
 impl RuntimeScene {
     /// Deduplicates a texture asset path and returns its id for batch items.
     pub(super) fn texture_id(&mut self, path: &str) -> u32 {
-        texture_id_of(
-            path,
-            &self.assets,
-            &mut self.texture_paths,
-            &mut self.texture_lookup,
-            &mut self.texture_handles,
-        )
+        self.textures.id_of(path)
     }
 
     /// 纹理重定向（`docs/67` §6.4）：原图路径 → 「图集页 + 区域」。
@@ -515,10 +509,7 @@ impl RuntimeScene {
             let RuntimeScene {
                 script,
                 tilemap_cache,
-                texture_paths,
-                texture_lookup,
-                assets,
-                texture_handles,
+                textures,
                 ..
             } = self;
             let mut previous = std::mem::take(tilemap_cache);
@@ -532,13 +523,7 @@ impl RuntimeScene {
                     if failure.is_some() {
                         return;
                     }
-                    let texture = texture_id_of(
-                        &tilemap.texture,
-                        assets,
-                        texture_paths,
-                        texture_lookup,
-                        texture_handles,
-                    );
+                    let texture = textures.id_of(&tilemap.texture);
                     let mut layer = match previous.remove(&entity) {
                         Some(layer)
                             if layer.tilemap == *tilemap
