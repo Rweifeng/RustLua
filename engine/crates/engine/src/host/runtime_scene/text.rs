@@ -89,10 +89,10 @@ pub(crate) struct TextRunKind<'a> {
 
 impl super::RuntimeScene {
     pub(crate) fn ensure_vector_atlas(&mut self) {
-        if self.vector_atlas.is_none()
+        if self.text_fonts.vector_atlas.is_none()
             && let Some(root) = &self.project_root
         {
-            self.vector_atlas = load_project_vector_atlas(Some(root));
+            self.text_fonts.vector_atlas = load_project_vector_atlas(Some(root));
         }
     }
 
@@ -104,24 +104,24 @@ impl super::RuntimeScene {
     ) -> Option<Arc<Mutex<FontVectorAtlas>>> {
         if font_asset.is_empty() {
             self.ensure_vector_atlas();
-            return self.vector_atlas.clone();
+            return self.text_fonts.vector_atlas.clone();
         }
         let key = font_texture_path(font_asset);
-        if self.missing_vector_fonts.contains(&key) {
+        if self.text_fonts.missing_vector_fonts.contains(&key) {
             return None;
         }
-        if let Ok(map) = self.custom_vector_atlases.lock()
+        if let Ok(map) = self.text_fonts.custom_vector_atlases.lock()
             && let Some(handle) = map.get(&key).cloned()
         {
             return Some(handle);
         }
         if let Some(atlas) = load_custom_vector_atlas(self.project_root.as_deref(), font_asset) {
-            if let Ok(mut map) = self.custom_vector_atlases.lock() {
+            if let Ok(mut map) = self.text_fonts.custom_vector_atlases.lock() {
                 map.entry(key.clone()).or_insert_with(|| atlas.clone());
             }
             return Some(atlas);
         } else {
-            self.missing_vector_fonts.insert(key.clone());
+            self.text_fonts.missing_vector_fonts.insert(key.clone());
         }
         None
     }
@@ -130,42 +130,42 @@ impl super::RuntimeScene {
     /// 编辑器场景视图/预览会先 `set_font_atlas` 注入已预热图集，故这里通常不会触发；
     /// 独立游戏/测试首次排版文本时加载一次，此后复用。
     pub(crate) fn ensure_font_atlas(&mut self) {
-        if self.font_atlas.is_none()
+        if self.text_fonts.font_atlas.is_none()
             && let Some(root) = &self.project_root
         {
-            self.font_atlas = load_project_font_atlas(Some(root));
+            self.text_fonts.font_atlas = load_project_font_atlas(Some(root));
         }
     }
 
     /// 注入跨运行时重建共享的自定义字体缓存（编辑器场景视图/预览用；独立运行
     /// 时运行时各自持有新鲜空表）。
     pub fn set_custom_font_atlases(&mut self, custom_font_atlases: FontAtlasMap) {
-        self.custom_font_atlases = custom_font_atlases;
+        self.text_fonts.custom_font_atlases = custom_font_atlases;
     }
 
     /// 注入跨运行时重建共享的自定义矢量轮廓缓存。
     pub fn set_custom_vector_atlases(&mut self, custom_vector_atlases: VectorAtlasMap) {
-        self.custom_vector_atlases = custom_vector_atlases;
+        self.text_fonts.custom_vector_atlases = custom_vector_atlases;
     }
 
     /// 取场景 Text 指定字体的共享图集句柄；未加载则按需从项目根解码（缺文件/
     /// 不可读返回 None，调用方回退默认字体）。加载失败仅对同一路径 warn 一次。
     pub(crate) fn ensure_custom_font(&mut self, asset: &str) -> Option<FontHandle> {
         let key = font_texture_path(asset);
-        if let Ok(map) = self.custom_font_atlases.lock()
+        if let Ok(map) = self.text_fonts.custom_font_atlases.lock()
             && let Some(handle) = map.get(&key).cloned()
         {
             return Some(handle);
         }
         // 已知缺失：直接回退默认，不再每帧尝试读盘。
-        if self.missing_fonts.contains(asset) {
+        if self.text_fonts.missing_fonts.contains(asset) {
             return None;
         }
         let root = self.project_root.clone();
         let handle = match load_custom_font_atlas(root.as_deref(), asset) {
             Some(handle) => handle,
             None => {
-                if self.missing_fonts.insert(asset.to_owned()) {
+                if self.text_fonts.missing_fonts.insert(asset.to_owned()) {
                     tracing::warn!(
                         target: "render",
                         path = %asset,
@@ -175,7 +175,7 @@ impl super::RuntimeScene {
                 return None;
             }
         };
-        if let Ok(mut map) = self.custom_font_atlases.lock() {
+        if let Ok(mut map) = self.text_fonts.custom_font_atlases.lock() {
             let handle = map.entry(key).or_insert_with(|| handle.clone()).clone();
             Some(handle)
         } else {
@@ -202,7 +202,7 @@ impl super::RuntimeScene {
     /// wrap, rich text): the natural size and tight glyph bounds of that style.
     pub fn measure_ui_text_styled(&mut self, text: &str, style: TextStyle) -> ([f32; 2], [f32; 4]) {
         self.ensure_font_atlas();
-        if let Some(font) = &self.font_atlas {
+        if let Some(font) = &self.text_fonts.font_atlas {
             let mut font = font.lock().expect("font atlas lock");
             TextLayout::build(text, [0.0, 0.0], style, &mut font)
                 .map(|mesh| (mesh.size, mesh.pixel_bounds()))
@@ -274,15 +274,15 @@ impl super::RuntimeScene {
     /// 时返回 `None`（只告警一次），调用方回退 SDF/矢量档。
     fn ensure_hinted_font(&mut self, font_asset: &str, ppem: u16) -> Option<HintedFontHandle> {
         let key = hinted_texture_path(font_asset, ppem);
-        if let Ok(map) = self.hinted_atlases.lock()
+        if let Ok(map) = self.text_fonts.hinted_atlases.lock()
             && let Some(handle) = map.get(&key).cloned()
         {
             return Some(handle);
         }
-        if self.missing_hinted_fonts.contains(font_asset) {
+        if self.text_fonts.missing_hinted_fonts.contains(font_asset) {
             return None;
         }
-        let bytes = match self.hinted_font_bytes.get(font_asset).cloned() {
+        let bytes = match self.text_fonts.hinted_font_bytes.get(font_asset).cloned() {
             Some(bytes) => bytes,
             None => {
                 let loaded = SharedFontBytes::load(self.project_root.as_deref(), font_asset);
@@ -293,7 +293,8 @@ impl super::RuntimeScene {
                         "[render] hinted font bytes unavailable; text falls back to SDF"
                     );
                 }
-                self.hinted_font_bytes
+                self.text_fonts
+                    .hinted_font_bytes
                     .insert(font_asset.to_owned(), loaded.clone());
                 loaded
             }
@@ -303,7 +304,9 @@ impl super::RuntimeScene {
             Some(_) => {
                 // 没有 fpgm/prep/cvt 的字体光栅出来等于未 hinting——按 SDF 档画才是
                 // 作者预期的字形（这里不是"失败"，只是这条档对它无效）。
-                self.missing_hinted_fonts.insert(font_asset.to_owned());
+                self.text_fonts
+                    .missing_hinted_fonts
+                    .insert(font_asset.to_owned());
                 tracing::warn!(
                     target: "render",
                     path = %font_asset,
@@ -312,7 +315,9 @@ impl super::RuntimeScene {
                 return None;
             }
             None => {
-                self.missing_hinted_fonts.insert(font_asset.to_owned());
+                self.text_fonts
+                    .missing_hinted_fonts
+                    .insert(font_asset.to_owned());
                 tracing::warn!(
                     target: "render",
                     path = %font_asset,
@@ -325,7 +330,7 @@ impl super::RuntimeScene {
         // 图集先按帧预热：`build_hinted` 排版时图集若增长，图集只重缩放已缓存字形的
         // UV、不回改已写进顶点缓冲的 UV。预热顺序见 `prewarm_frame_hinted_glyphs`。
         let handle = Arc::new(Mutex::new(atlas));
-        if let Ok(mut map) = self.hinted_atlases.lock() {
+        if let Ok(mut map) = self.text_fonts.hinted_atlases.lock() {
             let handle = map.entry(key).or_insert_with(|| handle.clone()).clone();
             Some(handle)
         } else {
@@ -662,7 +667,7 @@ impl super::RuntimeScene {
         style: TextStyle,
     ) -> anyhow::Result<(TextMesh, bool)> {
         self.ensure_font_atlas();
-        if let Some(font) = &self.font_atlas {
+        if let Some(font) = &self.text_fonts.font_atlas {
             let mut font = font.lock().expect("font atlas lock");
             Ok(TextLayout::build(text, position, style, &mut font).map(|mesh| (mesh, true))?)
         } else {
@@ -901,7 +906,7 @@ impl super::RuntimeScene {
         render_layer: RenderLayer,
     ) {
         // 画得出来才记账：渲染器只为本帧真正用到的图集上传像素。
-        self.frame_hinted_keys.push(key.to_owned());
+        self.text_fonts.frame_hinted_keys.push(key.to_owned());
         let text_vertices = text_to_ndc(mesh, true, width, height);
         self.push_text_run(
             vertices,
@@ -949,7 +954,7 @@ impl super::RuntimeScene {
         }
         if !default_chars.is_empty() {
             self.ensure_font_atlas();
-            if let Some(font) = &self.font_atlas {
+            if let Some(font) = &self.text_fonts.font_atlas {
                 let mut font = font.lock().expect("font atlas lock");
                 font.prewarm(default_chars.into_iter());
             }
@@ -981,7 +986,7 @@ impl super::RuntimeScene {
                 TextLayout::build(&text.text, position, style, &mut atlas)?
             };
             let key = font_texture_path(&text.font);
-            self.frame_font_keys.push(key.clone());
+            self.text_fonts.frame_font_keys.push(key.clone());
             return Ok((mesh, true, key));
         }
         // 无自定义字体，或自定义字体缺失/不可读：回退默认字体路径。

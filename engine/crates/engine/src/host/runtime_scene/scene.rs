@@ -655,28 +655,28 @@ impl RuntimeScene {
         self.render_scale = scale;
         // ppem 会整体变化：旧图集的键（字体+ppem）不再被命中，留着只占内存。
         // 版本账一并清空——新图集必须重新上报像素，否则渲染器拿空像素当"未变化"。
-        if let Ok(mut map) = self.hinted_atlases.lock() {
+        if let Ok(mut map) = self.text_fonts.hinted_atlases.lock() {
             map.clear();
         }
-        self.hinted_versions.clear();
-        self.frame_hinted_keys.clear();
+        self.text_fonts.hinted_versions.clear();
+        self.text_fonts.frame_hinted_keys.clear();
         // 度量口径跟着物理比例一起变：`ui.measure_text` 的量化字号 = round(字号×比例)。
         self.publish_text_hint_scale();
     }
 
     /// 注入共享的 hinting 覆盖率图集缓存（编辑器跨运行时重建复用）。
     pub fn set_hinted_atlases(&mut self, hinted_atlases: HintedAtlasMap) {
-        self.hinted_atlases = hinted_atlases;
+        self.text_fonts.hinted_atlases = hinted_atlases;
     }
 
     /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
     pub fn set_font_atlas(&mut self, font_atlas: Option<Arc<Mutex<FontAtlas>>>) {
-        self.font_atlas = font_atlas;
+        self.text_fonts.font_atlas = font_atlas;
     }
 
     /// 注入共享默认矢量轮廓图集（编辑器跨运行时重建复用）。
     pub fn set_vector_atlas(&mut self, vector_atlas: Option<VectorFontHandle>) {
-        self.vector_atlas = vector_atlas;
+        self.text_fonts.vector_atlas = vector_atlas;
     }
 
     pub(super) fn init(
@@ -854,22 +854,8 @@ impl RuntimeScene {
             screen_batch: SpriteBatch::with_capacity(16),
             render_mode_routed: (0, 0, 0),
             tilemap_cache: HashMap::new(),
-            font_atlas: None,
-            vector_atlas: None,
-            custom_vector_atlases: Arc::new(Mutex::new(HashMap::new())),
-            // 调试插桩：首次 vector text layout 日志状态。
-            last_font_version: u64::MAX,
-            custom_font_atlases: Arc::new(Mutex::new(HashMap::new())),
-            custom_font_versions: HashMap::new(),
-            frame_font_keys: Vec::new(),
-            missing_fonts: HashSet::new(),
-            missing_vector_fonts: HashSet::new(),
-            missing_hinted_fonts: HashSet::new(),
+            text_fonts: super::TextFontCache::new(),
             render_scale: 1.0,
-            hinted_atlases: Arc::new(Mutex::new(HashMap::new())),
-            hinted_font_bytes: HashMap::new(),
-            hinted_versions: HashMap::new(),
-            frame_hinted_keys: Vec::new(),
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),

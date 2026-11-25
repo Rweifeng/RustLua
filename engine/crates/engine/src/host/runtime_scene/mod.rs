@@ -288,6 +288,73 @@ impl TextureIdentities {
     }
 }
 
+/// 文本/字体缓存单元（M83-03 候选 3 第一阶段）：把"图集句柄 + 版本账 + 失败/预热记账"
+/// 从 `RuntimeScene` 的平铺字段收成一处。
+///
+/// 为什么按单元而不是逐字段：这些字段的消费者是同一组（`text.rs` 的加载/度量/排版、
+/// `frame_data.rs` 的像素快照上报、`scene.rs` 的编辑器注入），而且它们有共同的
+/// **跨帧握手语义**（"上次上报版本"决定像素是否重传）。分散在 130 个字段里时，改一条
+/// 文本路径很容易只改一半（例如清空图集却忘了清对应版本账）。
+///
+/// 编辑器注入的共享实例（`set_font_atlas` / `set_hinted_atlases` / `set_custom_*`）
+/// 仍按原样整体替换对应字段：注入语义不变，只是搬进了单元。
+pub(crate) struct TextFontCache {
+    /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
+    /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
+    pub(crate) font_atlas: Option<Arc<Mutex<FontAtlas>>>,
+    pub(crate) vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
+    /// 场景 Text 自定义字体矢量轮廓缓存（key = `font://<asset>`）。编辑器注入
+    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用新鲜空表。
+    pub(crate) custom_vector_atlases: VectorAtlasMap,
+    /// 默认图集"上次上报版本"：`vertices` 只在**有顶点**的帧推进它（见 frame_data 注释）。
+    pub(crate) last_font_version: u64,
+    /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
+    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
+    pub(crate) custom_font_atlases: FontAtlasMap,
+    /// 每个自定义字体"上次上报版本"，语义同 `last_font_version`。
+    pub(crate) custom_font_versions: HashMap<String, u64>,
+    /// 本帧布局用到、待上报渲染器的自定义字体 key（`font://...`），`vertices`
+    /// 末尾生成像素快照后清空。
+    pub(crate) frame_font_keys: Vec<String>,
+    /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
+    pub(crate) missing_fonts: HashSet<String>,
+    pub(crate) missing_vector_fonts: HashSet<String>,
+    /// 不能走 hinting 档的字体（读不到 / 不带 TrueType 指令表）。同一字体失败一次即记住。
+    pub(crate) missing_hinted_fonts: HashSet<String>,
+    /// hinting 覆盖率图集缓存（key = `font://hinted/<ppem>/<asset>`）。编辑器注入共享实例。
+    pub(crate) hinted_atlases: HintedAtlasMap,
+    /// 字体字节缓存（key = 字体资源路径，空串 = 默认字体）。同一字体在多个 ppem
+    /// 下各建一张图集，字节只留一份；`None` 表示已知读不到，不再每次重试。
+    pub(crate) hinted_font_bytes: HashMap<String, Option<SharedFontBytes>>,
+    /// 每张 hinting 图集"上次上报版本"（语义同 `custom_font_versions`）。
+    pub(crate) hinted_versions: HashMap<String, u64>,
+    /// 本帧布局用到、待上报渲染器的 hinting 图集 key。
+    pub(crate) frame_hinted_keys: Vec<String>,
+}
+
+impl TextFontCache {
+    /// 独立运行时的初始缓存（编辑器注入路径会随后整体替换其中几项）。
+    pub(crate) fn new() -> Self {
+        Self {
+            font_atlas: None,
+            vector_atlas: None,
+            custom_vector_atlases: Arc::new(Mutex::new(HashMap::new())),
+            // 调试插桩：首次 vector text layout 日志状态。
+            last_font_version: u64::MAX,
+            custom_font_atlases: Arc::new(Mutex::new(HashMap::new())),
+            custom_font_versions: HashMap::new(),
+            frame_font_keys: Vec::new(),
+            missing_fonts: HashSet::new(),
+            missing_vector_fonts: HashSet::new(),
+            missing_hinted_fonts: HashSet::new(),
+            hinted_atlases: Arc::new(Mutex::new(HashMap::new())),
+            hinted_font_bytes: HashMap::new(),
+            hinted_versions: HashMap::new(),
+            frame_hinted_keys: Vec::new(),
+        }
+    }
+}
+
 /// P3-R246/R273：本帧提取登记的一条运动批次 `(实体, 批次, 场景时刻, 可选 LOD)`。
 pub type StagedMotionBatch = (
     u64,
@@ -417,43 +484,12 @@ pub struct RuntimeScene {
     /// 本帧三种显式模式各路由了几个实体 `(world, overlay, screen)`（诊断/验收用）。
     pub(crate) render_mode_routed: (usize, usize, usize),
     pub(crate) tilemap_cache: HashMap<EntityId, CachedTilemapLayer>,
-    /// 共享字体图集：运行时重建（编辑器拖动/编辑场景导致 revision 变化时）复用
-    /// 同一实例，避免每帧重新生成 MSDF 字形。生成字形需可变访问（内部 Mutex）。
-    pub(crate) font_atlas: Option<Arc<Mutex<FontAtlas>>>,
-    pub(crate) vector_atlas: Option<Arc<Mutex<FontVectorAtlas>>>,
-    /// 场景 Text 自定义字体矢量轮廓缓存（key = `font://<asset>`）。编辑器注入
-    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用新鲜空表。
-    pub(crate) custom_vector_atlases: VectorAtlasMap,
-    pub(crate) last_font_version: u64,
-    /// 场景 Text 自定义字体缓存（key = `font://<asset>` → 图集句柄）。编辑器注入
-    /// 同一实例供场景视图/预览跨运行时重建复用；独立运行时用各自新鲜的空表。
-    pub(crate) custom_font_atlases: FontAtlasMap,
-    /// 每个自定义字体“上次上报版本”，用于判定本帧像素是否变化（见默认图集的
-    /// `last_font_version` 语义，保证新渲染器首帧一定拿到非空像素）。
-    pub(crate) custom_font_versions: HashMap<String, u64>,
-    /// 本帧布局用到、待上报渲染器的自定义字体 key（`font://...`），`vertices`
-    /// 末尾生成像素快照后清空。
-    pub(crate) frame_font_keys: Vec<String>,
-    /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
-    pub(crate) missing_fonts: HashSet<String>,
-    pub(crate) missing_vector_fonts: HashSet<String>,
-    /// 不能走 hinting 档的字体（读不到 / 不带 TrueType 指令表）。同一字体失败一次即记住，
-    /// 后续帧直接回退 SDF，不再重复读盘或重复告警。
-    pub(crate) missing_hinted_fonts: HashSet<String>,
+    /// 文本/字体缓存单元（图集句柄 + 版本账 + 失败/预热记账；见 [`TextFontCache`]）。
+    pub(crate) text_fonts: TextFontCache,
     /// 设计分辨率 → 实际附件 的等比 contain 比例（宿主声明）。hinting 只在
     /// 1 texel = 1 物理像素时锐利，所以 ppem 要按**物理**像素取整；默认 1.0
     /// 表示"设计像素 = 物理像素"（离屏/编辑器/探针的常见形态）。
     pub(crate) render_scale: f32,
-    /// hinting 覆盖率图集缓存（key = `font://hinted/<ppem>/<asset>`）。编辑器注入
-    /// 同一实例供场景视图/预览跨运行时重建复用。
-    pub(crate) hinted_atlases: HintedAtlasMap,
-    /// 字体字节缓存（key = 字体资源路径，空串 = 默认字体）。同一字体在多个 ppem
-    /// 下各建一张图集，字节只留一份；`None` 表示已知读不到，不再每次重试。
-    pub(crate) hinted_font_bytes: HashMap<String, Option<SharedFontBytes>>,
-    /// 每张 hinting 图集"上次上报版本"（语义同 `custom_font_versions`）。
-    pub(crate) hinted_versions: HashMap<String, u64>,
-    /// 本帧布局用到、待上报渲染器的 hinting 图集 key。
-    pub(crate) frame_hinted_keys: Vec<String>,
     pub(crate) text_render_mode: TextRenderMode,
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,

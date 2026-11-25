@@ -741,8 +741,8 @@ impl RuntimeScene {
         self.screen_batch.set_cull_bounds(cull_bounds);
         self.render_mode_routed = (0, 0, 0);
         // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
-        self.frame_font_keys.clear();
-        self.frame_hinted_keys.clear();
+        self.text_fonts.frame_font_keys.clear();
+        self.text_fonts.frame_hinted_keys.clear();
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
         //
         // WP6 顶点单趟化：瓦片与精灵的顶点**直接以 NDC 追加进同一个最终缓冲**，不再先各自
@@ -1295,16 +1295,16 @@ impl RuntimeScene {
             draws.len(),
             self.textures.paths().len()
         );
-        let font_atlas = if let Some(atlas) = &self.font_atlas {
+        let font_atlas = if let Some(atlas) = &self.text_fonts.font_atlas {
             let atlas = atlas.lock().expect("font atlas lock");
             let version = atlas.version();
             // 仅当本帧网格会被渲染器实际消费（vertices 非空）时才推进“已上报”
             // 版本号。空网格帧渲染器整体跳过字体上传；若此刻推进版本号，下一个
             // 可绘制帧会以“已上报”发送空像素，而渲染器从未上传过该版本 →
             // write_texture 以空数据写整张图集 → wgpu 校验崩溃。
-            let changed = version != self.last_font_version && !vertices.is_empty();
+            let changed = version != self.text_fonts.last_font_version && !vertices.is_empty();
             if !vertices.is_empty() {
-                self.last_font_version = version;
+                self.text_fonts.last_font_version = version;
             }
             Some(FontAtlasPixels {
                 width: atlas.width(),
@@ -1578,7 +1578,7 @@ impl RuntimeScene {
     /// 发送，而渲染器从未上传过该版本 → 该自定义字体永久不显示。
     fn snapshot_custom_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
         let mut seen: HashSet<String> = HashSet::new();
-        let keys: Vec<String> = std::mem::take(&mut self.frame_font_keys)
+        let keys: Vec<String> = std::mem::take(&mut self.text_fonts.frame_font_keys)
             .into_iter()
             .filter(|key| seen.insert(key.clone()))
             .collect();
@@ -1593,7 +1593,7 @@ impl RuntimeScene {
             // 为什么不跟着下面那句 `expect("font atlas lock")` 一起 panic：**wasm 上 panic 是硬 abort**
             // （docs/60 §4.3 的同一条教训），而"某个自定义字体不可用"不该把整个游戏带走。
             // （顺带记一笔：同一个锁在这里被捕获、在两行后被 `expect`，两套口径——本轮只统一到"留痕"这一层。）
-            let handle = match self.custom_font_atlases.lock() {
+            let handle = match self.text_fonts.custom_font_atlases.lock() {
                 Ok(map) => map.get(&key).cloned(),
                 Err(error) => {
                     tracing::warn!(
@@ -1615,9 +1615,11 @@ impl RuntimeScene {
             };
             let atlas = handle.lock().expect("font atlas lock");
             let version = atlas.version();
-            let changed = self.custom_font_versions.get(&key).copied() != Some(version);
+            let changed = self.text_fonts.custom_font_versions.get(&key).copied() != Some(version);
             if will_draw {
-                self.custom_font_versions.insert(key.clone(), version);
+                self.text_fonts
+                    .custom_font_versions
+                    .insert(key.clone(), version);
             }
             out.push(CustomFontAtlasPixels {
                 key,
@@ -1642,13 +1644,13 @@ impl RuntimeScene {
     /// 渲染器按同一个“自定义字体”上传通道收（Rgba8Unorm + Nearest 绑定）。
     fn snapshot_hinted_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
         let mut seen: HashSet<String> = HashSet::new();
-        let keys: Vec<String> = std::mem::take(&mut self.frame_hinted_keys)
+        let keys: Vec<String> = std::mem::take(&mut self.text_fonts.frame_hinted_keys)
             .into_iter()
             .filter(|key| seen.insert(key.clone()))
             .collect();
         let mut out = Vec::new();
         for key in keys {
-            let handle = match self.hinted_atlases.lock() {
+            let handle = match self.text_fonts.hinted_atlases.lock() {
                 Ok(map) => map.get(&key).cloned(),
                 Err(error) => {
                     tracing::warn!(
@@ -1670,9 +1672,9 @@ impl RuntimeScene {
             };
             let atlas = handle.lock().expect("hinted atlas lock");
             let version = atlas.version();
-            let changed = self.hinted_versions.get(&key).copied() != Some(version);
+            let changed = self.text_fonts.hinted_versions.get(&key).copied() != Some(version);
             if will_draw {
-                self.hinted_versions.insert(key.clone(), version);
+                self.text_fonts.hinted_versions.insert(key.clone(), version);
             }
             out.push(CustomFontAtlasPixels {
                 key,
