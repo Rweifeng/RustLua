@@ -100,6 +100,54 @@ pub(crate) struct FrameView3d {
     view: RenderView,
 }
 
+/// 一帧提取的**只读输入**（M83-03 候选 1，docs/62 P2）。
+///
+/// 以前 `vertices()` / `scene_3d()` 在几十个位置直接读 `self.<配置字段>`：哪些是"提取
+/// 配置"、哪些是"提取要写的状态"只能靠读代码分辨，改一条提取路径很容易漏传一项。这里把
+/// 本帧的只读配置在帧首**一次性快照**成 `Copy` 结构，提取函数只消费它；`&mut` 的只剩
+/// 输出缓冲与确实要推进的账（字体版本、空间索引 revision、批次）。
+///
+/// 刻意只放"每帧不变"的配置与已定帧的相机/视图：`spatial_index_revision` 这类提取期会推进
+/// 的账仍留在 [`RuntimeScene`] 上，避免让输入视图变成可变状态。
+///
+/// 迁移是分步的：本步先把 `vertices` 与瓦片提取改成消费它，文本/UI 提取仍在扩展中（见
+/// `text.rs` / `mesh_ui.rs` 的 TODO）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameExtractInput {
+    camera: Camera2D,
+    frame_view_3d: Option<FrameView3d>,
+    viewport: Viewport,
+    view_world_mask: u32,
+    sprite_culling: bool,
+    tilemap_culling: bool,
+    sprite_parallelism: Parallelism,
+    world_sprite_depth: bool,
+    text_render_mode: TextRenderMode,
+    render_ui_overlay: bool,
+    spatial_index: bool,
+    spatial_index_cell_size: f32,
+}
+
+impl FrameExtractInput {
+    /// 帧首快照：调用点必须是"本帧相机已定帧"之后（`vertices` 里在 `frame_view_3d` 赋值后）。
+    pub(crate) fn capture(scene: &RuntimeScene, viewport: Viewport) -> Self {
+        Self {
+            camera: scene.camera,
+            frame_view_3d: scene.frame_view_3d,
+            viewport,
+            view_world_mask: scene.view_world_mask,
+            sprite_culling: scene.sprite_culling,
+            tilemap_culling: scene.tilemap_culling,
+            sprite_parallelism: scene.sprite_parallelism,
+            world_sprite_depth: scene.world_sprite_depth,
+            text_render_mode: scene.text_render_mode,
+            render_ui_overlay: scene.render_ui_overlay,
+            spatial_index: scene.spatial_index,
+            spatial_index_cell_size: scene.spatial_index_cell_size,
+        }
+    }
+}
+
 /// 运行时资源身份表（docs/54 §4.4）：把"本帧路径表"与"跨帧稳定句柄表"收成一处。
 ///
 /// - `assets` **不清空**：同一路径在进程内恒同句柄；资源释放后旧句柄失效，而不是悄悄

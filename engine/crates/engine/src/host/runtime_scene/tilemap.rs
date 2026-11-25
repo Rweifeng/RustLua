@@ -7,7 +7,7 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use rustlua_camera::camera::{CameraBounds, OrthoTerms, Viewport};
+use rustlua_camera::camera::{CameraBounds, OrthoTerms};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::GlobalTransform;
 use rustlua_ecs::tilemap::Tilemap;
@@ -478,27 +478,29 @@ impl RuntimeScene {
         world_vertices: &mut Vec<WorldSpriteVertex>,
         overlay_draws: &mut Vec<SpriteDrawBatch>,
         world_draws: &mut Vec<SpriteDrawBatch>,
-        viewport: Viewport,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
-        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+        let viewport = input.viewport;
+        let Ok(camera) = OrthoTerms::new(input.camera, viewport) else {
             // 相机退化（zoom 非正等）时不产瓦片顶点：与精灵路径一致，等宿主修好相机再画。
             return Ok(());
         };
         // WP4 ④：视口外瓦片只在 `vertices()` 之外还被用到时不剔除（不存在这种调用），
         // 因此这里直接取运行时开关；关掉即像素对拍用的"整层全画"档。
-        let cull = self.tilemap_culling;
+        let cull = input.tilemap_culling;
         // WP6：世界 Sprite 深度通道打开时，瓦片层也产出**世界坐标**顶点（与精灵一致），
         // 因此它同样参与深度测试——此前只有精灵有世界顶点，瓦片会被挡在通道外面。
-        let world_pass = self.world_sprite_depth;
+        let world_pass = input.world_sprite_depth;
         // 纯 2D 世界按正交视口裁剪；混合 3D 世界改用当前 3D 主视图的视锥。
         let world_view_is_3d = world_pass && self.world_view_has_3d_content();
         let cull_bounds = if cull && world_pass && !world_view_is_3d {
-            self.camera.visible_world_bounds(viewport).ok()
+            input.camera.visible_world_bounds(viewport).ok()
         } else {
             None
         };
         let frustum = if cull && world_view_is_3d {
-            self.frame_view_3d
+            input
+                .frame_view_3d
                 .as_ref()
                 .and_then(|frame| frame.view.baked())
                 .map(|view| view.frustum())

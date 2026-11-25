@@ -30,7 +30,7 @@ use rustlua_scene::scene::SceneEntityId;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws};
+use super::{FrameExtractInput, FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws};
 use crate::host::runtime_scene::tilemap::sort_world_ranges;
 
 impl RuntimeScene {
@@ -70,10 +70,13 @@ impl RuntimeScene {
         viewport: Viewport,
         camera_override: Option<Camera3D>,
     ) -> Option<Scene3d> {
+        // M83-03 候选 1：本帧只读输入。`scene_3d` 可能在 `vertices` 之前被调用，此时
+        // `frame_view_3d` 还是 `None`——与旧行为一致（按需解析相机，不制造定帧）。
+        let input = FrameExtractInput::capture(self, viewport);
         // Runtime extraction intentionally reads ECS state so physics, scripts,
         // active camera/light selection, and animation palettes remain live.
         // docs/54 §4.2：3D 网格同样吃**世界视图**的可见遮罩。
-        let view_mask = self.view_world_mask;
+        let view_mask = input.view_world_mask;
         let mut filtered = 0usize;
         // P3-R275：平面反射排除表每帧重建——上一帧的排除不能黏到这一帧（脚本可以每帧改）。
         self.planar_skip_entities.borrow_mut().clear();
@@ -82,7 +85,8 @@ impl RuntimeScene {
         // 没有覆盖/定帧时 LOD 退基础级（`renderer.mesh`），行为与未启用 LOD 逐字节相同。
         let lod_camera_position: Option<Vec3> =
             camera_override.map(|camera| camera.position).or_else(|| {
-                self.frame_view_3d
+                input
+                    .frame_view_3d
                     .as_ref()
                     .map(|frame| frame.camera.position)
             });
@@ -456,7 +460,7 @@ impl RuntimeScene {
         // 拆分批 8：无覆盖时优先复用**本帧已定帧**的那一份——相机与视图都来自同一次解析/烘焙。
         // 视图只跟（相机 × 视口）有关，因此视口不同时**换烘焙、不换相机**：相机不依赖视口，
         // 再解析一次只会白白多一趟遍历（也让"同帧只解析一次"这条账本数字失真）。
-        let (camera, view) = match (camera_override, self.frame_view_3d) {
+        let (camera, view) = match (camera_override, input.frame_view_3d) {
             (Some(camera), _) => (
                 camera,
                 RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
@@ -710,6 +714,9 @@ impl RuntimeScene {
             viewport,
             view: RenderView::main_3d(camera3d, viewport, DEFAULT_3D_CLEAR),
         });
+        // M83-03 候选 1：本帧提取的**只读输入**在这里一次快照（相机已定帧之后）。
+        // 之后本函数与瓦片提取都只消费 `input`，不再逐处读 `self.<配置字段>`。
+        let input = FrameExtractInput::capture(self, viewport);
         self.sprite_batch.clear();
         // WP6：收集阶段的可见域。开着时 `SpriteBatch::push` 直接丢掉不可能落在视口内的精灵，
         // 省下每项 80 字节的写入与后续排序——5 万精灵档实测这部分占掉整帧的大头（docs/53 §3.9）。
@@ -719,8 +726,8 @@ impl RuntimeScene {
         // 相机预筛。纯 2D 仍用正交 bounds；混合 3D 则在世界几何提取时按本帧 3D 主视图 frustum
         // 裁剪，避免在收集阶段误丢实际位于 3D 视图内的内容。
         let world_view_is_3d = self.world_view_has_3d_content();
-        let cull_bounds = if self.sprite_culling && !world_view_is_3d {
-            Some(self.camera.visible_world_bounds(viewport)?)
+        let cull_bounds = if input.sprite_culling && !world_view_is_3d {
+            Some(input.camera.visible_world_bounds(input.viewport)?)
         } else {
             None
         };
@@ -752,7 +759,7 @@ impl RuntimeScene {
             &mut world_sprites,
             &mut draw_ranges,
             &mut world_sprite_draws,
-            viewport,
+            &input,
         )?;
         // WP6：精灵直接写进批处理，不再每帧先造一份
         // `(Transform, Sprite, Option<AnimationStateMachine>, Option<String>, Option<SpriteSorting>)`
@@ -771,7 +778,7 @@ impl RuntimeScene {
             let inherit = self.spatial_active;
             // docs/54 §4.2：世界视图的可见遮罩。被拦掉的精灵**不占序号、不产顶点**——
             // "不在这个视图里"不是"透明"。
-            let view_mask = self.view_world_mask;
+            let view_mask = input.view_world_mask;
             let mut filtered = 0usize;
             let mut routed = (0usize, 0usize, 0usize);
             // P1-①：渲染级空间索引（视口候选预筛）。指纹未变则复用网格；变了则整体重建；
@@ -779,7 +786,7 @@ impl RuntimeScene {
             // 与 `cull_bounds` 同条件：3D 世界视图（world_view_is_3d）下遮挡来自深度，网格
             // 预筛不生效；`sprite_culling` 关闭时同样不预筛（全收，像素不变）。
             let candidates: Option<std::collections::HashSet<EntityId>> =
-                if self.spatial_index && self.sprite_culling && !world_view_is_3d {
+                if input.spatial_index && input.sprite_culling && !world_view_is_3d {
                     let fingerprint = script.with_world(|world| {
                         (
                             world.spatial_revision(),
@@ -789,7 +796,7 @@ impl RuntimeScene {
                     if self.spatial_index_revision != Some(fingerprint) {
                         // 重建：与提取同一对组件族（inherit 分支同源），只取位置/缩放/尺寸；
                         // for_each2 按 EntityId 升序，rebuild 要求升序输入。
-                        let cell_size = self.spatial_index_cell_size;
+                        let cell_size = input.spatial_index_cell_size;
                         let grid = script.with_world(|world| {
                             let mut items: Vec<(EntityId, rustlua_render::spatial_index::Circle)> =
                                 Vec::new();
@@ -1007,7 +1014,7 @@ impl RuntimeScene {
             } = self;
             let mut failure: Option<anyhow::Error> = None;
             let inherit = self.spatial_active;
-            let view_mask = self.view_world_mask;
+            let view_mask = input.view_world_mask;
             let mut filtered = 0usize;
             let white = rustlua_render::quad::QUAD_DEFAULT_TEXTURE;
             let mut routed = (0usize, 0usize, 0usize);
@@ -1109,7 +1116,7 @@ impl RuntimeScene {
             particles.iter().any(|particle| particle.position_z != 0.0)
         });
         let explicit_world = self.render_mode_routed.0 > 0 || particles_world;
-        let world_channel = self.world_sprite_depth || explicit_world;
+        let world_channel = input.world_sprite_depth || explicit_world;
         if world_channel {
             // WP6：世界 Sprite 走带深度的通道——世界坐标 + `Sprite::z`，投影交给顶点着色器。
             // 排序/分段/剔除与 overlay 路径同源（同一个批处理、同一把剔除量尺）。
@@ -1117,8 +1124,9 @@ impl RuntimeScene {
             // docs/54 §8-④：世界通道的剔除量尺必须与世界视图一致——有 3D 内容时收集阶段
             // 已经按"全收"处理（见上面的 `world_view_is_3d`），这里同样不再用 2D 矩形过滤。
             let world_cull_bounds = if world_view_is_3d { None } else { cull_bounds };
-            let world_frustum = if world_view_is_3d && self.sprite_culling {
-                self.frame_view_3d
+            let world_frustum = if world_view_is_3d && input.sprite_culling {
+                input
+                    .frame_view_3d
                     .as_ref()
                     .and_then(|frame| frame.view.baked())
                     .map(rustlua_camera::camera::CameraView::frustum)
@@ -1130,18 +1138,18 @@ impl RuntimeScene {
                 &mut world_sprite_draws,
                 world_cull_bounds,
                 world_frustum,
-                self.sprite_parallelism,
+                input.sprite_parallelism,
             )?;
         } else {
             vertices.reserve(self.sprite_batch.len() * 6);
             draw_ranges.reserve(2);
             self.sprite_batch.build_overlay_into(
-                self.camera,
-                viewport,
+                input.camera,
+                input.viewport,
                 &mut vertices,
                 &mut draw_ranges,
-                self.sprite_parallelism,
-                self.sprite_culling,
+                input.sprite_parallelism,
+                input.sprite_culling,
             )?;
         }
         // 显式屏幕空间的批次：无论这一帧走不走世界通道都走 overlay 通道。
@@ -1149,22 +1157,22 @@ impl RuntimeScene {
         let mut screen_ranges: Vec<SpriteDrawBatch> = Vec::new();
         if !self.overlay_batch.is_empty() {
             self.overlay_batch.build_overlay_into(
-                self.camera,
-                viewport,
+                input.camera,
+                input.viewport,
                 &mut vertices,
                 &mut overlay_ranges,
-                self.sprite_parallelism,
-                self.sprite_culling,
+                input.sprite_parallelism,
+                input.sprite_culling,
             )?;
         }
         if !self.screen_batch.is_empty() {
             self.screen_batch.build_overlay_into(
-                self.camera,
-                viewport,
+                input.camera,
+                input.viewport,
                 &mut vertices,
                 &mut screen_ranges,
-                self.sprite_parallelism,
-                self.sprite_culling,
+                input.sprite_parallelism,
+                input.sprite_culling,
             )?;
         }
 
@@ -1222,7 +1230,7 @@ impl RuntimeScene {
         // hinting 覆盖率图集必须在**任何**文字网格构建之前长到本帧的最终尺寸：图集增长
         // 只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV。三条文字通道（世界 /
         // Lua 动态 UI / 场景实体 Text）一次预热完，后一趟就不会把前一趟的 UV 弄坏。
-        if self.text_render_mode == TextRenderMode::Hinted {
+        if input.text_render_mode == TextRenderMode::Hinted {
             self.prewarm_frame_hinted_glyphs();
         }
         self.push_world_text(
@@ -1239,7 +1247,7 @@ impl RuntimeScene {
         // Screen-space UI (health bars, prompt text) draws last, on top。
         // 编辑器场景视图置 render_ui_overlay=false：UI 由 egui 在设计分辨率包围框内
         // 绘制布局框，跳过此 NDC 覆盖层避免冲突。
-        if self.render_ui_overlay {
+        if input.render_ui_overlay {
             // 实体层两趟共用同一份解算结果，每帧只算一次（`push_scene_ui_*` 不再自行解算，
             // 否则布局求解翻倍）。
             self.ensure_scene_ui_layout([width.max(1) as f32, height.max(1) as f32]);
