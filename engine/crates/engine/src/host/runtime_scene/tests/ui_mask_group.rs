@@ -115,10 +115,11 @@ fn mask_clips_hit_rect_and_draw_quad() {
         "完全在遮罩外的项不得进入命中集：{targets:#?}"
     );
 
+    let input = extract_input(&runtime, 1280, 720);
     let mut vertices = Vec::new();
     let mut draws = Vec::new();
     runtime
-        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720)
+        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720, &input)
         .unwrap();
     assert_eq!(vertices.len(), 6, "只有 Big 一个可见四边形");
     let mut min = [f32::MAX, f32::MAX];
@@ -239,10 +240,11 @@ fn group_runtime() -> RuntimeScene {
 fn canvas_group_alpha_scales_draw() {
     let mut runtime = group_runtime();
     runtime.ui_rects_by_name([1280.0, 720.0]);
+    let input = extract_input(&runtime, 1280, 720);
     let mut vertices = Vec::new();
     let mut draws = Vec::new();
     runtime
-        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720)
+        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720, &input)
         .unwrap();
     assert_eq!(vertices.len(), 6, "FadeIcon 是唯一的图像");
     assert_close(vertices[0].color[3], 0.5, "父组 alpha=0.5 乘进图像颜色");

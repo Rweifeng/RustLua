@@ -110,19 +110,21 @@ pub(crate) struct FrameView3d {
 /// 刻意只放"每帧不变"的配置与已定帧的相机/视图：`spatial_index_revision` 这类提取期会推进
 /// 的账仍留在 [`RuntimeScene`] 上，避免让输入视图变成可变状态。
 ///
-/// 迁移是分步的：本步先把 `vertices` 与瓦片提取改成消费它，文本/UI 提取仍在扩展中（见
-/// `text.rs` / `mesh_ui.rs` 的 TODO）。
+/// 迁移是分步的：`vertices`、瓦片提取与 UI 提取已消费它；文本提取仍在扩展中
+/// （`text.rs` 的 `render_scale`/`text_render_mode` 读点，届时再把 `render_scale` 放进来）。
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FrameExtractInput {
     camera: Camera2D,
     frame_view_3d: Option<FrameView3d>,
     viewport: Viewport,
     view_world_mask: u32,
+    view_overlay_mask: u32,
     sprite_culling: bool,
     tilemap_culling: bool,
     sprite_parallelism: Parallelism,
     world_sprite_depth: bool,
     text_render_mode: TextRenderMode,
+    ui_reference: [f32; 2],
     render_ui_overlay: bool,
     spatial_index: bool,
     spatial_index_cell_size: f32,
@@ -136,11 +138,13 @@ impl FrameExtractInput {
             frame_view_3d: scene.frame_view_3d,
             viewport,
             view_world_mask: scene.view_world_mask,
+            view_overlay_mask: scene.view_overlay_mask,
             sprite_culling: scene.sprite_culling,
             tilemap_culling: scene.tilemap_culling,
             sprite_parallelism: scene.sprite_parallelism,
             world_sprite_depth: scene.world_sprite_depth,
             text_render_mode: scene.text_render_mode,
+            ui_reference: scene.ui_reference,
             render_ui_overlay: scene.render_ui_overlay,
             spatial_index: scene.spatial_index,
             spatial_index_cell_size: scene.spatial_index_cell_size,

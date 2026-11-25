@@ -462,6 +462,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let panels = self.with_dynamic_ui(|panels, _, _| panels.clone());
         for panel in panels.values().filter(|panel| panel.visible) {
@@ -471,7 +472,7 @@ impl RuntimeScene {
                 panel.space,
                 panel.anchor,
                 [width.max(1) as f32, height.max(1) as f32],
-                self.ui_reference,
+                input.ui_reference,
             );
             let start = vertices.len() as u32;
             if panel.shape == 1 {
@@ -532,10 +533,19 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let images = self.with_dynamic_ui(|_, images, _| images.clone());
         for image in images.values() {
-            self.push_image_quad(vertices, draws, width, height, image, None)?;
+            self.push_image_quad(
+                vertices,
+                draws,
+                width,
+                height,
+                image,
+                None,
+                input.ui_reference,
+            )?;
         }
         Ok(())
     }
@@ -547,6 +557,7 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let grids = self.with_dynamic_ui(|_, _, grids| grids.clone());
         for grid in grids.values() {
@@ -556,7 +567,7 @@ impl RuntimeScene {
                 grid.space,
                 grid.anchor,
                 [width.max(1) as f32, height.max(1) as f32],
-                self.ui_reference,
+                input.ui_reference,
             );
             let start = vertices.len() as u32;
             vertices.extend(screen_rect_ndc(
@@ -581,7 +592,7 @@ impl RuntimeScene {
                 let Some((cell_origin, cell_size)) = grid.cell_rect(
                     index,
                     [width.max(1) as f32, height.max(1) as f32],
-                    self.ui_reference,
+                    input.ui_reference,
                 ) else {
                     continue;
                 };
@@ -620,7 +631,15 @@ impl RuntimeScene {
                         nine_slice: None,
                         nine_slice_dest: None,
                     };
-                    self.push_image_quad(vertices, draws, width, height, &image, None)?;
+                    self.push_image_quad(
+                        vertices,
+                        draws,
+                        width,
+                        height,
+                        &image,
+                        None,
+                        input.ui_reference,
+                    )?;
                 }
             }
         }
@@ -805,10 +824,10 @@ impl RuntimeScene {
     /// 过去每帧都走这条账，省掉的正是它（见 `scrolled_away_slots`）。
     pub(crate) fn scene_ui_image_candidates(
         &self,
+        overlay_mask: u32,
     ) -> (Vec<(EntityId, UiImage, Option<ButtonStateSet>)>, usize) {
         // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
-        // （面板/血条/网格）不是实体，因此不受遮罩影响。
-        let overlay_mask = self.view_overlay_mask;
+        // （面板/血条/网格）不是实体，因此不受遮罩影响。遮罩由提取输入传入。
         // M79：滚出视口的条目**在克隆之前**就摘掉。**不记进 `view_filtered`**——那个数的口径是
         // "被可见性遮罩拦下"，混进视口裁剪会让相机/遮罩那几条门读的不再是同一件事。
         let away = self.scrolled_away_slots();
@@ -849,9 +868,10 @@ impl RuntimeScene {
         draws: &mut Vec<SceneDraw>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
-        let (images, masked) = self.scene_ui_image_candidates();
+        let (images, masked) = self.scene_ui_image_candidates(input.view_overlay_mask);
         let mut filtered = masked;
         for (id, image, states) in images {
             // M76-02：绑定把 `image.visible` 置 false 时跳过绘制；实体与布局都保留。
@@ -883,7 +903,15 @@ impl RuntimeScene {
                     nine_slice_dest: None,
                 };
                 let clip = self.ui_clip_rects.get(&(id.index() as u64)).copied();
-                self.push_image_quad(vertices, draws, width, height, &image, clip)?;
+                self.push_image_quad(
+                    vertices,
+                    draws,
+                    width,
+                    height,
+                    &image,
+                    clip,
+                    input.ui_reference,
+                )?;
             }
         }
         self.view_filtered.set(self.view_filtered.get() + filtered);
@@ -895,8 +923,10 @@ impl RuntimeScene {
     /// 与 [`Self::scene_ui_image_candidates`] 同一个理由，且这一趟省得更多：拿到的每一条文字
     /// 都会进 `prewarm_frame_glyphs` 栅格化进图集（见下面的"关键"注释），滚出视口的条目过去
     /// 图集与 CPU 时间都付了、画面却没有它。门要能数到"预热吃了多少条"。
-    pub(crate) fn scene_ui_text_candidates(&self) -> (Vec<(EntityId, UiText)>, usize) {
-        let overlay_mask = self.view_overlay_mask;
+    pub(crate) fn scene_ui_text_candidates(
+        &self,
+        overlay_mask: u32,
+    ) -> (Vec<(EntityId, UiText)>, usize) {
         // M79：同图像趟，视口外的文字在**克隆与字形预热之前**就摘掉。
         let away = self.scrolled_away_slots();
         let mut filtered = 0usize;
@@ -943,9 +973,10 @@ impl RuntimeScene {
         vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
+        input: &super::FrameExtractInput,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
-        let (texts, masked) = self.scene_ui_text_candidates();
+        let (texts, masked) = self.scene_ui_text_candidates(input.view_overlay_mask);
         self.view_filtered.set(self.view_filtered.get() + masked);
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
         // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
@@ -1114,6 +1145,7 @@ impl RuntimeScene {
         height: u32,
         image: &DynamicUiImage,
         clip: Option<ClipRect>,
+        ui_reference: [f32; 2],
     ) -> anyhow::Result<()> {
         let sw = width.max(1) as f32;
         let sh = height.max(1) as f32;
@@ -1123,7 +1155,7 @@ impl RuntimeScene {
             image.space,
             image.anchor,
             [sw, sh],
-            self.ui_reference,
+            ui_reference,
         );
         let color = [image.color[0], image.color[1], image.color[2], image.alpha];
         // 九宫格路径：把目标矩形拆成 3×3 格。无切片 / 纹理尺寸取不到时回退单四边形。

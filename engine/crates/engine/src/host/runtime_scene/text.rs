@@ -355,7 +355,7 @@ impl super::RuntimeScene {
                     ));
                 }
             });
-            for (_, text) in self.scene_ui_text_candidates().0 {
+            for (_, text) in self.scene_ui_text_candidates(self.view_overlay_mask).0 {
                 entries.push((text.font.clone(), text.text.clone(), text.effective_scale()));
             }
         }

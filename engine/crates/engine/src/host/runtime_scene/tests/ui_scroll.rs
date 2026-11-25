@@ -219,10 +219,11 @@ fn clipped_image_remaps_uv_without_moving_quad() {
 
     let push = |runtime: &mut RuntimeScene| {
         runtime.ui_rects_by_name([1280.0, 720.0]);
+        let input = extract_input(runtime, 1280, 720);
         let mut vertices = Vec::new();
         let mut draws = Vec::new();
         runtime
-            .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720)
+            .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720, &input)
             .unwrap();
         (vertices, draws)
     };
@@ -311,10 +312,11 @@ fn away_names(runtime: &RuntimeScene) -> Vec<String> {
 /// 只跑图像趟，返回写出的顶点数。
 fn pushed_image_vertices(runtime: &mut RuntimeScene) -> usize {
     resolve_ui(runtime);
+    let input = extract_input(runtime, 1280, 720);
     let mut vertices = Vec::new();
     let mut draws = Vec::new();
     runtime
-        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720)
+        .push_scene_ui_images(&mut vertices, &mut draws, 1280, 720, &input)
         .unwrap();
     vertices.len()
 }
@@ -327,14 +329,14 @@ fn long_list_assembles_only_the_visible_window() {
     runtime.set_ui_interaction_enabled(true);
     resolve_ui(&mut runtime);
 
-    let (images, image_masked) = runtime.scene_ui_image_candidates();
+    let (images, image_masked) = runtime.scene_ui_image_candidates(runtime.view_overlay_mask);
     assert_eq!(
         images.len(),
         6,
         "100px 视口 / 20px 行高 ⇒ 满窗 5 行，压边的第 6 行靠余量留下"
     );
     assert_eq!(image_masked, 0, "没有遮罩时不该有条目被拦下");
-    let (texts, text_masked) = runtime.scene_ui_text_candidates();
+    let (texts, text_masked) = runtime.scene_ui_text_candidates(runtime.view_overlay_mask);
     assert_eq!(
         texts.len(),
         6,
@@ -371,7 +373,10 @@ fn long_list_assembles_only_the_visible_window() {
     );
     resolve_ui(&mut runtime);
     assert_eq!(
-        runtime.scene_ui_image_candidates().0.len(),
+        runtime
+            .scene_ui_image_candidates(runtime.view_overlay_mask)
+            .0
+            .len(),
         7,
         "窗口跟着位移：第 9..15 行留在装配里"
     );
@@ -488,7 +493,10 @@ fn no_scroll_container_keeps_every_entity_in_assembly() {
         "没有滚动容器 ⇒ 裁剪集必须为空"
     );
     assert_eq!(
-        runtime.scene_ui_image_candidates().0.len(),
+        runtime
+            .scene_ui_image_candidates(runtime.view_overlay_mask)
+            .0
+            .len(),
         3,
         "三条图像全部进装配，包括屏幕外的 Far"
     );
@@ -511,8 +519,14 @@ fn thousand_row_scroll_frames_report_assembly_cost() {
             .run_script_steps(1, 1.0 / 60.0, &wheel_at(60.0, 60.0))
             .unwrap();
         resolve_ui(&mut runtime);
-        let images = runtime.scene_ui_image_candidates().0.len();
-        let texts = runtime.scene_ui_text_candidates().0.len();
+        let images = runtime
+            .scene_ui_image_candidates(runtime.view_overlay_mask)
+            .0
+            .len();
+        let texts = runtime
+            .scene_ui_text_candidates(runtime.view_overlay_mask)
+            .0
+            .len();
         let vertices = pushed_image_vertices(&mut runtime);
         max_images = max_images.max(images);
         max_texts = max_texts.max(texts);

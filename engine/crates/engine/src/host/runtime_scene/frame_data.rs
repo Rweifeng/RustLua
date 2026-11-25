@@ -1255,10 +1255,10 @@ impl RuntimeScene {
             // 画在它之上。M66–M71 六屏迁移的前提就是这条不变式；顺序反了时卡底
             // （`ui_skill_card_9s.png` 主体全不透明）会整块埋掉压在它上面的 24×24 招式图标
             // ——两个宿主一起瞎，而状态层读数照样"shown"（实机 2026-10-07）。
-            self.push_scene_ui_images(&mut vertices, &mut draws, width, height)?;
-            self.push_ui_panels(&mut vertices, &mut draws, width, height)?;
-            self.push_ui_images(&mut vertices, &mut draws, width, height)?;
-            self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
+            self.push_scene_ui_images(&mut vertices, &mut draws, width, height, &input)?;
+            self.push_ui_panels(&mut vertices, &mut draws, width, height, &input)?;
+            self.push_ui_images(&mut vertices, &mut draws, width, height, &input)?;
+            self.push_ui_grids(&mut vertices, &mut draws, width, height, &input)?;
             self.push_ui_bars(&mut vertices, &mut draws, width, height)?;
             self.push_ui_text(
                 &mut vertices,
@@ -1279,6 +1279,7 @@ impl RuntimeScene {
                 &mut vector_segments,
                 width,
                 height,
+                &input,
             )?;
         }
         // UI 合批：相邻元素在顶点缓冲里连续，合并同纹理同 sdf 的 draw，减少

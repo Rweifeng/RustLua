@@ -63,10 +63,11 @@ fn step(runtime: &mut RuntimeScene, input: &InputSnapshot) {
 
 /// 取 `TintButton` 那块四边形提交上来的颜色——左上角 (100,100) 的角点唯一确定它。
 fn displayed_color(runtime: &mut RuntimeScene) -> [f32; 4] {
+    let input = extract_input(runtime, VIEW_W, VIEW_H);
     let mut vertices = Vec::new();
     let mut draws = Vec::new();
     runtime
-        .push_scene_ui_images(&mut vertices, &mut draws, VIEW_W, VIEW_H)
+        .push_scene_ui_images(&mut vertices, &mut draws, VIEW_W, VIEW_H, &input)
         .unwrap();
     let expected = [
         100.0 / VIEW_W as f32 * 2.0 - 1.0,

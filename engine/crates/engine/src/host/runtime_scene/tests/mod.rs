@@ -25,6 +25,13 @@ use rustlua_ui::ui_layout::UiRect;
 
 // 示例重组后，展示工程从 examples/ 迁入 examples/game_api/（多项目布局）；
 // 此处路径同步修正，恢复 showcase/ui_test 等测试的真实覆盖（M18-03）。
+/// 测试直接调提取子步骤（`push_*` / 候选表）时，仍要走与 `vertices()` 相同的只读输入。
+pub(crate) fn extract_input(scene: &RuntimeScene, width: u32, height: u32) -> FrameExtractInput {
+    FrameExtractInput::capture(
+        scene,
+        Viewport::new(width.max(1) as f32, height.max(1) as f32).expect("viewport"),
+    )
+}
 fn game_root() -> std::path::PathBuf {
     rustlua_infra::games_dir().join("examples").join("game_api")
 }

@@ -18,10 +18,11 @@ fn circle_vertices_are_triangle_list_compatible() {
     runtime
         .with_script(|lua| lua.execute_console("ui.circle('probe', 32, 18, 9, 1, 1, 1, 1)"))
         .expect("ui.circle probe");
+    let input = extract_input(&runtime, 64, 36);
     let mut vertices = Vec::new();
     let mut draws = Vec::new();
     runtime
-        .push_ui_panels(&mut vertices, &mut draws, 64, 36)
+        .push_ui_panels(&mut vertices, &mut draws, 64, 36, &input)
         .expect("push_ui_panels");
     for draw in &draws {
         assert_eq!(
