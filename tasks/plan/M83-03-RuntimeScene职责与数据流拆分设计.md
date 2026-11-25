@@ -2,7 +2,7 @@
 
 - 任务 ID：M83-03
 - 状态：验收①②证据盘点已完成（2026-11-25）；候选 2 已落地（`20b626a5`）、
-  候选 1 第一/二步已落地（`45059416` / `ad94743a`），候选 1 第三步（文本提取）与候选 3 未开始
+  候选 1 **三步全部落地**（`45059416` / `ad94743a` / 文本步），候选 3 未开始
 - 关联里程碑：M83
 - 创建日期：2026-11-16
 
@@ -77,12 +77,18 @@
      `push_scene_ui_text` 改收 `&FrameExtractInput`；`scene_ui_image_candidates` /
      `scene_ui_text_candidates` 改收 `overlay_mask`；`push_image_quad` 收
      `ui_reference`；测试侧新增 `extract_input(scene, w, h)`。
-   - **第三步（未做）**：`text.rs` 的文本提取仍读 `self`（`text_render_mode` /
-     `render_scale` 读点）；迁移时把 `render_scale` 放进 input。
-     先例：`FrameView3d`（`mod.rs:96-101`）已经是"只读视图 struct + 同帧多消费方"。
+   - **第三步已落地（2026-11-25）**：文本提取并入同一输入——新增 `TextExtractConfig`
+     （`text_render_mode`/`render_scale`/`world_sprite_depth`/`render_ui_overlay`），
+     公开度量 API 用 `TextExtractConfig::capture(scene)` 自取、提取路径用
+     `FrameExtractInput::text_config()`；`should_render_vector`/`should_render_hinted`/
+     `hinted_ppem`/`prewarm_frame_(hinted_)glyphs`/`layout_(scene_)hinted_text`/
+     `push_world_text`/`push_ui_text` 改收配置；`prewarm_frame_hinted_glyphs` 显式收
+     `overlay_mask`。度量与渲染共用同一份模式配置。
+     验证：engine 270 lib + 全部集成测试绿、`cargo check --workspace` 通过。
+   - 先例：`FrameView3d`（`mod.rs:96-101`）已经是"只读视图 struct + 同帧多消费方"。
    验证：`tests/frame_view.rs` 4 条、`tests/frame_ledger.rs` 2 条、
    `tests/frame_extraction.rs`、`tests/world_depth.rs` 2 条、`ui*` 四文件、
-   `wp0_*_golden` 像素门。
+   `custom_fonts.rs` 7 条、`wp0_*_golden` 像素门。
 2. **帧内纹理身份表 `TextureIdentities`——✅ 已落地（2026-11-25，`20b626a5`）**
    收 `assets` / `texture_paths` / `texture_lookup` / `texture_handles` 为一个
    `pub(crate)` 单元（`runtime_scene/mod.rs`），`texture_id_of` 变 `id_of` 方法；
