@@ -17,8 +17,8 @@ use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::{Transform, Vec2};
 use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::frame::{
-    BoundsSource, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable,
-    SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
+    BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,
+    WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::{Light, LightKind, MAX_POINT_LIGHTS, PointLight};
@@ -1294,30 +1294,11 @@ impl RuntimeScene {
             draws.len(),
             self.textures.paths().len()
         );
-        let font_atlas = if let Some(atlas) = &self.text_fonts.font_atlas {
-            let atlas = atlas.lock().expect("font atlas lock");
-            let version = atlas.version();
-            // 仅当本帧网格会被渲染器实际消费（vertices 非空）时才推进“已上报”
-            // 版本号。空网格帧渲染器整体跳过字体上传；若此刻推进版本号，下一个
-            // 可绘制帧会以“已上报”发送空像素，而渲染器从未上传过该版本 →
-            // write_texture 以空数据写整张图集 → wgpu 校验崩溃。
-            let changed = version != self.text_fonts.last_font_version && !vertices.is_empty();
-            if !vertices.is_empty() {
-                self.text_fonts.last_font_version = version;
-            }
-            Some(FontAtlasPixels {
-                width: atlas.width(),
-                height: atlas.height(),
-                pixels: if changed {
-                    atlas.pixels().to_vec()
-                } else {
-                    Vec::new()
-                },
-                version,
-            })
-        } else {
-            None
-        };
+        // 仅当本帧网格会被渲染器实际消费（vertices 非空）时才推进“已上报”
+        // 版本号。空网格帧渲染器整体跳过字体上传；若此刻推进版本号，下一个
+        // 可绘制帧会以“已上报”发送空像素，而渲染器从未上传过该版本 →
+        // write_texture 以空数据写整张图集 → wgpu 校验崩溃。
+        let font_atlas = self.text_fonts.snapshot_default_atlas(!vertices.is_empty());
         let mut custom_font_atlases = self.snapshot_custom_fonts(!vertices.is_empty());
         custom_font_atlases.extend(self.snapshot_hinted_fonts(!vertices.is_empty()));
         // WP6 世界通道的**跨产出者**排序：瓦片层、精灵、世界文字是三个各自有序的产出者

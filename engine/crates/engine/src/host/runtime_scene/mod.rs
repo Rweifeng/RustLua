@@ -35,8 +35,8 @@ use rustlua_ui::ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource
 
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 use rustlua_render::frame::{
-    FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, HintedAtlasMap, OverlayVertex, SceneDraw,
-    VectorAtlasMap, VectorGlyphSnapshot, VectorSegmentSnapshot,
+    FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, FontAtlasPixels, HintedAtlasMap, OverlayVertex,
+    SceneDraw, VectorAtlasMap, VectorGlyphSnapshot, VectorSegmentSnapshot,
     VectorTextVertex as FrameVectorTextVertex, WorldSpriteVertex, font_texture_path,
 };
 
@@ -333,6 +333,33 @@ pub(crate) struct TextFontCache {
 }
 
 impl TextFontCache {
+    /// 默认字体图集的本帧上报（`None` = 没有图集）。
+    ///
+    /// 仅当本帧网格会被渲染器实际消费（`will_draw` = `vertices` 非空）时才推进
+    /// "已上报"版本号。空网格帧渲染器整体跳过字体上传；若此刻推进版本号，下一个
+    /// 可绘制帧会以"已上报"发送空像素，而渲染器从未上传过该版本 →
+    /// `write_texture` 以空数据写整张图集 → wgpu 校验崩溃。
+    pub(crate) fn snapshot_default_atlas(&mut self, will_draw: bool) -> Option<FontAtlasPixels> {
+        let atlas = self.font_atlas.clone()?;
+        let atlas = atlas.lock().expect("font atlas lock");
+        let version = atlas.version();
+        let changed = version != self.last_font_version && will_draw;
+        if will_draw {
+            self.last_font_version = version;
+        }
+        Some(FontAtlasPixels {
+            width: atlas.width(),
+            height: atlas.height(),
+            // 空网格帧不复制像素（同"不推进版本"的理由：不给渲染器空数据的机会）。
+            pixels: if changed {
+                atlas.pixels().to_vec()
+            } else {
+                Vec::new()
+            },
+            version,
+        })
+    }
+
     /// 独立运行时的初始缓存（编辑器注入路径会随后整体替换其中几项）。
     pub(crate) fn new() -> Self {
         Self {
