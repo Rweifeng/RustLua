@@ -42,6 +42,16 @@ fn save_commit_and_load_go_through_the_platform_slot() {
 
     let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
         .expect("建 Lua 运行时");
+    // `save` 表由宿主用 deferred installer 装（见 engine 的 `script_packs::install`）：
+    // gameplay 注册表只带 audio/input/net/rollback。这条测试要钉的是"平台槽通道"，
+    // 不是"谁装表"，所以在这里按宿主的接法把表装到同一个 `ScriptState.save` 句柄上
+    // （`set_save_path` 改的正是它）。
+    let save = runtime.gameplay_handles().save;
+    runtime
+        .add_deferred_installer(Box::new(move |lua, _, _| {
+            rustlua_gameplay::save_lua::install(lua, &save)
+        }))
+        .expect("save 安装失败");
     runtime.set_save_path(std::path::PathBuf::from(
         "/rustlua-nonexistent-root/save.sav",
     ));
