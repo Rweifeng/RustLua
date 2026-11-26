@@ -11,7 +11,7 @@
     "evidence": [
       "artifacts/logs/quality/web-evidence.status（verify.ps1 -Web 落盘：exit=3 + reason）",
       "docs/changelog/最新条目.md 的「Web 证据链：无 GPU 环境显式 BLOCKED」条目",
-      "tasks/plan/M83-04-跨平台与浏览器运行时验证升级.md §三-A"
+      "tasks/done/M83-04-跨平台与浏览器运行时验证升级.md §三-A"
     ],
     "unblock_conditions": [
       "CI 换到有可用 GPU（或硬件 WebGL2）的 runner；或",
