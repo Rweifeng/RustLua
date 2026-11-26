@@ -88,7 +88,7 @@
 | `check-coverage.ps1` | 覆盖率棘轮门（P4-01）：`-RequireTool` 缺工具退 3；测试失败退 1；总行 −0.5pp / 单 crate −2.0pp 判 2；`-Update -Reason` 且 git 干净才写基线 |
 | `check-cfg-coverage.ps1` | wasm 条件编译覆盖门（P4-02）：cfg 清单漂移判 1；wasm 站点 crate ∈ wasm cell 直接包/闭包；`gpu-web-probe` 必须显式 check；豁免过期判 2 |
 | `check-metrics.ps1` | 度量总检查（P4-04/06/07）：缺历史退 3；`-DoCollect` 时对已有尺寸产物采集入库；趋势回归判 2 |
-| `check-matrix-policy.ps1` | 平台矩阵档位与到期裁定（P4-03）：`-List` 概要；`-Check` 到期判 2；`-Summarize <json>` 供 CI matrix-summary |
+| `check-matrix-policy.ps1` | 平台矩阵档位与到期裁定（P4-03）：`-List` 概要；`-Check` 到期判 2；`-Summarize <json>` 供 CI matrix-summary（对"绿+到期"也判 2）；`-SelfTest` 正反 6 例自测（matrix-summary 已接入） |
 
 ## metrics/ —— P4 度量
 

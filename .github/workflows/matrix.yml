@@ -189,3 +189,14 @@ jobs:
           Set-Content -LiteralPath $jsonPath -Value $json -Encoding utf8
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -SummarizeFile $jsonPath
           if ($LASTEXITCODE -ne 0) { throw "matrix policy failed (exit $LASTEXITCODE)" }
+
+      # 到期裁定必须对"绿着但一直不升档"也生效：-Summarize 已补上，但那只在 matrix 跑过的
+      # 轮次里生效；再恒跑一次 -Check（读 promotion.json，秒级、无网络），并在同一 job 里
+      # 跑脚本自测——正反 6 例，证"门真的会红"（M85-03）。
+      - name: Promotion expiry policy (green + expired must fail)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -Check
+
+      - name: Promotion policy self-test (negative controls)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -SelfTest

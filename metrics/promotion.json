@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "comment": "P4-03 platform matrix cell registry. blocking cells gate merges; advisory cells are on an observation period (owner/reason/review_by). check-matrix-policy.ps1 -Check exits 2 when an advisory cell's review_by expires while it is still advisory/red; promotion = flip experimental to false after 2 consecutive greens on main + no flaky records, then update this file with reason.",
+  "comment": "P4-03 platform matrix cell registry. blocking cells gate merges; advisory cells are on an observation period (owner/reason/review_by). check-matrix-policy.ps1 exits 2 when an advisory cell's review_by expires while it is still advisory — whether that cell is green or red (a cell that stays green forever without being promoted is also a hangover; the -Summarize and -Check paths share this rule). promotion = flip experimental to false after 2 consecutive greens on main + no flaky records, then update this file with reason and clear review_by.",
   "cells": [
     {"id": "windows-native", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "Windows 是全量测试所在平台，check --workspace 必须绿"},
     {"id": "windows-wasm", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "wasm 构建（game_web/gpu-web-probe）必须绿"},
