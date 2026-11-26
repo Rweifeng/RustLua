@@ -6,7 +6,7 @@
 > **渲染展廊**（地形/水面/PBR/光照/后处理/特效叠加层）与 **UI 能力收口**（排版/状态过渡）。
 >
 > 基线读数（2026-11-17 工作区）：
-> - 运行期 Lua API 面 **52 个模块表 / 442 个函数**（`rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
+> - 运行期 Lua API 面 **52 个模块表 / 444 个函数**（`rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
 > - 运行时组件 **31 个**（`ComponentId::ALL`）；
 > - 能力图谱 **64 条能力 / 8 个分组**（`examples/game_api/scripts/capabilities.lua`，由门 `--check` 计数）；
 > - `cargo test -p engine --lib sample_project` **16 条工程门全绿**（12 条 2.0 门 + 4 条 3.0 门）。
@@ -170,7 +170,7 @@ render.stop_effect("hit")
 | 逐场景 headless 实例化 + 步进 | `sample_project_runs_every_scene_headless` | 场景新增实体/步骤仍能跑 |
 | 行为自检 | `sample_project_demos_self_test` | api_3d 17 步、api_fx 3 步、ui_test 6 步；新步骤各带断言 |
 | 脚本全量编译 | `sample_project_scripts_all_compile` | 覆盖 `capabilities.lua` |
-| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 52/442；修掉 3 个 render 特效函数 |
+| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 52/444；修掉 3 个 render 特效函数 |
 | 组件覆盖 | `sample_project_scenes_cover_every_runtime_component` | 不变（31） |
 | 目录/菜单/卡片/命中/遮挡/字形 | 2.0 七条 | 重新生成 `index.scene` 与字体子集 |
 | **能力图谱完整性** | `sample_project_capability_catalog_is_complete`（新） | id/分组/场景/步骤/modules 并集/下限 |

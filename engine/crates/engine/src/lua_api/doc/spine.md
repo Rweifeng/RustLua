@@ -1,6 +1,6 @@
 # Lua 模块 `spine`
 
-> 运行期 API 面基线里本模块有 8 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 10 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -101,3 +101,35 @@
 - 返回：无。
 - 失败：实体没有 `SpineSkeleton` 时抛错。
 - 示例：`spine.set_speed(id, 0.5) -- 半速`
+
+## `spine.snapshot(id: i64, width: Option<u32>, height: Option<u32>, path: String)`
+
+> 绑定：`engine/crates/rustlua-spine/src/spine_lua.rs:251`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+把实体**当前这一帧的姿态**软栅格化成一张 RGBA PNG（CPU 光栅化，不碰 GPU 渲染状态）。
+
+用途是"角色要出现在界面里"：动态 UI 整层画在世界 Sprite 之上，运行期又换不了骨骼，把角色烤成
+贴图后就是一张普通图片，可以放进任意 UI 层、当头像/卡面/战斗单位。**适合离线烘焙与低频刷新
+（换装、切姿态），不适合 60fps 实时**——每帧一次全量 CPU 光栅化。
+
+- 参数：`id` — 实体 id；`width` / `height` — 目标像素尺寸（缺省 `256`，钳在 `8..4096`；按世界包围盒
+  **等比**缩放并居中，不拉伸，比例不符时留透明边）；`path` — 工程内相对路径（自动创建父目录；
+  工程根未知时按当前工作目录解析）。
+- 返回：写出的**绝对路径字符串**（可直接作为 `ui.image` 的 texture 参数——路径解析接受绝对路径）。
+- 失败：骨架从未采样（空网格）、工程根未知、图集页缺失或解码失败、PNG 写出失败，均抛错而不是返回 `nil`。
+  图集若带 `pma: true`，采样后先反预乘再按直通 alpha 混合；clipping 附件在导入期已被拒绝，这里不另处理。
+- 示例：`local path = spine.snapshot(id, 360, 540, "assets/baked/hero.png"); ui.image("hero", 200, 120, 180, 270, path)`
+
+## `spine.snapshot_frames(id: i64, width: Option<u32>, height: Option<u32>, dir: String, frames: Option<u32>, dt: Option<f32>, prefix: Option<String>)`
+
+把一段动作烤成**序列帧**：每帧先 `advance(dt)` 再各写一张 PNG，返回路径数组。
+
+与 `spine.snapshot` 的唯一区别是"会推进动画时间"——第 0 帧先推进一个 `dt`，避免拿到未摆好的 setup pose；
+因此这个函数**会改变实体的动画时间**（后续 `spine.*` 读到的姿态是推进后的）。
+
+- 参数：`id` — 实体 id；`width` / `height` — 每帧像素尺寸（同 `spine.snapshot`）；`dir` — 工程内输出目录
+  （自动创建）；`frames` — 帧数（缺省 `1`，钳在 `1..240`）；`dt` — 每帧推进秒数（缺省 `1/30`，
+  负数按 `0` 处理——不推进但仍重新采样）；`prefix` — 文件名前缀（缺省 `"frame"`）。
+- 返回：路径数组（1 基），第 n 项是 `{dir}/{prefix}_{n-1:03}.png` 的绝对路径。
+- 失败：实体不存在 / 没有 `SpineSkeleton`、推进失败、任一张写出失败，均抛错；已写出的前几张不会回滚。
+- 示例：`local frames = spine.snapshot_frames(id, 256, 384, "assets/baked/walk", 12, 1.0 / 30.0, "walk")`

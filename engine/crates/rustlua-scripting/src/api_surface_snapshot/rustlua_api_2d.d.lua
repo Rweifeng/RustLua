@@ -1155,7 +1155,7 @@ function shop.price(name, item_id) end
 function shop.set_catalog(name, spec) end
 
 --- `spine` 是 **Spine 2D 骨骼动画**的运行期接口（M84 P1）。实体上挂 `SpineSkeleton` 组件后，
---- spine：运行期 API 面基线里的 8 个函数
+--- spine：运行期 API 面基线里的 10 个函数
 spine = {}
 
 --- 取本帧骨架网格在**世界空间**的轴对齐包围盒，用于点选、裁剪或血条对齐。
@@ -1201,6 +1201,25 @@ function spine.set_skin(id, name) end
 ---@param speed number
 ---@return any
 function spine.set_speed(id, speed) end
+
+--- 把实体**当前这一帧的姿态**软栅格化成一张 RGBA PNG（CPU 光栅化，不碰 GPU 渲染状态）。
+---@param id integer
+---@param width integer?
+---@param height integer?
+---@param path string
+---@return any
+function spine.snapshot(id, width, height, path) end
+
+--- 把一段动作烤成**序列帧**：每帧先 `advance(dt)` 再各写一张 PNG，返回路径数组。
+---@param id integer
+---@param width integer?
+---@param height integer?
+---@param dir string
+---@param frames integer?
+---@param dt number?
+---@param prefix string?
+---@return any
+function spine.snapshot_frames(id, width, height, dir, frames, dt, prefix) end
 
 --- sprite：运行期 API 面基线里的 3 个函数
 sprite = {}

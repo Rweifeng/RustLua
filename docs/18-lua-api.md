@@ -328,17 +328,24 @@ enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨�
 | `spine.set_enabled(id, enabled)` | `false` 停止推进但**保留上一帧网格**（不闪没） |
 | `spine.events()` | 取走本帧事件（取走即清） |
 | `spine.bounds(id)` | 本帧世界空间包围盒 `{min_x, min_y, max_x, max_y}`；未采样时四点全零 |
+| `spine.snapshot(id, w, h, path)` | 把当前姿态**软栅格化**成一张 PNG（CPU，不走 GPU），返回写出的绝对路径。给动态 UI 当普通图片用（头像/卡面/界面里的角色），适合离线烘焙与低频刷新 |
+| `spine.snapshot_frames(id, w, h, dir, frames, dt, prefix)` | 逐帧 `advance(dt)` 后各烤一张，返回路径数组；**会推进实体的动画时间**。用于把一段动作烤成序列帧 |
+
+> 烘焙接口（`snapshot*`）是"角色进 UI"的出口：动态 UI 整层画在世界 Sprite 之上、运行期又换不了
+> 骨骼，烤成贴图后角色才能自由叠在任意 UI 层（生产缺口 G03/G09/G10，登记见 `tasks/plan/M85-04`）。
+> 边界：clipping 在导入期已被拒绝；图集页需能从工程根读盘；每帧一次全量 CPU 光栅化，**不适合 60fps 实时**。
 
 事件项形状：`{ entity, kind, name, animation }`。P1 只产 `kind == "start"`（切换动画时，
 含脚本内 `set_animation` **当场**入队的那一批）；timeline 自定义事件与 `complete` **仍未接入**
 （原计划排在 P2，P2 实际只做了渲染完整性；见下方支持范围表）。
 切场景时未取走的事件随旧世界一起作废，与 `animation.events()` 同语义。
 
-**支持范围（2026-11-24 核对；导入期与运行时各管一段）**：
+**支持范围（2026-11-26 核对；导入期与运行时各管一段）**：
 
 | 能力 | 状态 |
 | --- | --- |
 | Spine 4.3.x JSON / `.skel` 解析、slot draw order、多页图集、动画/皮肤/倍率/循环 | **支持**；版本冻结 4.3.x，不承诺 4.4/5.x |
+| 姿态烘焙 `spine.snapshot` / `snapshot_frames` | **支持**（CPU 软栅格化 → RGBA PNG；PMA 图集采样后反预乘；不支持 clipping；图集页需可读盘） |
 | clipping 附件（stencil 裁剪） | **导入期硬拒绝**（`rustlua_spine::validate::reject_unsupported_features`），错误带 skin/slot/attachment 定位——静默放行会变成"该裁没裁"的画面错误 |
 | 混合模式 | 仅 **Normal / Additive**；PMA 预乘、Multiply、Screen 在绘制时跳过并计入 `dropped_draws`（性能面板标红）。不会静默按 Normal 画错色 |
 | tint black 的 dark 通道 | **未支持**：`SpineVertex` 只有 light color，双色 tint 的 dark 部分被忽略（画面偏亮） |

@@ -480,6 +480,10 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
     // Lua 取走的是同一份。
     let spine = rustlua_spine::SpineState::handle();
     let spine_installer = spine.clone();
+    // `spine.snapshot` 要把图集 PNG 读进内存，需要工程根。`install` 拿不到它，
+    // 但下面的 `SpineSkeleton` applier 能——首次装配任意骨架时把它补进去即可
+    // （快照只对"已有骨架的实体"有意义，所以这个时机足够）。
+    let spine_root_writer = spine.clone();
     script
         .add_deferred_installer(Box::new(move |lua, world, _registry| {
             rustlua_spine::spine_lua::install(lua, &spine_installer, world)
@@ -488,11 +492,19 @@ pub fn install(script: &mut LuaRuntime) -> ScriptDomainHandles {
 
     // `SpineSkeleton` 组件：`.spine` 清单 → 骨骼/图集字节 → `SpineData` → `SpinePlayer`。
     // 清单解析与资源读取在这里完成：组合根认识工程根，`rustlua-spine` 不认识。
-    script.add_component_applier("SpineSkeleton", |world, id, value, project_root| {
+    // `add_component_applier` 要的是 `Fn`，所以用 RefCell 承载"只写一次"的槽。
+    let spine_root_slot = std::cell::RefCell::new(Some(spine_root_writer));
+    script.add_component_applier("SpineSkeleton", move |world, id, value, project_root| {
         let component = rustlua_spine::SpineSkeletonComponent::from_component_str(value)
             .map_err(|error| error.to_string())?;
         let root = project_root
             .ok_or_else(|| "needs a project root to load its .spine manifest".to_owned())?;
+        // 首次装配时把工程根交给 SpineState（给 `spine.snapshot` 用）。
+        if let Some(handle) = spine_root_slot.borrow_mut().take()
+            && let Ok(mut state) = handle.borrow_mut()
+        {
+            state.set_project_root(std::path::PathBuf::from(root));
+        }
         let player = load_spine_player(root, &component)?;
         world
             .insert(id, player)

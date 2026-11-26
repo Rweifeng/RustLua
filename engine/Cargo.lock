@@ -3638,6 +3638,7 @@ dependencies = [
 name = "rustlua-spine"
 version = "0.1.1"
 dependencies = [
+ "image",
  "mlua",
  "rustlua-component-codec",
  "rustlua-ecs",

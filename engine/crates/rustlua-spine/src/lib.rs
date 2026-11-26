@@ -10,11 +10,13 @@
 //! - [`spine_state`]：跨帧的脚本可见事件队列。
 //! - [`spine_lua`]：`spine.*` Lua 表。
 //! - [`scene_codec`]：`SpineSkeleton` 的组件载荷校验 codec。
+//! - [`snapshot`]：把当前姿态软栅格化成 PNG（`spine.snapshot`，M85 G03）。
 
 pub mod backend;
 pub mod model;
 pub mod player;
 pub mod scene_codec;
+pub mod snapshot;
 pub mod spine_lua;
 pub mod spine_state;
 

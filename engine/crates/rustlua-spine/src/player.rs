@@ -98,6 +98,12 @@ impl SpinePlayer {
         self.data.skins()
     }
 
+    /// 图集页名 → 工程内路径。供快照/导出把纹理读进内存（见 `snapshot.rs`）。
+    #[must_use]
+    pub fn page_paths(&self) -> &std::collections::HashMap<String, std::sync::Arc<str>> {
+        self.data.page_paths()
+    }
+
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.component.enabled

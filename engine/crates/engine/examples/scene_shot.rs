@@ -17,8 +17,19 @@ use rustlua_infra::games_dir;
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
 
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 720;
+// 分辨率可由第 4/5 个参数覆盖（竖屏工程需要 720×1280）。缺省保持 1280×720。
+fn width() -> u32 {
+    std::env::args()
+        .nth(4)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1280)
+}
+fn height() -> u32 {
+    std::env::args()
+        .nth(5)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(720)
+}
 
 fn main() -> Result<(), String> {
     let file = std::env::args()
@@ -27,7 +38,12 @@ fn main() -> Result<(), String> {
     let output = std::env::args()
         .nth(2)
         .unwrap_or_else(|| "target/index-shot.png".to_owned());
-    let root = games_dir().join("examples").join("game_api");
+    // RustLuaSword 复刻工程需要可配置的工程根：第三个参数给绝对路径时以它为根。
+    // 缺省保持原行为（examples/game_api），既有调用不受影响。
+    let root = match std::env::args().nth(3) {
+        Some(custom) => PathBuf::from(custom),
+        None => games_dir().join("examples").join("game_api"),
+    };
     let path = if std::path::Path::new(&file).is_absolute() {
         PathBuf::from(&file)
     } else {
@@ -37,7 +53,16 @@ fn main() -> Result<(), String> {
     let scene = Scene::load(&path).unwrap_or_else(|error| panic!("load {path:?}: {error}"));
     let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("instantiate");
     runtime
-        .run_script_steps(2, 1.0 / 60.0, &InputSnapshot::default())
+        // 第 6 个参数可加步数：热重载/换屏后的清理需要多跑几帧才稳定，
+        // 默认 2 帧保留原有行为。
+        .run_script_steps(
+            std::env::args()
+                .nth(6)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2),
+            1.0 / 60.0,
+            &InputSnapshot::default(),
+        )
         .map_err(|error| format!("script steps: {error}"))?;
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -61,8 +86,8 @@ fn main() -> Result<(), String> {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("scene-shot-target"),
         size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
+            width: width(),
+            height: height(),
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -74,20 +99,20 @@ fn main() -> Result<(), String> {
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let mesh = runtime
-        .vertices(WIDTH, HEIGHT)
+        .vertices(width(), height())
         .map_err(|error| format!("vertices: {error}"))?;
     if !matches!(
-        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT, true),
+        renderer.render_into_texture(&mesh, None, &view, width(), height(), true),
         RenderOutcome::Presented
     ) {
         return Err("render did not present".to_owned());
     }
     let pixels = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(&texture, width(), height())
         .map_err(|error| format!("readback: {error}"))?;
     let mut image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_pixel(
-        WIDTH,
-        HEIGHT,
+        width(),
+        height(),
         image::Rgba([0, 0, 0, 0]),
     );
     for (index, pixel) in image.pixels_mut().enumerate() {

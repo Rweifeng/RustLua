@@ -180,6 +180,35 @@ local steps = {
             t:ok(before[3] >= before[1], "禁用前的包围盒自洽")
         end,
     },
+    {
+        id = "snapshot",
+        title = "姿态烘焙",
+        claim = "spine.snapshot 把当前姿态写成 PNG；snapshot_frames 逐帧推进后各写一张，返回的路径可直接喂给 ui.image",
+        api = { "spine.snapshot", "spine.snapshot_frames" },
+        run = function()
+            -- `run` 每帧都会执行，headless 下不写盘：这里只读姿态（写盘放在 check 里，自检时执行一次）。
+            local box = spine.bounds(ids.hero)
+            obs.op = string.format("pose=%.0fx%.0f", box[3] - box[1], box[4] - box[2])
+        end,
+        check = function(t)
+            local root = app.project_root()
+            t:ok(type(root) == "string" and root ~= "", "app.project_root 可用（快照按工程根解析图集页）")
+
+            -- 只写工程内 `.temp/`（生成物目录，不入库），与 headless 写盘约定一致。
+            local dir = ".temp/spine-snapshot"
+            local single = spine.snapshot(ids.hero, 96, 96, dir .. "/pose.png")
+            t:eq(type(single), "string", "spine.snapshot 返回写出的绝对路径")
+            t:ok(single:find("pose.png", 1, true) ~= nil, "返回路径指向请求的文件名")
+
+            local frames = spine.snapshot_frames(ids.hero, 64, 64, dir, 2, 1.0 / 30.0, "walk")
+            t:eq(type(frames), "table", "spine.snapshot_frames 返回数组")
+            t:eq(#frames, 2, "请求 2 帧就返回 2 个路径")
+            for index, path in ipairs(frames) do
+                t:eq(type(path), "string", string.format("第 %d 帧返回路径字符串", index))
+                t:ok(path:find("walk", 1, true) ~= nil, "序列帧文件名带前缀")
+            end
+        end,
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -199,7 +228,7 @@ function M.on_create()
         steps = steps,
         hide_scene_text = { "Hud" },
     })
-    log.info("api_spine: lab ready (list/switch/speed/events/toggle)")
+    log.info("api_spine: lab ready (list/switch/speed/events/toggle/snapshot)")
 end
 
 function M.update()

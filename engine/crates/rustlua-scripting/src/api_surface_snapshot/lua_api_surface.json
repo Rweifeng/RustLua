@@ -520,7 +520,9 @@
         "set_animation",
         "set_enabled",
         "set_skin",
-        "set_speed"
+        "set_speed",
+        "snapshot",
+        "snapshot_frames"
       ],
       "name": "spine"
     },

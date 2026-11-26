@@ -14,6 +14,7 @@ rustlua-math = { path = "../rustlua-math" }
 rustlua-lua-api = { path = "../rustlua-lua-api" }
 rustlua-component-codec = { path = "../rustlua-component-codec" }
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 rustlua-infra = { path = "../rustlua-infra" }

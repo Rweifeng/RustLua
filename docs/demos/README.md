@@ -4,7 +4,7 @@
 
 | 工程 | 定位 | 入口 |
 |---|---|---|
-| `examples/game_api` | **API 演示工程 + 能力图谱**：每个 Lua API 都有一处可运行演示（52 个模块表 / 442 个函数 / 32 个运行时组件），另有 64 条能力 / 8 个分组的图谱（[docs/81](../81-game_api-3.0-能力图谱.md)），每个场景是分步 Lab | `scenes/index.scene`（菜单，按 `A` 打开能力图谱）→ ESC 返回 |
+| `examples/game_api` | **API 演示工程 + 能力图谱**：每个 Lua API 都有一处可运行演示（52 个模块表 / 444 个函数 / 32 个运行时组件），另有 64 条能力 / 8 个分组的图谱（[docs/81](../81-game_api-3.0-能力图谱.md)），每个场景是分步 Lab | `scenes/index.scene`（菜单，按 `A` 打开能力图谱）→ ESC 返回 |
 | `examples/game_jhyt` | 玩法样板（生活模拟 / 生产向） | 见 [`examples/game_jhyt/docs/`](../../examples/game_jhyt/docs/) |
 
 启动后先进入 `scenes/index.scene`，每张卡片对应一个聚焦演示；按 `Escape`（或手柄 B）返回入口菜单。

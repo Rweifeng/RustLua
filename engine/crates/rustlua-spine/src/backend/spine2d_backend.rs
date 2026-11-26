@@ -88,7 +88,12 @@ impl BackendData {
         })
     }
 
+    /// 页名 → 工程内路径。`spine.snapshot`（M85 G03）据此把图集 PNG 读进内存。
     #[must_use]
+    pub fn page_paths(&self) -> &std::collections::HashMap<String, std::sync::Arc<str>> {
+        &self.page_paths
+    }
+
     pub fn animations(&self) -> &[String] {
         &self.animations
     }
