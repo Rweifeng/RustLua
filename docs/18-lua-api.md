@@ -330,7 +330,8 @@ enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨�
 | `spine.bounds(id)` | 本帧世界空间包围盒 `{min_x, min_y, max_x, max_y}`；未采样时四点全零 |
 
 事件项形状：`{ entity, kind, name, animation }`。P1 只产 `kind == "start"`（切换动画时，
-含脚本内 `set_animation` **当场**入队的那一批）；timeline 自定义事件与 `complete` 留给 P2。
+含脚本内 `set_animation` **当场**入队的那一批）；timeline 自定义事件与 `complete` **仍未接入**
+（原计划排在 P2，P2 实际只做了渲染完整性；见下方支持范围表）。
 切场景时未取走的事件随旧世界一起作废，与 `animation.events()` 同语义。
 
 **支持范围（2026-11-24 核对；导入期与运行时各管一段）**：
@@ -342,7 +343,7 @@ enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨�
 | 混合模式 | 仅 **Normal / Additive**；PMA 预乘、Multiply、Screen 在绘制时跳过并计入 `dropped_draws`（性能面板标红）。不会静默按 Normal 画错色 |
 | tint black 的 dark 通道 | **未支持**：`SpineVertex` 只有 light color，双色 tint 的 dark 部分被忽略（画面偏亮） |
 | 骨骼 Physics（Spine 内的 physics constraint） | **未接入**（采样时 `Physics::None`），靠它摆动的头发/挂饰不会动 |
-| timeline 自定义事件、`complete` 事件 | **未接入**（P2）；目前只有 `start` |
+| timeline 自定义事件、`complete` 事件 | **未接入**；目前只有 `start`（原计划排在 P2，P2 未包含） |
 | 编辑器骨骼/关键帧编辑 | **明确不做**：只读预览，不提供 Spine Editor 的替代 |
 
 > 边界口径：导入期只拦"能读但一定画错"的硬特性（目前是 clipping），

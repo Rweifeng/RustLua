@@ -14,7 +14,7 @@ engine/.tools/
 # 只在本地比对，不入库（正式产物走 /artifacts/）。
 /target/
 # Spine spike 探针的 Cargo 构建产物（tools/spine-spike/ 本身是临时探针，
-# 验收后归档或删除，见 tasks/plan/M84-01）。
+# 验收后归档或删除，见 tasks/done/M84-01）。
 tools/spine-spike/target/
 
 # 本地基线（WP0 性能阶梯、editor 基线、engine 对外符号面基准）。全部只在本机生成与比对，

@@ -1,6 +1,6 @@
 # M84-01 P0：Spine 运行时对拍报告
 
-> 阶段：P0 无侵入技术验证（已完成）。日期：2026-11-19。
+> 阶段：P0 无侵入技术验证（已完成；2026-11-26 归档）。日期：2026-11-19。
 > 对应方案：`M84-00-Spine2D接入-现状分析与实施方案.md` §3 / §4.1。
 > spike 位置：`tools/spine-spike/`（临时，验收后归档或删除；官方示例导出不入库）。
 
@@ -123,3 +123,21 @@ cargo build --features json,binary
 # 官方 golden 三方对拍（P1 前置门，全量回归）
 python golden/run_golden_gate.py
 ```
+
+## 9. 归档记录（2026-11-26）
+
+- **归档依据**：P0 六项门槛全部通过（§2）；§5.2 遗留的跨实现骨骼偏差已由 `M84-02` 的官方 golden
+  裁决（spine2d 一致、chine 为偏差方）。§7 的四条移交项全部落地：①第三方裁判 = `M84-02`；
+  ②回归脚本 `tools/spine-spike/golden/run_golden_gate.py`；③P1 按建议以
+  `append_draw_list_with_atlas` 为入口（`backend/spine2d_backend.rs`）；④clipping 按既定决策在 P2
+  改为导入期拒绝。本文件无剩余可执行条目。
+- **本次复验（提交态 `a5dc4b44` 的干净 worktree，2026-11-26）**：
+  `python golden/run_golden_gate.py` = **PASS**，8 行读数与 `M84-02` §3 逐行一致
+  （`spineboy/run` spine2d 0.0011373 / chine 25.878；`raptor/roar` 0.035151）；
+  `cargo test -p rustlua-spine` = 15 passed / 0 failed。
+- **只登记、不开新包**：
+  1. §8 的 `compare.exe` / `chine_dump.exe` / `bone_compare.exe` 依赖 `tools/spine-spike/target/debug/`
+     的本地产物与 `assets/upstream-repo`（官方导出不入库）。新克隆上要先按 §8 重建；
+     golden 门本身只需 `bone_dump`（命令见 `M84-02` §6）。
+  2. 未来升 Spine 4.4/5.x 或换 backend 时，仍须先跑 golden 门再改上层（`M84-00` §4.1 的隔离层约定）。
+- **归档动作**：移入 `tasks/done/`，保留原名；`tasks/README.md` 与 `.gitignore` 的路径引用同步。

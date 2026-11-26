@@ -1,6 +1,6 @@
 # M84-02 P1 前置门：官方 Golden 三方对拍报告
 
-> 阶段：P1 前置门（已完成，**放行 P1 上层实现**）。日期：2026-11-19。
+> 阶段：P1 前置门（已完成，**放行 P1 上层实现**；2026-11-26 归档）。日期：2026-11-19。
 > 承接：`M84-01-P0-Spine运行时对拍报告.md` §5.2 / §7 遗留风险。
 > 对应方案：`M84-00-Spine2D接入-现状分析与实施方案.md` §3 / §5 / §7。
 > 工具位置：`tools/spine-spike/golden/`（随 spike 临时归档，不进引擎主干）。
@@ -91,3 +91,18 @@ python golden/compare_three.py \
   assets/upstream-repo/examples/spineboy/export/spineboy-pro.json \
   assets/upstream-repo/examples/spineboy/export/spineboy.atlas run 60 0.0166667
 ```
+
+## 7. 归档记录（2026-11-26）
+
+- **归档依据**：前置门目标已达成且已被后续交付坐实——8/8 由 `spine2d` 通过（最大 0.0352 px），
+  `chine` 4/8 偏差 4.4–25.9 px，据此放行 P1；P1–P4 随后全部落地（`M84-00` §6.1–§6.4）。
+  本文件 §4 的影响与 §5 的边界均已被执行结果验证。
+- **本次复验（提交态 `a5dc4b44` 的干净 worktree，2026-11-26）**：`python golden/run_golden_gate.py`
+  = **PASS**，输出与 §3 表逐行一致：`spineboy/idle` 0.0001446、`run` 0.0011373、`walk` 0.00072497、
+  `jump` 0.00070705、`shoot` 0.00076653、`death` 0.0006561、`raptor/walk` 0.00075499、
+  `raptor/roar` 0.035151；chine 侧 `idle/run/walk/jump` 仍 MISMATCH（4.4233 / 25.878 / 13.956 / 15.204）。
+  即：裁决结论与阈值口径在当前提交上未漂移。
+- **只登记、不开新包**：§5 的两条边界继续有效——（a）golden 只覆盖骨骼世界变换，未做官方 canvas
+  的逐顶点 draw list 对拍；（b）`esbuild` / Node 只在 spike 内使用，不进引擎依赖图与 CI。
+  P2 至今未发现网格级异常，故不触发补 canvas 对拍；若将来出现网格级异常，按 §5 补。
+- **归档动作**：移入 `tasks/done/`，保留原名；`tasks/README.md` 同步。

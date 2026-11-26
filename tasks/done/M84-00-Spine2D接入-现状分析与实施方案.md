@@ -1,6 +1,8 @@
 # M84-00 Spine 2D 接入：现状分析与实施方案
 
-> 文档性质：方案/调研（BACKLOG 候选），不是已认领的实现任务。
+> 文档性质：方案/调研（创建时是 BACKLOG 候选，不是已认领的实现任务）。
+> **实施状态：P0–P4 已全部完成（2026-11-19/20），2026-11-26 归档**——本文件已从"方案"转为"实现台账"，
+> 各阶段读数在 §6.1–§6.5，归档依据与只登记项见 §9。
 > 分析日期：2026-11-19。分析对象：`D:/GitHub/RustLua` 当前工作树。
 > 口径：只写能在仓库里指到文件或能在官方文档里查到的事实；会变动的读数不写死。
 >
@@ -718,3 +720,72 @@ P4 完成后剩三条与 M84 无关的红门，会干扰后续任何资源相关
 - `spine2d 0.5`：<https://crates.io/crates/spine2d>、<https://docs.rs/spine2d/0.5.0/spine2d/>
 - `chine 0.2`：<https://crates.io/crates/chine>、<https://docs.rs/chine/0.2.0/chine/>
 - `spine_runtime 0.2.2` / `rusty_spine 0.8`：crates.io 对应页面（MSRV 与许可证依据）
+
+## 9. 归档记录（2026-11-26）
+
+### 9.1 归档依据（逐阶段坐实，不拿"能编译"当"接入完成"）
+
+| 阶段 | 结论 | 承载读数 |
+|---|---|---|
+| P0 无侵入技术验证 | 六项门槛全过，默认运行时定为 `spine2d 0.5` | `M84-01` §2 |
+| P1 前置门 | 官方 golden 8/8 判 `spine2d` 一致（最大 0.0352 px）；`chine` 4/8 偏差 4.4–25.9 px | `M84-02` §1/§3 |
+| P1 最小可玩闭环 | 组件 / schema / codec / 渲染通道 / 宿主系统 / Lua 8 函数 / 资源导入 / 示例与文档全落地 | §6.1 |
+| P2 渲染完整性 | clipping 导入期硬拒绝、tint black 语义判定与固化、Additive 变体 + 热重载同步、多页 atlas 页名解析的真实 bug | §6.2 |
+| P3 资源/编辑器/平台 | 压缩白名单实测收益、依赖边与失效传播、VFS 复用、编辑器只读预览 + 许可边界测试 | §6.3 |
+| P4 性能与质量门 | 1/10/100 角色基准、我们这侧稳态零分配、GPU 测试假门修正 | §6.4 |
+| 收尾 | 三条**非 M84** 历史红门清掉（effect prefab 导入、visual-script clippy、cfg 覆盖率两环） | §6.5 |
+
+代码与文档分三笔入库：`c75b7fa8`（Spine 接入 + 示例/文档，兼收 M96 特效预设与 M99 资产内联预览）、
+`dee11e32`（支持范围写进 `docs/18`）、`9f551e65`（工具面快照门被 `serde_json/preserve_order`
+feature 并集翻转的修复）。
+
+### 9.2 本次归档复验（提交态 `a5dc4b44` 的干净 worktree，2026-11-26）
+
+为什么用 worktree：工作区当时有**在途的 M85 改动**（`spine.snapshot` 等未提交文件，不属于本批），
+在工作区直接跑门会把别的批次半成品算进读数。复验树 = `git worktree add --detach <tmp> HEAD`，
+不含任何未提交改动。
+
+| 门 | 读数 |
+|---|---|
+| `python golden/run_golden_gate.py`（在 `tools/spine-spike/`） | **PASS**：`spine2d` 8/8 MATCH，逐行与 `M84-02` §3 一致（`spineboy/run` 0.0011373、`raptor/roar` 0.035151） |
+| `cargo test -p rustlua-spine` | **15 passed / 0 failed**（lib 3 + 6 个集成文件 12），exit 0 |
+| `cargo clippy -p rustlua-spine --all-targets -- -D warnings` | exit 0，**0 告警** |
+| `cargo check -p game_web --target wasm32-unknown-unknown` | **exit 0**（需 `$env:ZIG` 指向 `engine/.tools/zig/`；与 `engine/.cargo/config.toml` 的说明一致，`ZIG` 是单机路径、不进仓库） |
+| `cargo fmt --all -- --check` | exit 0 |
+| `node scripts/verify/check-doc-claims.mjs` | `doc_claims_ok tables=52 funcs=442 components=32 gates=16` |
+| `cargo deny check` | bans / licenses / sources **ok**（含 `spine2d`）；**advisories 红**：`RUSTSEC-2026-0592`（`url 2.5.8` 经 `webbrowser → egui-winit → eframe → editor`），非本批引入，见 §9.3 第 5 条 |
+
+**本次没重跑**（如实说明，避免把归档复验说成重新验收）：全量 `verify.ps1`（含 `-Quick`）、
+`cargo test --workspace`、`sample_project` 七条门、全量 GPU 测试。理由：本轮只改 `tasks/` 文档、
+不动代码；这些门的最近一次全量读数在 §6.1/§6.3/§6.4，仍是对应交付的有效证据。
+`cargo test -p rustlua-spine` 的 15 passed 与 §6.3 记的 18 passed 不是同一口径（§6.3 按 8 个测试文件计，
+提交态为 lib + 6 个集成文件），判据一条没减。
+
+### 9.3 只登记、不开新包（每条都有承载文档，不另立任务）
+
+1. **微信小游戏 / WebGL2 的运行时几何真机验证未做**——只到 wasm32 编译通过；§6.3「平台」保持
+   "未验"口径，不虚报。
+2. **混合与 tint black 的剩余面**：PMA / Multiply / Screen 仍在运行时明确拒绝并计入 `dropped_draws`
+   （不静默错色）；tint black 的 dark 通道只固化了语义（`tests/tint_black_semantics.rs`），尚未进 shader；
+   stencil 裁剪未实现，clipping 附件在导入期硬拒绝。口径见 §6.2 与 `docs/18` 的 spine 支持范围表。
+3. **未接入的上游能力**：骨骼 Physics 约束、timeline 自定义事件与 `complete`（`docs/18` 已写明）。
+4. **`tools/spine-spike/` 留在本地**：约 891 MB（其中 887 MB 是 `target/`，已被 `.gitignore`；官方示例
+   导出不入库）。它是 golden 回归基线，按 `M84-02` §4 每次改 backend 都要跑；新克隆上要复跑需先重建
+   `assets/upstream-repo` 与 `bone_dump`（命令见 `M84-01` §8 / `M84-02` §6）。
+5. **归档复验发现的外部红门**：`RUSTSEC-2026-0592`（`url 2.5.8`，当日 RustSec 公告）。修复只需
+   `cargo update -p url`（→ 2.5.9），但它属供应链治理（M83-05 范围），且本轮 `engine/Cargo.lock`
+   有在途改动，故不在本批动。这不是 M84 的回归：P4（2026-11-20）跑 `cargo deny check` 时
+   advisories 是全 ok 的。
+6. **`docs/80` 的"状态：M84"**：该文正文讲的是 `.sgraph` 特效模板，与本批 Spine 编号撞车但内容无关，
+   未改动；要不要纠正编号另开。
+
+### 9.4 归档动作
+
+- 三份（本文件、`M84-01-P0-Spine运行时对拍报告`、`M84-02-P1前置门-官方Golden对拍报告`）移入
+  `tasks/done/`，保留原名。
+- `tasks/README.md` 的 `plan/` 盘点同步：本批归档后 `plan/` **清空**（M83 剩余六份由并行会话在同日
+  先归档，提交 `7bc8916a`；本批三份随后归档）；`.gitignore` 里指向 `tasks/plan/M84-01`
+  的注释改到 `tasks/done/M84-01`。
+- `docs/18` 两处过期表述修正：把 timeline 自定义事件与 `complete` 从"留给 P2"改为"仍未接入
+  （原计划 P2，P2 未包含）"——P2 已收口，留旧话会让人误以为 P2 交付了它。
+- 本文件顶部"文档性质"行已按实施结果就地修订（留修订说明），不另开修订版。
