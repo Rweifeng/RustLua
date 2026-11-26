@@ -332,7 +332,7 @@ enabled=true;sorting_layer=default;order=0`。`.spine` 清单引用 `.skel` 骨�
 | `spine.snapshot_frames(id, w, h, dir, frames, dt, prefix)` | 逐帧 `advance(dt)` 后各烤一张，返回路径数组；**会推进实体的动画时间**。用于把一段动作烤成序列帧 |
 
 > 烘焙接口（`snapshot*`）是"角色进 UI"的出口：动态 UI 整层画在世界 Sprite 之上、运行期又换不了
-> 骨骼，烤成贴图后角色才能自由叠在任意 UI 层（生产缺口 G03/G09/G10，登记见 `tasks/plan/M85-04`）。
+> 骨骼，烤成贴图后角色才能自由叠在任意 UI 层（生产缺口 G03/G09/G10，登记见 `tasks/done/M85-04`）。
 > 边界：clipping 在导入期已被拒绝；图集页需能从工程根读盘；每帧一次全量 CPU 光栅化，**不适合 60fps 实时**。
 
 事件项形状：`{ entity, kind, name, animation }`。P1 只产 `kind == "start"`（切换动画时，

@@ -210,3 +210,13 @@ git diff --check
   仍在绘制时跳过——那属于 P1-01（见 [M85-00](M85-00-下一阶段优先级总览与依赖顺序.md) §四），不要在本包顺手改。
 - **2D 基线口径（已实测）**：`--no-default-features` 的 API 面**含** `spine` 表，`_2d.json` 同样需要
   加两个函数（已加，2D 测试与 LuaLS 一致性均绿）。
+
+## 归档记录（2026-11-26）
+
+- **归档依据**：本包四项验收全部闭合（4 道红门转绿、文档/示例/基线/计数同步、`snapshot.rs` 单测补齐、
+  `tools/spine-spike/` 处置、CHANGELOG 留痕）。提交 `40cd1a71`（29 files，+838/−38）。
+- **读数**：clippy workspace exit 0；rustlua-spine lib 10 条（含新增 5 条）；API 面 444（全量+2D）；
+  `sample_project` 18 passed、示例缺 0；docgen `lua_api_docs_ok`（stubs=282）；
+  `check-api-2d` exit 0；`verify.ps1 -Quick` passed（log `verify-20261126-123049.log`）。
+- **只登记**：Spine 真机几何未验（微信/WebGL2）、clipping 导入期拒绝、渲染路径 PMA/Multiply/Screen
+  仍拒绝（烘焙路径已支持反预乘）——分别归 M85-03/P2-05 与 P1-01，不在本包。
