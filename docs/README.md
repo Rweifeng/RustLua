@@ -114,6 +114,7 @@
 - [Lua 脚本性能分析与优化](78-Lua脚本性能分析与优化.md)：PUC Lua 5.4.8 + mlua 的纯 Lua/绑定/返回 table 三类成本、`transform.get` 的 table 形状瓶颈、已落地的容量/借用/标量位置 API/事件订阅快照优化、批量写的负结果、按帧预算换算的优化优先级与复现方式
 - [引擎能力缺口登记（生产使用反馈）](82-引擎能力缺口登记.md)
 - [包体逐依赖体积归因](83-包体逐依赖体积归因.md)：wasm 发布口径的逐 crate 体积账（M84 Spine / 矢量字体栈 / 序列化单态化 / 工作区功能），以及 raw `name` 段与打包 recipe 造成的口径噪声、1.88×spine2d MSRV 阻塞：真实游戏工程使用中撞到的 G01–G10 缺口（Spine 运行期换骨/组件 PMA、动态 UI 层级与对齐、透明区 RGB、`spine.snapshot` 等），每条带本仓 `file:line` 证据、生产代价、建议补法与 M85 归属
+- [Web/微信 wasm 打包工具链的 EH 探针与 MSRV 处置](84-Web打包工具链EH探针与MSRV处置.md)：路线 A（升 ≥1.95）被真实 Edge 的混合 EH 拒绝；改走"1.88 + ignore-rust-version + CI recipe 门"，含 probe 读数与复现命令
 
 ## 第三方素材
 

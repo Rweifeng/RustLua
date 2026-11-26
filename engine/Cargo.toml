@@ -77,7 +77,10 @@ rustlua-spine = { path = "crates/rustlua-spine" }
 rustlua-gpu = { path = "crates/rustlua-gpu" }
 # M84 Spine 2D：只用 spine2d 的 core（crate 自带的 wgpu 后端要 wgpu 29/30，本仓是 27）。
 # 冻结 Spine 4.3.x；升级须走 M84-00 §4.1 的 backend 隔离层与 golden 对拍门。
-spine2d = { version = "0.5", features = ["json", "binary"] }
+# **精确锁 0.5.0**（M86-01）：0.3/0.4/0.5 的 manifest 都声明 rust-version=1.95，
+# 但 0.5.0 的代码实测可在打包工具链 1.88 上编译且产物是纯 legacy EH（docs/84）。允许 0.5.x 漂移
+# 会让"1.88 能编 + V8 能加载"这两个前提随时失效；升级时必须重跑 check-wasm-release-recipe.ps1。
+spine2d = { version = "=0.5.0", features = ["json", "binary"] }
 rustlua-frame-abi = { path = "crates/rustlua-frame-abi" }
 rustlua-ui = { path = "crates/rustlua-ui" }
 rustlua-ui-spec = { path = "crates/rustlua-ui-spec" }

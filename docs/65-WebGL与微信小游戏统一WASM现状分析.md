@@ -38,6 +38,8 @@ WebGL 与微信小游戏都构建 `engine/crates/game_web`：
 
 - 目标均为 `wasm32-unknown-unknown`；
 - 均固定使用 Rust 1.88.0；
+  pin 的单一事实源与 CI 一致性门见 [docs/84](84-Web打包工具链EH探针与MSRV处置.md)（M86-01）。
+
 - 均由 Zig 编译 vendored Lua C 源；
 - `wasm-bindgen` CLI 版本从 `Cargo.lock` 精确解析；
   - 解析走 `scripts/build/wasm-bindgen.ps1`，**存在性判定是双判据**：先 `Get-Item -Force`，拿不到再枚举父目录；

@@ -58,6 +58,11 @@ node scripts/dev/serve-static.js examples/game_jhyt/builds/webgl/<name> 8000
 
 ## 2.1 工具链口径（三条都踩过坑，写在明面上）
 
+> M86-01 补充：工具链 pin 的**单一事实源**是 `scripts/build/wasm-toolchain.ps1`，打包脚本与 CI 一致性门
+> `check-wasm-release-recipe.ps1` 读同一份；为什么不能升 ≥1.95 的 EH 探针读数见
+> [docs/84](84-Web打包工具链EH探针与MSRV处置.md)。
+
+
 * **wasm 必须用 rustc 1.88（LLVM 18）编**：1.97 对 vendored Lua C 的 setjmp 生成 new EH
   （`try_table`）、对 Rust 侧 `catch_unwind` 生成 legacy `try`(0x06)，同一模块里新旧混用，
   V8 直接拒绝编译（详见 `package.ps1` 里 WP10 那段）。所以 wasm32 目标要装到**这个 toolchain**

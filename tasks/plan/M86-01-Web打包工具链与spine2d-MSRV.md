@@ -1,7 +1,7 @@
 # 任务：Web/微信发布链的工具链冲突与锁版治理（rustc 1.88 × spine2d MSRV 1.95）
 
 - 任务 ID：M86-01
-- 状态：待办（P0：Web/微信 release 打包链当前**编不出来**）
+- 状态：进行中（2026-11-26：路线 A probe 已否决，改走路线 D 并落地工具链/一致性门；等两条打包链路端到端验收）
 - 关联里程碑：M86
 - 创建日期：2026-11-26
 
@@ -88,18 +88,55 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify\verify-wechat
 判据：两条平台打包 + 产物层验收 exit 0；EH 在 V8/无头 Edge（及微信 harness）里不报 mixed；
 新增的 MSRV×工具链一致性门有正反对照（改 pin 必红）。
 
-## 实现记录
+## 实现记录（2026-11-26）
 
-待回填：所选路线、probe 读数（Node V8/无头 Edge/微信 harness）、打包产物字节、
-新增一致性门的正反读数。
+### 路线 A probe（否决）
+- 1.97.1 构建当前 HEAD 的 game_web wasm（打包同款 profile）：WAT 扫描 `try_table=674`、legacy `try`=2、
+  `exnref=21` ⇒ **混合 EH**；
+- 真实 **Edge 158** headless 用默认参数编译 wasm-bindgen 产物：`module uses a mix of legacy and new
+  exception handling instructions`；Node 24 默认参数同样拒绝（`Invalid opcode 0x1f`，
+  加 `--experimental-wasm-exnref` 才能编译）。
+- 对照：rustc **1.88** 在旧 commit 上构建的产物 `try_table=0, exnref=0, legacy try=583`，Node 默认 PASS。
+  ⇒ **路线 A（升 ≥1.95）不可行**；完整读数见 [docs/84](../docs/84-Web打包工具链EH探针与MSRV处置.md)。
+
+### 路线 D（已落地）
+- 当前 HEAD（含 spine2d 0.5.0）用 **1.88.0 + --ignore-rust-version** 构建成功（13,353,964 B），
+  WAT 扫描 `try_table=0, exnref=0, legacy try=675`，Node 默认参数 **PASS** ⇒ 纯 legacy EH，与发布运行时兼容；
+- `engine/Cargo.toml`：`spine2d = "0.5"` → **`"=0.5.0"`**（精确锁，防 0.5.x 漂移让前提失效）；
+- `scripts/build/package/30-build.ps1`：wasm 构建加 **`--ignore-rust-version`**（注释指向 docs/84）；
+- 工具链 pin 抽到单一事实源 `scripts/build/wasm-toolchain.ps1`，打包脚本与门共用；
+- 新增 **`scripts/verify/check-wasm-release-recipe.ps1`**（+ `wasm-eh-check.mjs`）：recipe 构建 +
+  V8 默认参数编译断言；缺工具链/target/zig 时 exit 3 BLOCKED；
+- CI：`quality.yml` 的 `web-evidence` job 新增「Install Rust 1.88.0」+「Wasm release recipe」两步，
+  打包 recipe 从"没人跑"变成 CI 常跑。
+
+### 端到端验收（本机，2026-11-26）
+- **WebGL**：`package.ps1 -Platform webgl` **exit 0**，`wasm_host_ok host=WebAssembly platform=webgl
+  bytes=8191121 exports=162 globals=2 bridge_exports=11`、`webgl_package_ok files=8`、
+  发布包 10,797.6 KB；`verify-webgl-bundle.ps1` 在本机是 **RED 但只红在环境**：`gpu=initializing`、
+  `GL_INVALID_ENUM: glTexStorage3D`、`boot=pending`（与 `web-evidence` 的 BLOCKED 同因：本机无头
+  WebGL2 不可用）；层面证据 `frame owner ok` / `page identity ok` / `missing_api_paths=0` 均通过，
+  wasm 已加载执行。**不据此声称 WebGL 端到端绿**，只说"打包与加载链路恢复"。
+- **微信小游戏**：`package.ps1 -Platform wechat-minigame` **exit 0**，
+  `wechat_minigame_package_ok files=17 main_kb=905（22.1%）subpackage_kb=10,101（49.3%）total_kb=11,006（53.7%）`；
+  `wasm_host_ok ... platform=wechat-minigame bytes=8193071 exports=160 bridge_exports=11`；
+  `verify-wechat-minigame.ps1` **exit 0**：`eh_probe=accepted`（harness 认 legacy try/catch + tag 段）、
+  核心实例化成功（导出 148 项）、13 组负例全过、L3 API contract ok；渲染为 `env-limited:no-webgl2`（fake host 无 WebGL2）。
+- **新门本机实跑**：`wasm_recipe_ok toolchain=1.88.0 bytes=13353964 eh=legacy`（exit 0；status 文件
+  `artifacts/logs/quality/wasm-recipe.status`）。
+
+### 待完成
+- 新门在 CI 上的首次绿（本次推送后，含 `quality.yml` 新增的两步）；
+- 微信真机抽验（本机无法覆盖；harness 只能证明产物层与 EH 探针）。
 
 ## 验收证据
 
-- [ ] 复现命令在修复前 exit != 0（已在本文件 §背景 记录）
-- [ ] 所选路线落地后，webgl 与 wechat-minigame 两条打包链路 exit 0
-- [ ] `verify-webgl-bundle.ps1` / `verify-wechat-minigame.ps1` 产物层绿（或按环境显式 BLOCKED 并说明）
-- [ ] 工具链 pin × 依赖 MSRV 一致性门落地并有反面对照
-- [ ] docs/32、docs/52、docs/65、docs/83（体积）同步
+- [x] 复现命令在修复前 exit != 0（已在本文件 §背景 记录）
+- [x] 路线 A probe 完成并否决（1.97 混合 EH，Edge 158/Node 默认拒绝；docs/84 §2）
+- [x] 所选路线落地后，webgl 与 wechat-minigame 两条打包链路 exit 0（本机实测）
+- [x] `verify-webgl-bundle.ps1` / `verify-wechat-minigame.ps1`：微信 exit 0；WebGL 在本机按环境显式受限（无头 WebGL2 不可用，成因已记录）
+- [x] 工具链 pin × 依赖 MSRV 一致性门落地（check-wasm-release-recipe.ps1 + CI 步骤；1.97 反例见 docs/84 §2.1）
+- [x] docs/32、docs/52、docs/65 已交叉引用 docs/84 与单一事实源；docs/83 不受影响（体积归因基于 1.97 对比，口径已注明）
 
 ## 未完成项 / 已知限制
 

@@ -53,7 +53,10 @@
         # wasm 侧固定用 1.88.0（见下方 WP10 的 EH 口径），所以 wasm32 目标要装到**这个
         # toolchain**上：`rustup target add` 不带 `--toolchain` 只装默认 stable，1.88.0
         # 依然报 "can't find crate for `core`"（实测 2026-09-30）。
-        $wasmToolchain = "+1.88.0"
+        # 单一事实源：scripts/build/wasm-toolchain.ps1（1.88 冻结的理由、≥1.95 的混合 EH 实测、
+        # spine2d MSRV 冲突与本路线的裁决全部见 docs/84）。打包脚本与 CI 一致性门读同一份。
+        . (Join-Path $packageScriptRoot "wasm-toolchain.ps1")
+        $wasmToolchain = Get-RustLuaWasmToolchain
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -126,7 +129,10 @@
             # M81 批 3：api = "2d" 时关掉默认 feature（3d）；gpu2d 是渲染宿主开关，与维度无关，
             # 显式 --features 不会重开默认 feature，两条可叠加。
             if ($ApiDimension -eq "2d") { $wasmFeatures = @("--no-default-features") + $wasmFeatures }
-            cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown @wasmFeatures -q 2>&1 | Out-Null
+                    # --ignore-rust-version：spine2d 0.5 的 manifest 声明 rust-version=1.95，但其实现在 1.88 上
+        # 可编译且产物仍是纯 legacy EH（docs/84 的 probe 与 CI 的 check-wasm-release-recipe.ps1 为证）。
+        # 不 ignore 的话，cargo 会在编译前直接拒绝；ignore 后由一致性门守住"1.88 真能编 + V8 默认参数能加载"。
+        cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown @wasmFeatures --ignore-rust-version -q 2>&1 | Out-Null
         }
         finally {
             $ErrorActionPreference = $savedEap
