@@ -2728,9 +2728,11 @@ if ($Metrics) {
         Write-Host "metrics_blocked reason=missing_script path=$checkMetrics（P4-04 未落地）" -ForegroundColor Yellow
         exit 3
     }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $checkMetrics
+    # 刚采集的两份产物必须**入库**再比对，否则趋势库永远只有旧样本（旧行为：这里不带 -DoCollect，
+    # check-metrics 又从不 ingest ⇒ 干净树上结构性 BLOCKED；2026-11-26 修复）。
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $checkMetrics -DoCollect
     if ($LASTEXITCODE -eq 3) {
-        Write-Host "metrics_blocked reason=insufficient_history（缺历史样本；先入库，见 metrics/README.md §8）" -ForegroundColor Yellow
+        Write-Host "metrics_blocked reason=insufficient_history（缺同指纹历史样本；先入库，见 docs/70 §3.4/§8）" -ForegroundColor Yellow
         exit 3
     }
     if ($LASTEXITCODE -ne 0) {

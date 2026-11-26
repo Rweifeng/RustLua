@@ -2,7 +2,7 @@
 
 优化项 10（见 [60-全面复盘与优化项清单.md](60-全面复盘与优化项清单.md)）落地：**rustdoc 能一键生成、能发布、且不新增断链；Lua 侧每个绑定函数都有文档条目，条目数与运行期 API 面基线锁死**。三件事各自的"事实源"不同，凑在一起做是因为它们共用同一批产物（`cargo doc`）与同一条门（零告警）。
 
-> **2026-10-29 复核**：运行期 API 面已到 **44 表 / 328 函数**，文档桩基线 `{funcs: 328, stubs: 280, documented: 48}`；下文 §四、§六 的 41/275 是本文交付时的读数，保留作历史。
+> **2026-11-26 复核**：运行期 API 面已到 **52 表 / 444 函数**，文档桩基线 `{funcs: 444, stubs: 282, documented: 162}`；下文 §四、§六 的 41/275 是本文交付时的读数，保留作历史。
 
 ## 一、三条命令
 
@@ -44,9 +44,9 @@ powershell -File scripts/docgen/gen-rustdoc.ps1      # cargo doc → 可发布�
 
 ## 四、Lua API 文档桩
 
-形态：**rustdoc 页 + 再生成一致性门**。`scripts/docgen/gen-lua-api-docs.js` 从基线生成 `engine/crates/engine/src/lua_api/doc/<模块>.md`（41 个模块），`lua_api.rs` 里每个模块是一个只带 `#![doc = include_str!(…)]` 的空 `pub mod`，于是 `cargo doc` 产物里出现 `engine::lua_api::camera` 这样的参考页，函数名与签名各成一节、进侧边栏目录。
+形态：**rustdoc 页 + 再生成一致性门**。`scripts/docgen/gen-lua-api-docs.js` 从基线生成 `engine/crates/engine/src/lua_api/doc/<模块>.md`（52 个模块），`lua_api.rs` 里每个模块是一个只带 `#![doc = include_str!(…)]` 的空 `pub mod`，于是 `cargo doc` 产物里出现 `engine::lua_api::camera` 这样的参考页，函数名与签名各成一节、进侧边栏目录。
 
-**事实源是运行期 API 面基线**（`core/api_surface_snapshot/lua_api_surface.json`，41 张表 / 275 个函数），不是绑定源码。理由与快照门 `lua_api_surface_matches_baseline` 一致：源码里 `create_function` 有 267 处，运行期真正暴露 275 个函数，只有以基线为主才能同时发现两类失真——
+**事实源是运行期 API 面基线**（`rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`，52 张表 / 444 个函数），不是绑定源码。理由与快照门 `lua_api_surface_matches_baseline` 一致：源码里 `create_function` 有 267 处，运行期真正暴露 275 个函数，只有以基线为主才能同时发现两类失真——
 
 - **死绑定**：源码注册了、运行期 `_G` 里没有（docs/37 记过 `input.action` 被注册两次的同类坑）→ `--check` 判红；
 - **解析器漏形状**：基线有、源码定位不到绑定点 → 打 `unmatched` 并把签名标成 `(...)`，提示解析器该修。
@@ -63,14 +63,14 @@ powershell -File scripts/docgen/gen-rustdoc.ps1      # cargo doc → 可发布�
 | rustdoc 零告警 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace --lib` | `verify.ps1`「Rustdoc」+ `quality.yml` lint job |
 | 站点发布 | `scripts/docgen/gen-rustdoc.ps1`（自带 `-D warnings` 与根页自检） | `rustdoc.yml` |
 
-桩数基线 `src/lua_api/doc/baseline.json` 当前是 `{funcs: 275, stubs: 275, documented: 0}`。`--check` 有两档：`stubs > 基线` 判红（新增 API 却没补文档），`stubs ≠ 基线` 也判红并提示跑 `--update-baseline` 收紧——**补文档让桩数下降是好事，但必须显式承认新基线**，否则"下降"会变成没人核对的漂移。
+桩数基线 `src/lua_api/doc/baseline.json` 当前是 `{funcs: 444, stubs: 282, documented: 162}`（2026-11-26 核对）。`--check` 有两档：`stubs > 基线` 判红（新增 API 却没补文档），`stubs ≠ 基线` 也判红并提示跑 `--update-baseline` 收紧——**补文档让桩数下降是好事，但必须显式承认新基线**，否则"下降"会变成没人核对的漂移。
 
 `verify.ps1` 里 Lua API 那步在找不到 `node` 时打印 `[SKIP] …（不是通过）` 后继续，遵守本仓库"跳过绝不等于通过"的口径；CI 用 `actions/setup-node` 固定 node 20，不存在静默跳过。
 
 ## 六、边界（没做的事）
 
-- **275 个函数目前全是桩**，一条人工说明都还没写；`documented=0` 是诚实的起点而不是完成态。签名是**从绑定源码推断**的，`Option<f32>` / `?` 这类标记需人工核对成 Lua 侧口径（Lua 里没有 `Option`，实际是"可省略参数"）。
-- 文档桩只覆盖 `_G` 上的 41 张模块表；场景组件字符串、`project.toml` 字段、编辑器面板不在 `lua_api_surface.json` 里，各自有自己的 schema 门。
+- **282 个函数仍是桩**（444 个里已写 162 条说明）；起点已不是"全是桩"，但仍未完成。签名是**从绑定源码推断**的，`Option<f32>` / `?` 这类标记需人工核对成 Lua 侧口径（Lua 里没有 `Option`，实际是"可省略参数"）。
+- 文档桩只覆盖 `_G` 上的 52 张模块表；场景组件字符串、`project.toml` 字段、编辑器面板不在 `lua_api_surface.json` 里，各自有自己的 schema 门。
 - `-D warnings` 只作用在 `--lib`；`--all-targets`（examples/benches/tests）没进门，因为 examples 的文档注释不是发布面，且会把一次性脚本的私有胶水也拉进断链统计。
 - 本批**只动注释行**，因此不引入格式 diff：在提交树上 `cargo fmt --all -- --check` 实测退出码 0。写作过程中本机一度报 8 个文件的**存量**格式差异（`core/commands.rs`、`core/lod.rs`、`core/texture.rs`、`host/renderer.rs` 等在途文件），那属于并行进行中的另一批改动，没有顺手格式化——格式化别人的在途代码会把无关 diff 混进这次提交。
 - Pages 的 Source 设置、以及"站点真的可访问"这两点未在本机验证（无 `gh`、无凭据），需要一次 push + Actions 观察。

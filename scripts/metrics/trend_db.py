@@ -12,6 +12,8 @@
   check   --policy <policy.json>                按域判红（样本不足退 3）
   query   --sql "select ..."                    只读查询（拒绝非 SELECT）
   prune   [--keep-days 730]                     只删派生库数据，不删 history
+  selftest [--keep]                             正反自测（注入超阈值样本必须 exit 2）
+  accept-baseline --input <file> --reason "..."  人工审阅后登记批准基线（要求工作区干净）
 
 退出码：0 = 通过；1 = 错误（坏 schema / 解析失败 / 拒绝）；2 = 回归；3 = 样本不足（BLOCKED）。
 
@@ -238,6 +240,23 @@ def adapt_editor_perf(path, project_root, env_fp):
     )
 
 
+def _coverage_percent(block, legacy_key):
+    """coverage-v1 的百分比取法。
+
+    新版 `metrics/baselines/coverage.json` 的字段是嵌套的 `{count, covered, percent}`，
+    而旧代码按扁平的 `lines_pct` 读 -> 历史库里 coverage 样本全是 0.0、覆盖率棘轮从未生效
+    （2026-11-26 修复）。这里对两种形状都兼容，避免再出现"结构变了但读数静默变 0"。
+    """
+    if isinstance(block, dict):
+        if "percent" in block:
+            return float(block["percent"])
+        if legacy_key in block:
+            return float(block[legacy_key])
+    elif isinstance(block, (int, float)):
+        return float(block)
+    return 0.0
+
+
 def adapt_coverage(path, project_root, env_fp):
     data = _json_file(path)
     if data.get("schema") != "coverage-v1":
@@ -245,13 +264,19 @@ def adapt_coverage(path, project_root, env_fp):
     commit, dirty = git_state(project_root)
     overall = data.get("overall", {})
     samples = [
-        {"workload": "workspace", "metric": "lines_pct", "value": float(overall.get("lines_pct", 0)), "unit": "pct"},
-        {"workload": "workspace", "metric": "functions_pct", "value": float(overall.get("functions_pct", 0)), "unit": "pct"},
-        {"workload": "workspace", "metric": "regions_pct", "value": float(overall.get("regions_pct", 0)), "unit": "pct"},
+        {"workload": "workspace", "metric": "lines_pct",
+         "value": _coverage_percent(overall.get("lines"), "lines_pct"), "unit": "pct"},
+        {"workload": "workspace", "metric": "functions_pct",
+         "value": _coverage_percent(overall.get("functions"), "functions_pct"), "unit": "pct"},
+        {"workload": "workspace", "metric": "regions_pct",
+         "value": _coverage_percent(overall.get("regions"), "regions_pct"), "unit": "pct"},
     ]
     for crate in data.get("crates", []):
         wl = "crate|{}".format(crate.get("name"))
-        samples.append({"workload": wl, "metric": "lines_pct", "value": float(crate.get("lines_pct", 0)), "unit": "pct"})
+        # per-crate 用独立 metric 名：policy 的 `crate_lines_pct` 规则要能命中，
+        # 否则 0.5pp 的 workspace 阈值会被套到每个 crate 上（粒度错）。
+        samples.append({"workload": wl, "metric": "crate_lines_pct",
+                        "value": _coverage_percent(crate.get("lines"), "lines_pct"), "unit": "pct"})
     return build_run(path, "coverage", "coverage", samples, commit, dirty, env_fp,
                      {"reported": data.get("reported", "unreported")})
 
@@ -465,6 +490,30 @@ def load_policy(policy_path):
         return json.load(f)
 
 
+def accept_baseline(input_path, reason, history_dir, db_path, project_root):
+    """把一份已审阅的测量产物登记为**批准基线**（docs/70 §4 的 `--update` 流程）。
+
+    - 要求 git 工作区干净（避免把未提交改动的读数当基线）；
+    - run 带 `baseline: true` + `extra.baseline_reason`，写入 history 与派生库；
+    - 之后 `check` 对 `compare_mode=baseline_delta` 的域**优先**用这条基线比较
+      （不再被中间样本带偏；也避免"基线过期 ⇒ 每天都是新回归"的假红）。
+    """
+    commit, dirty = git_state(project_root)
+    if dirty:
+        raise RuntimeError("工作区不干净：基线更新要求 git status 干净（docs/70 §4 第 3 步）")
+    run = adapt_any(input_path, project_root)
+    run["baseline"] = True
+    extra = dict(run.get("extra") or {})
+    extra["baseline_reason"] = reason
+    run["extra"] = extra
+    # baseline 标记会进 payload，必须重算 run_id；否则同一次测量会与普通 run 撞 id 被去重。
+    stable = json.dumps({k: v for k, v in run.items() if k != "ts"}, sort_keys=True, default=str)
+    run["run_id"] = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12]
+    con = connect(db_path)
+    inserted = ingest_run(con, run, history_dir)
+    return run["run_id"], inserted
+
+
 def report(con, domain, since_days, fmt):
     since = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
     if domain == "all":
@@ -508,37 +557,99 @@ def report(con, domain, since_days, fmt):
     return "\n".join(lines)
 
 
+def rule_key_for(domain, workload, metric):
+    """把样本的 (domain, workload, metric) 映射到 policy 该域 `rules` 的键。
+
+    为什么需要：采样 schema 是"逐 artifact / 逐 package / 逐 crate 一条"，
+    policy 的规则键却是 `exe/wasm/editor_exe/js`、`total/main/subpackage/component`。
+    原实现直接 `rules.get(metric)`，两类键永远对不上 -> 二进制与包体的 +3% 红线
+    在趋势库里从未触发过（2026-11-26 修复）。返回 `None` 表示该样本不受任何规则约束。
+    """
+    if domain == "binary":
+        name = workload.split("|", 1)[-1].lower()
+        if name.endswith(".wasm"):
+            return "wasm"
+        if name.endswith(".js"):
+            return "js"
+        if name.endswith(".exe"):
+            return "editor_exe" if "editor" in name else "exe"
+        return None
+    if domain == "package":
+        parts = workload.lower().split("|")
+        platform = parts[0] if parts else ""
+        name = parts[-1] if parts else ""
+        if metric == "bytes_main":
+            return "main"
+        if metric == "bytes_sub":
+            return "subpackage"
+        if platform in ("rlb", "component"):
+            return "component"
+        if metric == "bytes_total" and (name.startswith("sub") or "|sub|" in workload.lower()):
+            return "subpackage"
+        return "total" if metric == "bytes_total" else None
+    # 其它域（perf/coverage/compile/cfg）的采样 metric 名与 policy 规则键本来就一致。
+    return metric
+
+
 def check(con, policy, allowlist_path):
-    """按域判红。同指纹最近 min_samples 个 run 的中位数为参考；样本不足退 3；
-    allowlist 到期判 2；覆盖率/几何量/字节数仍判红，时间类可标 advisory。"""
+    """按域判红。
+
+    口径（2026-11-26 收紧，详见 docs/70 §3.4）：
+    - **同指纹**：只看与最新样本同一 `env_fingerprint` 的样本；跨机/跨 CI runner 的样本不参与
+      比较（时间类读数跨机不可比，混进来只会制造假红/假绿）。
+    - **compare_mode=baseline_delta 的确定性域**（coverage / binary / package）允许单样本比较：
+      当前值 vs 上一条同指纹样本；时间类（trailing_median）仍需 `min_samples` 条同指纹样本，
+      不足一律退 3（BLOCKED），不拿别的指纹凑数。
+    - 规则键经 `rule_key_for` 映射后查 policy，不再是 `rules.get(metric)` 的直连。
+    """
     min_samples = int(policy.get("min_samples", 3))
     domains = policy.get("domains", {})
     findings = []
     insufficient = []
     for domain, spec in domains.items():
         rules = spec.get("rules", {})
-        # 确定性域（如 coverage 的 per-crate 基线）不需要 3 个 trailing 样本；
-        # 由该域自己的基线门做棘轮，这里只要求 1 个当期读数。
-        domain_min = int(spec.get("min_samples", min_samples))
+        compare_mode = spec.get("compare_mode", "same_fingerprint_trailing_median")
+        default_min = 1 if compare_mode == "baseline_delta" else min_samples
+        domain_min = int(spec.get("min_samples", default_min))
         cur_rows = con.execute(
-            "SELECT workload, metric, value, created_at FROM samples WHERE domain=? ORDER BY created_at DESC, id DESC",
+            "SELECT s.workload, s.metric, s.value, s.created_at, r.env_fingerprint, r.baseline "
+            "FROM samples s JOIN runs r ON r.run_id = s.run_id "
+            "WHERE s.domain=? ORDER BY s.created_at DESC, s.id DESC",
             (domain,),
         ).fetchall()
         if not cur_rows:
             continue
+        # 以最新一条样本的环境指纹为"当前环境"；旧机器/旧 runner 的样本留在库里供 report，
+        # 但不参与判红。
+        current_fp = cur_rows[0][4]
         groups = {}
-        for wl, mt, v, ts in cur_rows:
-            groups.setdefault((wl, mt), []).append(v)
-        for (wl, mt), vals in groups.items():
-            rule = rules.get(mt)
+        for wl, mt, v, _ts, fp, is_baseline in cur_rows:
+            if fp != current_fp:
+                continue
+            groups.setdefault((wl, mt), []).append((v, bool(is_baseline)))
+        for (wl, mt), samples in groups.items():
+            rule = rules.get(rule_key_for(domain, wl, mt) or "")
             if not rule:
                 continue
+            vals = [value for value, _flag in samples]
             last_n = vals[:domain_min]
             if len(last_n) < domain_min:
-                insufficient.append("{}|{}|{} n={}".format(domain, wl, mt, len(last_n)))
+                insufficient.append("{}|{}|{} n={} (need {})".format(
+                    domain, wl, mt, len(last_n), domain_min))
                 continue
-            base = sorted(last_n)[len(last_n) // 2]
             cur = vals[0]
+            if compare_mode == "baseline_delta":
+                # 已批准基线优先（`accept-baseline` 写入的带 baseline 标记的 run）；
+                # 没有基线时退回"上一条同指纹样本"；只有一条时退化自比（不判红）。
+                approved = [value for value, flag in samples if flag]
+                if approved:
+                    base = approved[0]
+                elif len(vals) >= 2:
+                    base = vals[1]
+                else:
+                    base = cur
+            else:
+                base = sorted(last_n)[len(last_n) // 2]
             better = rule.get("better", "lower")
             if rule.get("mode") == "any_change_red":
                 if cur != base:
@@ -580,6 +691,230 @@ def check(con, policy, allowlist_path):
     return 0, "ok"
 
 
+# ── 自测：正反两向证明"红线真的会红" ───────────────────────────────────────
+#
+# 为什么要有它：2026-11-26 复核发现趋势库的两类键位错配（coverage 嵌套字段 /
+# binary+package 规则键）让"覆盖率 -0.5pp 判红""包体 +3% 判红"**从未触发过**。
+# 看不见的红线等于没有红线，所以把"注入超阈值样本必须 exit 2"固化成自测，
+# 由 check-metrics.ps1 每次跑（与 check-web-evidence-policy 的 --self-test 同思路）。
+
+SELFTEST_POLICY = {
+    "schema": 1,
+    "min_samples": 3,
+    "domains": {
+        "coverage": {
+            "compare_mode": "baseline_delta",
+            "min_samples": 1,
+            "rules": {
+                "lines_pct": {"max_delta_pp": 0.5, "better": "higher"},
+                "crate_lines_pct": {"max_delta_pp": 2.0, "better": "higher"},
+            },
+        },
+        "binary": {
+            "compare_mode": "baseline_delta",
+            "rules": {"exe": {"threshold_pct": 3, "threshold_abs_bytes": 131072,
+                              "better": "lower"}},
+        },
+        "package": {
+            "compare_mode": "baseline_delta",
+            "rules": {"total": {"threshold_pct": 3, "better": "lower"}},
+        },
+        "perf": {
+            "compare_mode": "same_fingerprint_trailing_median",
+            "min_samples": 3,
+            "rules": {"p95_us": {"threshold_pct": 5, "better": "lower"}},
+        },
+    },
+}
+
+
+def run_selftest(keep=False):
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="trend-db-selftest-")
+    failures = []
+    checked = 0
+
+    def write_json(path, obj):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+
+    def make_run(domain, samples, minute, fingerprint="selftest-fp"):
+        payload = {
+            "schema": SCHEMA,
+            "ts": "2026-11-26T00:{:02d}:00+00:00".format(minute),
+            "domain": domain,
+            "env": {"fingerprint": fingerprint},
+            "git": {"commit": "selftest", "dirty": False},
+            "source": {"kind": "selftest", "path": "selftest", "sha256": ""},
+            "samples": samples,
+        }
+        stable = json.dumps({"payload": {k: v for k, v in payload.items() if k != "ts"},
+                             "minute": minute},
+                            sort_keys=True, default=str)
+        payload["run_id"] = hashlib.sha256(stable.encode("utf-8")).hexdigest()[:12]
+        return payload
+
+    def db_from(runs, label):
+        db = os.path.join(tmp, "selftest-{}.sqlite".format(label))
+        con = connect(db)
+        for run in runs:
+            if not ingest_run(con, run, None):
+                raise AssertionError("自测 run 未被入库（run_id 冲突）")
+        return con
+
+    def run_check(runs, label):
+        con = db_from(runs, label)
+        code, msg = check(con, SELFTEST_POLICY, allow_path)
+        return code, msg
+
+    def case(name, body):
+        nonlocal checked
+        checked += 1
+        try:
+            body()
+            print("[PASS] self-test: " + name)
+        except AssertionError as error:
+            failures.append("{}：{}".format(name, error))
+
+    policy_path = os.path.join(tmp, "policy.json")
+    write_json(policy_path, SELFTEST_POLICY)
+    allow_path = os.path.join(tmp, "allowlist.json")
+    write_json(allow_path, {"entries": []})
+
+    def coverage_adapter_reads_nested_percent():
+        path = os.path.join(tmp, "coverage-adapter.json")
+        write_json(path, {
+            "schema": "coverage-v1",
+            "overall": {"lines": {"percent": 80.99}, "functions": {"percent": 79.71},
+                        "regions": {"percent": 80.89}},
+            "crates": [{"name": "x", "lines": {"percent": 50.0}}],
+            "reported": "reported",
+        })
+        run = adapt_any(path, os.path.dirname(tmp))
+        values = {(s["workload"], s["metric"]): s["value"] for s in run["samples"]}
+        assert values[("workspace", "lines_pct")] == 80.99, "coverage 嵌套 percent 未被读取：{}".format(values)
+        assert values[("crate|x", "crate_lines_pct")] == 50.0, "crate 行应改用 crate_lines_pct：{}".format(values)
+
+    def binary_adapter_rule_keys():
+        path = os.path.join(tmp, "binary-adapter.json")
+        write_json(path, {"schema": "binary-v1", "artifacts": [
+            {"name": "game.exe", "bytes_raw": 1000},
+            {"name": "editor.exe", "bytes_raw": 2000},
+            {"name": "game_web.wasm", "bytes_raw": 3000},
+            {"name": "web.js", "bytes_raw": 400},
+        ]})
+        run = adapt_any(path, os.path.dirname(tmp))
+        keys = {(s["workload"], s["metric"]): rule_key_for("binary", s["workload"], s["metric"])
+                for s in run["samples"]}
+        assert keys[("artifact|game.exe", "bytes_raw")] == "exe", keys
+        assert keys[("artifact|editor.exe", "bytes_raw")] == "editor_exe", keys
+        assert keys[("artifact|game_web.wasm", "bytes_raw")] == "wasm", keys
+        assert keys[("artifact|web.js", "bytes_raw")] == "js", keys
+
+    def package_adapter_rule_keys():
+        path = os.path.join(tmp, "package-adapter.json")
+        write_json(path, {"schema": "package-v1", "packages": [
+            {"platform": "pc", "form": "full", "name": "pc", "bytes_total": 1000},
+            {"platform": "wechat", "form": "subpackage", "name": "main",
+             "bytes_total": 1000, "bytes_main": 500, "bytes_sub": 500},
+            {"platform": "rlb", "form": "resource", "name": "core.rlb", "bytes_total": 100},
+        ]})
+        run = adapt_any(path, os.path.dirname(tmp))
+        keys = {(s["workload"], s["metric"]): rule_key_for("package", s["workload"], s["metric"])
+                for s in run["samples"]}
+        assert keys[("pc|full|pc", "bytes_total")] == "total", keys
+        assert keys[("wechat|subpackage|main", "bytes_main")] == "main", keys
+        assert keys[("wechat|subpackage|main", "bytes_sub")] == "subpackage", keys
+        assert keys[("rlb|resource|core.rlb", "bytes_total")] == "component", keys
+
+    def coverage_minus_one_pp_is_red():
+        base = make_run("coverage", [
+            {"workload": "workspace", "metric": "lines_pct", "value": 80.99, "unit": "pct"}], 0)
+        newer = make_run("coverage", [
+            {"workload": "workspace", "metric": "lines_pct", "value": 79.99, "unit": "pct"}], 1)
+        code, msg = run_check([base, newer], "coverage-red")
+        assert code == 2, "覆盖率 -1pp 应判 2，实际 {} ({})".format(code, msg)
+
+    def coverage_half_pp_is_green():
+        base = make_run("coverage", [
+            {"workload": "workspace", "metric": "lines_pct", "value": 80.99, "unit": "pct"}], 0)
+        newer = make_run("coverage", [
+            {"workload": "workspace", "metric": "lines_pct", "value": 80.50, "unit": "pct"}], 1)
+        code, msg = run_check([base, newer], "coverage-green")
+        assert code == 0, "覆盖率 -0.49pp 应通过，实际 {} ({})".format(code, msg)
+
+    def binary_plus_four_pct_is_red():
+        base = make_run("binary", [
+            {"workload": "artifact|game.exe", "metric": "bytes_raw", "value": 1000, "unit": "bytes"}], 0)
+        newer = make_run("binary", [
+            {"workload": "artifact|game.exe", "metric": "bytes_raw", "value": 1040, "unit": "bytes"}], 1)
+        code, msg = run_check([base, newer], "binary-red")
+        assert code == 2, "exe +4% 应判 2，实际 {} ({})".format(code, msg)
+
+    def package_plus_four_pct_is_red():
+        base = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 1000, "unit": "bytes"}], 0)
+        newer = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 1040, "unit": "bytes"}], 1)
+        code, msg = run_check([base, newer], "package-red")
+        assert code == 2, "包体 +4% 应判 2，实际 {} ({})".format(code, msg)
+
+    def other_fingerprint_is_ignored():
+        base = make_run("binary", [
+            {"workload": "artifact|game.exe", "metric": "bytes_raw", "value": 1000, "unit": "bytes"}], 0)
+        newer = make_run("binary", [
+            {"workload": "artifact|game.exe", "metric": "bytes_raw", "value": 9999, "unit": "bytes"}],
+            1, fingerprint="other-machine")
+        code, msg = run_check([base, newer], "fingerprint-isolated")
+        assert code == 0, "跨指纹样本必须被忽略（否则 9999 会假红），实际 {} ({})".format(code, msg)
+
+    def time_domain_insufficient_is_blocked():
+        only = make_run("perf", [
+            {"workload": "sprite_10000", "metric": "p95_us", "value": 1234, "unit": "us"}], 0)
+        code, msg = run_check([only], "perf-insufficient")
+        assert code == 3, "时间类域只有 1 个同指纹样本应退 3，实际 {} ({})".format(code, msg)
+
+    def approved_baseline_wins():
+        # 旧样本 1000 → 中间未批准样本 5000 → 批准基线 1000 → 当前 1900。
+        # 只看"上一条"会以为从 5000 降到 1900（看似变好）；批准基线是 1000，
+        # 当前 1900 是 +90% ⇒ 必须判 2。
+        older = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 1000, "unit": "bytes"}], 0)
+        middle = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 5000, "unit": "bytes"}], 1)
+        approved = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 1000, "unit": "bytes"}], 2)
+        approved["baseline"] = True
+        current = make_run("package", [
+            {"workload": "pc|full|pc", "metric": "bytes_total", "value": 1900, "unit": "bytes"}], 3)
+        code, msg = run_check([older, middle, approved, current], "baseline-priority")
+        assert code == 2, "批准基线应优先于'上一条样本'，实际 {} ({})".format(code, msg)
+
+    case("coverage 适配器读取嵌套 percent（不再是 0.0）", coverage_adapter_reads_nested_percent)
+    case("binary 采样映射到 policy 规则键（exe/editor_exe/wasm/js）", binary_adapter_rule_keys)
+    case("package 采样映射到 policy 规则键（total/main/subpackage/component）", package_adapter_rule_keys)
+    case("覆盖率 -1pp -> 2", coverage_minus_one_pp_is_red)
+    case("覆盖率 -0.49pp -> 0", coverage_half_pp_is_green)
+    case("exe +4% -> 2", binary_plus_four_pct_is_red)
+    case("包体 +4% -> 2", package_plus_four_pct_is_red)
+    case("跨指纹样本不参与判红", other_fingerprint_is_ignored)
+    case("时间类域样本不足 -> 3（BLOCKED）", time_domain_insufficient_is_blocked)
+    case("批准基线优先于'上一条样本'", approved_baseline_wins)
+
+    if keep:
+        print("[INFO] self-test 临时目录保留：{}".format(tmp))
+    else:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if failures:
+        for failure in failures:
+            print("[FAIL] " + failure)
+        return 1
+    print("trend_db_selftest_ok cases={}".format(checked))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="RustLua 性能趋势数据库")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -612,9 +947,27 @@ def main(argv=None):
     p.add_argument("--keep-days", type=int, default=730)
     p.add_argument("--db", default="artifacts/metrics/trend.sqlite")
 
+    p = sub.add_parser("selftest")
+    p.add_argument("--keep", action="store_true", help="保留临时目录便于排查")
+
+    p = sub.add_parser("accept-baseline")
+    p.add_argument("--input", required=True, help="已审阅的测量产物（coverage/binary/package JSON）")
+    p.add_argument("--reason", required=True, help="为什么接受这条基线（进 extra.baseline_reason）")
+    p.add_argument("--history", default="metrics/history")
+    p.add_argument("--db", default="artifacts/metrics/trend.sqlite")
+
     args = ap.parse_args(argv)
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     os.chdir(project_root)
+
+    if args.cmd == "selftest":
+        return run_selftest(keep=args.keep)
+
+    if args.cmd == "accept-baseline":
+        run_id, inserted = accept_baseline(args.input, args.reason, args.history, args.db, project_root)
+        print("trend_db_ok accept_baseline run_id={} inserted={} reason={}".format(
+            run_id, inserted, args.reason))
+        return 0
 
     if args.cmd == "rebuild":
         n = rebuild(args.history, args.db)

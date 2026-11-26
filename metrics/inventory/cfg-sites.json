@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T07:02:57.346Z",
+  "generated_at": "2026-11-26T05:10:51.835Z",
   "counts": {
     "wasm_attrs": 70,
     "wasm_macros": 4,
     "not_wasm_attrs": 88,
     "platform": 69,
     "feature": 94,
-    "test": 431,
+    "test": 435,
     "other": 6,
-    "total": 762
+    "total": 766
   },
   "sites": [
     {
@@ -3723,6 +3723,26 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/surface.rs|test||2",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/surface.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/surface.rs|test||3",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/surface.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/ui_provider.rs|test||1",
       "crate": "rustlua-editor-ai",
       "file": "crates/rustlua-editor-ai/src/ui_provider.rs",
@@ -6453,6 +6473,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-render|crates/rustlua-render/src/spine_mesh.rs|test||2",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/spine_mesh.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-render|crates/rustlua-render/src/sprite_batch.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/sprite_batch.rs",
@@ -7166,6 +7196,16 @@
       "key": "rustlua-spine|crates/rustlua-spine/src/scene_codec.rs|test||1",
       "crate": "rustlua-spine",
       "file": "crates/rustlua-spine/src/scene_codec.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-spine|crates/rustlua-spine/src/snapshot.rs|test||1",
+      "crate": "rustlua-spine",
+      "file": "crates/rustlua-spine/src/snapshot.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
