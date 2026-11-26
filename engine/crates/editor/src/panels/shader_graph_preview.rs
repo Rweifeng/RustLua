@@ -947,22 +947,34 @@ mod tests {
         // 预热一帧，排除首次分配/编译的干扰。
         let _ = preview.render(0.1, 1.0);
 
-        // 阻塞版的完整往返耗时。
+        // 时间读数只打印、不断言：软件适配器上 GPU 等待 ≈ 0，submit 与 blocking 的墙钟差
+        // 只剩 CPU 编码与调度噪声，CI 负载下两条路径都会抖到同一量级（2026-11-26 的
+        // build-test(editor) 就是这么红的：submit=6.37ms blocking=6.70ms）。
+        // 这正是 M83-02 的教训：**绝对墙钟断言不进测试门**。
         let blocking = std::time::Instant::now();
-        let _ = preview.render(0.2, 1.0).expect("blocking render");
+        let blocking_pixels = preview.render(0.2, 1.0).expect("blocking render");
         let blocking_ms = blocking.elapsed().as_secs_f32() * 1000.0;
 
-        // 异步版的提交耗时。
         let submit = std::time::Instant::now();
         preview.submit(0.3, 1.0).expect("submit");
         let submit_ms = submit.elapsed().as_secs_f32() * 1000.0;
-        let _ = preview.render_take_blocking();
+        let async_pixels = preview
+            .render_take_blocking()
+            .expect("submit 之后的回读必须拿得到帧");
+        let reference = preview.render(0.3, 1.0).expect("blocking render same time");
+        eprintln!(
+            "shader preview timing (info only): submit={submit_ms:.3}ms blocking={blocking_ms:.3}ms"
+        );
 
-        // 断言"提交明显快于完整往返"。留 0.8 的余量：软件适配器上单次提交也可能
-        // 因为编码/写 buffer 花掉一点时间，但不可能赶上"等 GPU 画完再读回"。
-        assert!(
-            submit_ms < blocking_ms.max(0.2) * 0.8,
-            "submit 必须比阻塞往返快得多：submit={submit_ms:.3}ms blocking={blocking_ms:.3}ms"
+        // 语义断言：异步路径（submit + 稍后 take）与同步路径（render）在**同一输入**下
+        // 产生的像素必须逐字节一致；且两条路径都真的产出了整帧。这样"submit 没在等 GPU"
+        // 的契约由"帧确实晚到且内容正确"来守，而不是由机器速度来守。
+        let expected_len = (PREVIEW_W * PREVIEW_H * 4) as usize;
+        assert_eq!(blocking_pixels.len(), expected_len, "阻塞路径帧大小不对");
+        assert_eq!(async_pixels.len(), expected_len, "异步路径帧大小不对");
+        assert_eq!(
+            async_pixels, reference,
+            "submit 后的帧必须与同步 render 同输入逐字节一致"
         );
     }
 
