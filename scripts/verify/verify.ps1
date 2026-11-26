@@ -787,16 +787,30 @@ try {
         # 少任何一份都算"未运行"——只比对 engine 会漏掉整套 GPU 符号面。
         Write-Step "Crate public Rust surface"
         $baselinesDir = if ($env:RUSTLUA_BASELINES_DIR) { $env:RUSTLUA_BASELINES_DIR } else { Join-Path $projectRoot "baselines" }
-        $pubSurfaceBaselines = @(
-            (Join-Path $baselinesDir "engine-pub-surface.json"),
-            (Join-Path $baselinesDir "rustlua-gpu-pub-surface.json")
-        )
+        # M85-04（2026-11-26）：把两份基线入库到 `metrics/baselines/pub-surface/`（约 337 KB），
+        # 本地 `baselines/` 缺失时回退到入库副本。旧行为是"干净检出/CI 必然 SKIP"——那条门
+        # 于是永远不运行，等于没有符号面守卫。
+        $committedPubDir = Join-Path $projectRoot "metrics\baselines\pub-surface"
+        $pubSurfaceFiles = @("engine-pub-surface.json", "rustlua-gpu-pub-surface.json")
+        $pubSurfaceBaselines = @($pubSurfaceFiles | ForEach-Object { Join-Path $baselinesDir $_ })
         $missingBaselines = @($pubSurfaceBaselines | Where-Object { -not (Test-Path -LiteralPath $_) })
+        $committedBaselines = @($pubSurfaceFiles | ForEach-Object { Join-Path $committedPubDir $_ })
+        $missingCommitted = @($committedBaselines | Where-Object { -not (Test-Path -LiteralPath $_) })
         if (Get-Command node -ErrorAction SilentlyContinue) {
+            $pubSurfaceScript = Join-Path $projectRoot "scripts/verify/engine-pub-surface.mjs"
             if ($missingBaselines.Count -eq 0) {
-                Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/engine-pub-surface.mjs"), "--check")
+                Invoke-Checked node @($pubSurfaceScript, "--check")
+            } elseif ($missingCommitted.Count -eq 0) {
+                Write-Host "  using committed baselines: $committedPubDir（本地 baselines/ 缺失）"
+                $previousBaselinesDir = $env:RUSTLUA_BASELINES_DIR
+                try {
+                    $env:RUSTLUA_BASELINES_DIR = $committedPubDir
+                    Invoke-Checked node @($pubSurfaceScript, "--check")
+                } finally {
+                    $env:RUSTLUA_BASELINES_DIR = $previousBaselinesDir
+                }
             } else {
-                Write-Host "  [SKIP] 缺少本地基线 $($missingBaselines -join '、')（baselines/ 不入库；先跑 node scripts/verify/engine-pub-surface.mjs --update，或设 RUSTLUA_BASELINES_DIR）：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
+                Write-Host "  [SKIP] 缺少本地与入库基线（$($missingBaselines -join '、')）：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
             }
         } else {
             Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
@@ -1666,7 +1680,20 @@ try {
         exit 3
     }
     else {
-        Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
+        # M85-04（2026-11-26）：全量门的"绿"里也可能含 [SKIP] 与 blocked 段落（如缺本地基线的
+        # 对外符号面门、-Web 的环境受限 BLOCKED）。把数量写进结论行，避免 "Quality gate passed"
+        # 被读成"所有东西都被验证了"——跳过/受限不是通过，这是本仓库一贯口径。
+        $skippedTotal = 0
+        $blockedTotal = 0
+        if (Test-Path -LiteralPath $logPath) {
+            $skippedTotal = @(Select-String -LiteralPath $logPath -Pattern '\[SKIP\]').Count
+            $blockedTotal = @(Select-String -LiteralPath $logPath -Pattern 'blocked reason=|_blocked |BLOCKED').Count
+        }
+        if ($skippedTotal -gt 0 -or $blockedTotal -gt 0) {
+            Write-Host "`nQuality gate passed（unverified: skipped=$skippedTotal blocked_lines=$blockedTotal —— 'passed' 只覆盖真正跑过的步骤；SKIP/BLOCKED 不是通过）. Log: $logPath" -ForegroundColor Yellow
+        } else {
+            Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
+        }
     }
 }
 finally {
