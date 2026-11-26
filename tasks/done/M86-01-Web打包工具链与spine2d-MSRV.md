@@ -1,7 +1,7 @@
 # 任务：Web/微信发布链的工具链冲突与锁版治理（rustc 1.88 × spine2d MSRV 1.95）
 
 - 任务 ID：M86-01
-- 状态：进行中（2026-11-26：路线 A probe 已否决，改走路线 D 并落地工具链/一致性门；等两条打包链路端到端验收）
+- 状态：已验收（2026-11-26；路线 A 否决 → 路线 D 落地，CI 新门首次绿，本地两条打包链 exit 0；见 §归档记录）
 - 关联里程碑：M86
 - 创建日期：2026-11-26
 
@@ -142,3 +142,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify\verify-wechat
 
 - 微信真机仍需人工/真机证据；本任务只保证"能打包 + 产物层验收"。
 - 选 A 时 1.97 的 EH 真机行为（旧版 Android WebView/X5）无法在本机完全覆盖，需真机抽验。
+## 归档记录（2026-11-26）
+
+- **归档依据**：路线 A probe 完成并**否决**（1.97 产物混合 EH，真实 Edge 158/Node 默认参数都拒绝，读数见
+  [docs/84](../docs/84-Web打包工具链EH探针与MSRV处置.md)）；改走 **路线 D** 并落地——保留 1.88 打包工具链，
+  `spine2d` 精确锁 `=0.5.0`、wasm 构建加 `--ignore-rust-version`、工具链 pin 收进单一事实源、
+  新增 recipe 一致性门并接进 CI。**WebGL/微信发布链从"编不出来"恢复为可打包**。
+- **证据**：
+  - 本地：新门 `wasm_recipe_ok toolchain=1.88.0 bytes=13353964 eh=legacy`；`package.ps1` webgl /
+    wechat-minigame 均 exit 0（`wasm_host_ok` 分别 exports=162 / 160，bridge_exports=11；微信
+    `wechat_minigame_package_ok main_kb=905 22.1% / sub 49.3% / total 53.7%`）；
+    `verify-wechat-minigame.ps1` exit 0（`eh_probe=accepted`、148 exports、13 组负例/L3 contract 全过）；
+    `verify-webgl-bundle.ps1` 仅因本机无头 WebGL2（`gpu=initializing`）红，wasm 已加载、`missing_api_paths=0`。
+  - CI（run 45831755491，HEAD `e3acda49`）：`web-evidence` **success**——新增的「Install Rust 1.88.0」与
+    「Wasm release recipe (1.88 + legacy EH)」两步首次常跑即绿。
+- **归档 ≠ 收口**：①微信**真机**抽验仍需人工（harness 只证明产物层与 EH 探针）；②今后升级 `spine2d` 或
+  wasm 工具链，必须先重跑 `check-wasm-release-recipe.ps1` 并按 docs/84 重新裁决；③WebGL 端到端渲染证据
+  仍受自托管 GPU runner 约束（与 M85-03 的 web-evidence 到期项同一出口）。
+- **关联后续**：docs/83 §5 的"包体度量 recipe 口径修复 + 重签基线"是独立项，不在本包内（先修口径再重签的
+  结论未变）。

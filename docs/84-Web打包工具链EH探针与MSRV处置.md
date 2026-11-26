@@ -12,7 +12,7 @@
 `scripts/build/package/30-build.ps1` 把 wasm 构建冻在 rustc **1.88.0**（LLVM18），理由是 1.97（LLVM19）
 会产出 EH 混合模块，V8 拒绝加载；M84 的 `spine2d@0.5.0` 声明 `rust-version = "1.95"` ⇒
 打包时 cargo 在编译前就报 `spine2d@0.5.0 requires rustc 1.95`，**WebGL/微信两条发布链整体编不出来**
-（详见 [M86-01](../tasks/plan/M86-01-Web打包工具链与spine2d-MSRV.md)）。
+（详见 [M86-01](../tasks/done/M86-01-Web打包工具链与spine2d-MSRV.md)）。
 
 ## 2. Probe 读数（同一台机器，2026-11-26）
 
@@ -91,6 +91,6 @@ pwsh -NoProfile -File scripts/verify/check-wasm-release-recipe.ps1
 
 ## 5. 关联
 
-- 任务：[M86-01](../tasks/plan/M86-01-Web打包工具链与spine2d-MSRV.md)；
+- 任务：[M86-01](../tasks/done/M86-01-Web打包工具链与spine2d-MSRV.md)；
 - 包体口径：[83 包体逐依赖体积归因](83-包体逐依赖体积归因.md)（同一次归因顺手发现本阻塞）；
 - 微信/WebGL 平台文档：docs/52、docs/32、docs/65（打包工具链口径以本文件为准）。
