@@ -86,7 +86,7 @@ cargo run -p editor -- --project ..\examples\game_api --check
 | 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 | 覆盖率棘轮（P4-01；缺 cargo-llvm-cov / 基线退 3） | `scripts\verify\check-coverage.ps1 -RequireTool`；`verify.ps1 -Coverage` 可并入总门 |
 | 度量总检查（cfg 条件编译覆盖 + 尺寸采集 + 趋势库回归，P4-02/04/06/07） | `scripts\verify\check-metrics.ps1`；`verify.ps1 -Metrics`（缺历史样本退 3） |
-| 平台矩阵档位与到期裁定（P4-03） | `scripts\verify\check-matrix-policy.ps1 -List/-Check`（blocking 3 / advisory 4，见 `metrics/promotion.json`） |
+| 平台矩阵档位与到期裁定（P4-03） | `scripts\verify\check-matrix-policy.ps1 -List/-Check`（blocking 7 / advisory 0；Linux/macOS 四格已于 2026-11-26 升档，见 `metrics/promotion.json`） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、工具链锁定、cargo 门、`game --check`/`editor --check`、编辑器性能基线与

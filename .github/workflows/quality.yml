@@ -471,7 +471,7 @@ jobs:
     # 有界：这一步要在冷缓存下做一次 wasm release 构建（fat LTO / 单 CGU）+ 三个宿主的后处理。
     # 热缓存约 20–30 分钟；给它 150 分钟余量，超时按"挂死"处理并判红，而不是让 job 吃满 6 小时上限。
     timeout-minutes: 150
-    runs-on: windows-latest
+    runs-on: ${{ vars.RUSTLUA_WEB_EVIDENCE_RUNNER || 'windows-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

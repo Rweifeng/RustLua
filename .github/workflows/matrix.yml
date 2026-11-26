@@ -59,26 +59,26 @@ jobs:
             os: ubuntu-latest
             cmd: cargo check --workspace --all-targets --locked
             target: ""
-            tier: advisory
-            experimental: true
+            tier: blocking
+            experimental: false
           - id: linux-wasm
             os: ubuntu-latest
             cmd: cargo check -p game_web -p gpu-web-probe -p rustlua-ui-host-harness --target wasm32-unknown-unknown
             target: wasm32-unknown-unknown
-            tier: advisory
-            experimental: true
+            tier: blocking
+            experimental: false
           - id: macos-native
             os: macos-latest
             cmd: cargo check --workspace --all-targets --locked
             target: ""
-            tier: advisory
-            experimental: true
+            tier: blocking
+            experimental: false
           - id: macos-wasm
             os: macos-latest
             cmd: cargo check -p game_web -p gpu-web-probe -p rustlua-ui-host-harness --target wasm32-unknown-unknown
             target: wasm32-unknown-unknown
-            tier: advisory
-            experimental: true
+            tier: blocking
+            experimental: false
     defaults:
       run:
         working-directory: engine

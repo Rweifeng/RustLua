@@ -1,22 +1,24 @@
 {
   "schema": 1,
-  "comment": "Web 浏览器运行时证据的受限登记（M83-04 §三-1）。status=blocked 表示当前环境给不出渲染器所需的 WebGL2 能力，门以 exit 3 BLOCKED 结束而不是红；本登记让 BLOCKED 有到期日：check-web-evidence-policy.mjs -Check 在 review_by 过期后判 2，不允许静默永久受限。解锁后把 status 改回 ok 并删掉 blocked 段，同时把 review_by 置空。",
-  "updated": "2026-11-16",
-  "owner": "M83-04",
+  "comment": "Web 浏览器运行时证据的受限登记（M83-04 §三-1）。status=blocked 表示当前环境给不出渲染器所需的 WebGL2 能力，门以 exit 3 BLOCKED 结束而不是红；本登记让 BLOCKED 有到期日：check-web-evidence-policy.mjs -Check 在 review_by 过期后判 2，不允许静默永久受限。解锁后把 status 改回 ok 并删掉 blocked 段，同时把 review_by 置空。2026-11-26 处置：按“换 runner（留出通道）+ 带理由改期”处理——quality.yml 的 web-evidence job 已改为 runs-on: vars.RUSTLUA_WEB_EVIDENCE_RUNNER || windows-latest；有硬件 WebGL2 的自托管 runner 可用时设该变量即可在该 runner 上取证，无需改 workflow。",
+  "updated": "2026-11-26",
+  "owner": "发布负责人（runner 决策）",
   "status": "blocked",
   "blocked": {
-    "reason": "CI runner 无可用硬件 WebGL2：无头 Edge 只报 gpu=initializing；强制 SwiftShader 后产物层可过但 render-probe 在 glTexStorage3D 处被拒（wgpu 缺所需能力）",
+    "reason": "GitHub 托管 runner 无可用硬件 WebGL2：无头 Edge 只报 gpu=initializing；强制 SwiftShader 后产物层可过但 render-probe 在 glTexStorage3D 处被拒（wgpu 缺所需能力）。已把 runner 选择交给仓库变量 RUSTLUA_WEB_EVIDENCE_RUNNER，但仓库侧没有可用的自托管 GPU runner，故仍 BLOCKED",
     "since": "2026-11-16",
-    "review_by": "2026-12-31",
+    "review_by": "2027-03-31",
     "evidence": [
       "artifacts/logs/quality/web-evidence.status（verify.ps1 -Web 落盘：exit=3 + reason）",
+      "CI run 45759328046 的 web-evidence job：Web platform evidence 步 success + wasm Lua runtime evidence 曾失败（已修）",
       "docs/changelog/最新条目.md 的「Web 证据链：无 GPU 环境显式 BLOCKED」条目",
       "tasks/done/M83-04-跨平台与浏览器运行时验证升级.md §三-A"
     ],
     "unblock_conditions": [
-      "CI 换到有可用 GPU（或硬件 WebGL2）的 runner；或",
+      "设置仓库变量 RUSTLUA_WEB_EVIDENCE_RUNNER=<自托管 runner label>，让 job 跑在有硬件 WebGL2 的 runner 上（workflow 已支持，无需改代码）；或",
       "SwiftShader/软件光栅能在能力预检里通过 render-probe（wgpu 所需特性齐备）；或",
       "渲染器降到软件 WebGL2 可承载（含 3D 贴图替代路径）——这条要走渲染设计评审"
-    ]
+    ],
+    "review_note": "2026-11-26 改期至 2027-03-31：环境缺口在 runner 硬件，不在代码；托管 runner 无法提供 GPU。到期前若仍无自托管 GPU runner，由发布负责人书面裁定是继续改期还是把本项移出默认质量门（后者需同步 docs/32 的宣称）。"
   }
 }

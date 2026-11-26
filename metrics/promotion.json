@@ -5,9 +5,9 @@
     {"id": "windows-native", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "Windows 是全量测试所在平台，check --workspace 必须绿"},
     {"id": "windows-wasm", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "wasm 构建（game_web/gpu-web-probe）必须绿"},
     {"id": "windows-wasm-gpu2d-off", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "gpu2d feature 关闭时的 wasm 构建必须绿"},
-    {"id": "linux-native", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "Linux GUI/音频系统依赖观察期；缺依赖先修 workflow，不记为平台不支持", "review_by": "2026-12-31"},
-    {"id": "linux-wasm", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "证明 wasm 构建不依赖 Windows", "review_by": "2026-12-31"},
-    {"id": "macos-native", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "macOS 原生编译观察期", "review_by": "2026-12-31"},
-    {"id": "macos-wasm", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "macOS wasm 编译观察期", "review_by": "2026-12-31"}
+    {"id": "linux-native", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "2026-11-26 升档：连续两轮 main 平台矩阵 7/7 绿（82c82500、7680e69f；937b0466/334559c5 亦 success），无 flaky 记录；观察期内 workflow 依赖已修好"},
+    {"id": "linux-wasm", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "2026-11-26 升档：wasm 构建不依赖 Windows 已由连续两轮 main 7/7 绿证明（无 flaky）"},
+    {"id": "macos-native", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "2026-11-26 升档：连续两轮 main 平台矩阵 7/7 绿，macOS 原生编译稳定（无 flaky）"},
+    {"id": "macos-wasm", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "2026-11-26 升档：连续两轮 main 平台矩阵 7/7 绿，macOS wasm 编译稳定（无 flaky）"}
   ]
 }
