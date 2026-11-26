@@ -1854,6 +1854,50 @@ if ($Benchmarks) {
         elseif ($gpuParticles50kExit -ne 0) {
             throw "gpu particles 50k benchmark FAILED (wp0_gpu_particles_50k exit $gpuParticles50kExit)"
         }
+
+        # M85-04（2026-11-26）：10 条此前"exists 但没人跑"的 golden 接入总门。
+        # 这些例子**自带语义断言**（内部 assert + 非 0 退出），本段只补三件事：真的执行、
+        # 报告落盘、report_version 对得上。像素/几何判据留在各 example 内，不在这里重复实现。
+        # exit 3 = 本机拿不到离屏 GPU（与 wp0_gpu_particles_golden 同一约定：显式跳过不是通过；
+        # RUSTLUA_REQUIRE_GPU=1 时升级为红）。
+        $extraGoldens = @(
+            @{ name = "wp0_pbr_golden";               version = "wp0-pbr-golden-v1";               file = "wp0-pbr-golden.json" },
+            @{ name = "wp0_pbr_alpha_golden";         version = "wp0-pbr-alpha-golden-v1";         file = "wp0-pbr-alpha-golden.json" },
+            @{ name = "wp0_pbr_material_golden";      version = "wp0-pbr-material-golden-v1";      file = "wp0-pbr-material-golden.json" },
+            @{ name = "wp0_pbr_normal_golden";        version = "wp0-pbr-normal-golden-v1";        file = "wp0-pbr-normal-golden.json" },
+            @{ name = "wp0_hdr_golden";               version = "wp0-hdr-golden-v1";               file = "wp0-hdr-golden.json" },
+            @{ name = "wp0_ibl_golden";               version = "wp0-ibl-golden-v1";               file = "wp0-ibl-golden.json" },
+            @{ name = "wp0_variant_golden";           version = "wp0-variant-golden-v1";           file = "wp0-variant-golden.json" },
+            @{ name = "wp0_lod_golden";               version = "wp0-lod-golden-v1";               file = "wp0-lod-golden.json" },
+            @{ name = "wp0_particle_parallel_golden"; version = "wp0-particle-parallel-golden-v1"; file = "wp0-particle-parallel-golden.json" },
+            @{ name = "wp0_spatial_index_golden";     version = "wp0-spatial-index-golden-v1";     file = "wp0-spatial-index-golden.json" }
+        )
+        $extraGoldenSkipped = @()
+        foreach ($golden in $extraGoldens) {
+            $goldenPath = Join-Path $baselineRoot $golden.file
+            Write-Host ("  running " + $golden.name + " ...")
+            & cargo run --quiet --release -p engine --example $golden.name -- --output $goldenPath
+            $goldenExit = $LASTEXITCODE
+            if ($goldenExit -eq 3) {
+                if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                    throw "$($golden.name) skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供离屏 GPU"
+                }
+                $extraGoldenSkipped += $golden.name
+                Write-Host ("{0}_skipped reason=no_offscreen_gpu exit=3（不是通过）" -f $golden.name) -ForegroundColor Yellow
+                continue
+            }
+            if ($goldenExit -ne 0) {
+                throw ("{0} FAILED (exit {1})" -f $golden.name, $goldenExit)
+            }
+            if (-not (Test-Path -LiteralPath $goldenPath)) {
+                throw ("{0} 没有写出报告：{1}" -f $golden.name, $goldenPath)
+            }
+            $goldenReport = Get-Content -LiteralPath $goldenPath -Raw | ConvertFrom-Json
+            if ($goldenReport.report_version -ne $golden.version) {
+                throw ("{0} report_version={1}，期望 {2}" -f $golden.name, $goldenReport.report_version, $golden.version)
+            }
+        }
+        Write-Host ("extra_goldens_ok count=" + ($extraGoldens.Count - $extraGoldenSkipped.Count) + " skipped=" + $extraGoldenSkipped.Count)
     }
     finally {
         Pop-Location

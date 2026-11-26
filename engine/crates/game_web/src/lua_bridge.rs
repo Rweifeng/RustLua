@@ -492,10 +492,14 @@ fn boot_runtime(provider: Box<ResourceProvider>) -> Result<(), JsValue> {
             "[vfs] provider 已安装（{error}），沿用现有 provider"
         )));
     }
-    let mut runtime = rustlua_scripting::script::LuaRuntime::with_installers(
-        rustlua_gameplay::input_lua::registry(),
-    )
-    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // 走组合根的完整装配（`script_packs::runtime`）：它等于桌面的 `LuaRuntime::new()` +
+    // 领域表安装。直接 `with_installers` 只会装注册表里的条目，`animation/camera*/physics/
+    // save/spine/tilemap/ui/...` 这些由 `script_packs::install` 装的表在 wasm 侧会**静默缺失**
+    // （2026-11-26 由 `verify-wasm-lua.ps1` 的"wasm vs 桌面基线"断言抓到 22 处不一致；
+    // 那时 `with_installers` 里只给了 `input_lua::registry()`）。
+    let (mut runtime, _domain_handles) =
+        engine::host::script_packs::runtime(rustlua_gameplay::input_lua::registry())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
     runtime.set_project_root(std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT));
     LUA_RUNTIME.with(|slot| *slot.borrow_mut() = Some(runtime));
     // 新状态 = 新常驻输入表：旧差分基准会让"这一帧该松开哪些键"算错。
