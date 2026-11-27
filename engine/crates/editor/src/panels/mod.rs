@@ -25,6 +25,8 @@ pub(crate) mod input_bindings;
 pub(crate) mod inspector;
 /// egui 键 ⇄ 引擎物理键的唯一转换层（M22/W1）。
 pub(crate) mod keymap;
+/// C8：Lua 断点调试面板（断点集合 + 继续/单帧步进 + 命中现场）；暂停语义是帧边界冻结。
+pub(crate) mod lua_debugger;
 /// 只读 Lua 源码查看器：控制台报错行 / 资源面板双击 `.lua` 的落点（不编辑、不写盘）。
 pub(crate) mod lua_source_view;
 /// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。

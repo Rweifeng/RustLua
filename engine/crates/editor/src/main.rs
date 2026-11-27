@@ -17,6 +17,7 @@ mod gui_evidence;
 mod hierarchy_ops;
 mod import;
 mod menu;
+mod notifications;
 mod panels;
 mod perf_baseline;
 mod play_sync;
@@ -299,6 +300,11 @@ struct EditorApp {
     tree: SceneTreeState,
     resources: ResourceBrowserState,
     selected_resource: Option<PathBuf>,
+    /// A4：资源面板的多选集合（工程内相对路径）。`selected_resource` 仍是**主选中**
+    /// （Inspector/预览/右键菜单读它），这里是"这一批一起操作"的集合。
+    resource_selection: std::collections::BTreeSet<PathBuf>,
+    /// Shift 范围选的锚点（上一次点选的路径）。
+    resource_selection_anchor: Option<PathBuf>,
     /// 属性面板「定位」按钮发出的一次性请求（目标 = 资源索引里的条目路径）：
     /// 资源面板下一趟绘制里展开祖先目录、选中并滚到那一行。
     /// 只登记不立刻执行，是因为两个面板的绘制先后顺序不固定。
@@ -325,6 +331,8 @@ struct EditorApp {
     /// 行为；edition 2024 里测试改全局环境是 `unsafe` 且并发不安全。
     external_editor_dry_run: bool,
     console_log_level_filter: ConsoleLogLevelFilter,
+    /// 折叠连续重复日志（Unity 的 Collapse 开关）。默认开：重复刷屏是最常见的噪声。
+    console_collapse: bool,
     /// 控制台左侧分类导航当前选中的日志来源。
     console_tab: ConsoleTab,
     inspector: InspectorState,
@@ -705,8 +713,17 @@ struct EditorApp {
     hierarchy_lower: crate::panels::hierarchy::HierarchyLowerCache,
     /// Hierarchy 行内容高度探针（docs/55 §8 的"不得重叠/裁字"门槛用测量而非肉眼）。
     hierarchy_row_probe: crate::panels::hierarchy::RowHeightProbe,
+    /// H3：下一帧要把哪一行滚进视口（揭示选中）。`None` = 不滚。
+    hierarchy_scroll_target: Option<SceneEntityId>,
+    /// H3：上一次已经揭示过的主选中。只在**主选中变化**时揭示，
+    /// 否则用户手动折叠正在选中的节点会被下一帧自动展开。
+    hierarchy_last_revealed: Option<SceneEntityId>,
     /// Console 行内容高度探针（同上）。
     console_row_probe: crate::panels::console::RowHeightProbe,
+    /// P4：跨面板的通知（布局/设置写盘失败等），右下角浮层 + 有界队列。
+    notifications: crate::notifications::NotificationCenter,
+    /// C8：Lua 调试面板状态（断点是编辑器侧事实源，Play 时同步给 VM）。
+    lua_debug: crate::panels::lua_debugger::LuaDebuggerState,
     /// 2D Scene 视图渲染缓存（变更检测，避免内容未变化时重复渲染）。
     scene_view_cache_2d: SceneViewCache2d,
     /// 3D Scene 视图渲染缓存（同上）。
@@ -890,13 +907,61 @@ enum WorkspaceTab {
     Game,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ConsoleLogLevelFilter {
-    All,
-    Info,
-    Warning,
-    #[default]
-    Error,
+/// 控制台级别过滤：**可多选**（Unity Console 的 Log/Warning/Error 三个开关）。
+///
+/// 旧实现是四选一的枚举，"只看警告+错误"这种最常见的组合表达不出来，用户只能在两个
+/// 单选之间来回切。改成三个布尔位后仍是 `Copy` 的小类型，`matches` 语义不变。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ConsoleLogLevelFilter {
+    info: bool,
+    warning: bool,
+    error: bool,
+}
+
+impl ConsoleLogLevelFilter {
+    /// 三个级别全开。
+    const ALL: Self = Self {
+        info: true,
+        warning: true,
+        error: true,
+    };
+    /// 只看错误（出厂默认，与旧 `#[default] Error` 一致）。
+    const ERRORS_ONLY: Self = Self {
+        info: false,
+        warning: false,
+        error: true,
+    };
+    /// 警告 + 错误（旧枚举表达不了的那一档）。只在测试里当"两档组合"的样例：
+    /// 生产路径由三个开关自由组合，不需要为这一档再造一个按钮。
+    #[cfg(test)]
+    const WARNINGS_AND_ERRORS: Self = Self {
+        info: false,
+        warning: true,
+        error: true,
+    };
+
+    fn is_all(self) -> bool {
+        self == Self::ALL
+    }
+
+    fn any(self) -> bool {
+        self.info || self.warning || self.error
+    }
+
+    /// 三档开关按钮（顺序与 Unity 一致：信息 / 警告 / 错误）。
+    fn toggles(&mut self) -> [(&'static str, &mut bool); 3] {
+        [
+            ("信息", &mut self.info),
+            ("警告", &mut self.warning),
+            ("错误", &mut self.error),
+        ]
+    }
+}
+
+impl Default for ConsoleLogLevelFilter {
+    fn default() -> Self {
+        Self::ERRORS_ONLY
+    }
 }
 
 /// 控制台左侧分类导航：切换“编辑器日志”与“游戏逻辑 Lua 日志”。
@@ -968,6 +1033,17 @@ impl EditorApp {
             SceneViewMode::View3D => crate::scene_tools::ToolMode::ThreeD,
             SceneViewMode::Prefab => crate::scene_tools::ToolMode::Prefab,
         }
+    }
+
+    /// 切换场景视图模式（2D/3D/预制体）：改模式 + 重新校验工具。
+    ///
+    /// 单一入口：菜单、工具栏、命令面板与布局恢复都走这里，避免出现"模式变了但工具没收敛"。
+    pub(crate) fn set_scene_view_mode(&mut self, mode: SceneViewMode) {
+        if self.scene_view_mode == mode {
+            return;
+        }
+        self.scene_view_mode = mode;
+        self.revalidate_scene_tool_for_view_mode();
     }
 
     /// 切换视图模式后**重新校验当前工具**：带着 2D 的 Tile 画笔切到 3D 时必须收敛，
@@ -1198,6 +1274,8 @@ impl EditorApp {
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
+            resource_selection: std::collections::BTreeSet::new(),
+            resource_selection_anchor: None,
             pending_resource_locate: None,
             resource_rename: None,
             resource_new_folder: None,
@@ -1210,7 +1288,8 @@ impl EditorApp {
             console_rows_cache: Default::default(),
             console_filter: String::new(),
             external_editor_dry_run: std::env::var_os("RUSTLUA_EDITOR_DRY_RUN").is_some(),
-            console_log_level_filter: ConsoleLogLevelFilter::All,
+            console_log_level_filter: ConsoleLogLevelFilter::ALL,
+            console_collapse: true,
             console_tab: ConsoleTab::Editor,
             inspector: InspectorState::new(),
             mesh_renderer: String::new(),
@@ -1402,7 +1481,11 @@ impl EditorApp {
             hierarchy_visible_cache: Default::default(),
             hierarchy_lower: Default::default(),
             hierarchy_row_probe: Default::default(),
+            hierarchy_scroll_target: None,
+            hierarchy_last_revealed: None,
             console_row_probe: Default::default(),
+            notifications: Default::default(),
+            lua_debug: Default::default(),
             scene_view_cache_2d: SceneViewCache2d::default(),
             scene_view_cache_3d: SceneViewCache3d::default(),
             scene_view_3d_typed: SceneView3dTyped::default(),
@@ -1678,8 +1761,59 @@ impl EditorApp {
 
     fn select_resource(&mut self, path: PathBuf) {
         self.selected_resource = Some(path.clone());
+        // A4：单选就把多选集合收成这一个，并更新 Shift 锚点。
+        self.resource_selection.clear();
+        self.resource_selection.insert(path.clone());
+        self.resource_selection_anchor = Some(path.clone());
         self.selection.clear(editor::SelectionSource::None);
         self.delete_target = DeleteTarget::Resource(path);
+    }
+
+    /// A4：带修饰键的资源点选——Ctrl 加减选、Shift 从锚点范围选、无修饰键单选。
+    ///
+    /// 范围取**当前可见顺序**（过滤/类型筛选之后的顺序），与 Hierarchy 的 Shift 语义一致。
+    pub(crate) fn select_resource_with_modifiers(
+        &mut self,
+        path: PathBuf,
+        additive: bool,
+        range: bool,
+    ) {
+        if range {
+            let order: Vec<PathBuf> = self
+                .resources
+                .visible_entries()
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            if let Some(anchor) = self.resource_selection_anchor.clone()
+                && let (Some(from), Some(to)) = (
+                    order.iter().position(|candidate| *candidate == anchor),
+                    order.iter().position(|candidate| *candidate == path),
+                )
+            {
+                let (low, high) = if from <= to { (from, to) } else { (to, from) };
+                self.resource_selection = order[low..=high].iter().cloned().collect();
+                self.selected_resource = Some(path.clone());
+                self.selection.clear(editor::SelectionSource::None);
+                self.delete_target = DeleteTarget::Resource(path);
+                return;
+            }
+            // 锚点不在可见集合里（换过过滤词/被删）：退化为单选。
+        }
+        if additive {
+            if !self.resource_selection.insert(path.clone()) {
+                self.resource_selection.remove(&path);
+                if self.selected_resource.as_ref() == Some(&path) {
+                    self.selected_resource = self.resource_selection.iter().next_back().cloned();
+                }
+                return;
+            }
+            self.selected_resource = Some(path.clone());
+            self.selection.clear(editor::SelectionSource::None);
+            self.delete_target = DeleteTarget::Resource(path);
+        } else {
+            self.select_resource(path);
+        }
     }
 
     /// 属性面板「定位」按钮：把字段里的资源引用换成资源索引中的条目，登记一次定位请求。
@@ -1741,6 +1875,13 @@ impl EditorApp {
         if let Some(reason) = load.reason() {
             self.push_console_notice(format!("布局文件损坏，已回落到默认布局：{reason}"));
             self.status = format!("布局文件损坏，已用默认布局：{reason}");
+            // P4：状态栏下一帧就会被别的东西覆盖；损坏的布局会在重启后**再次**回落，
+            // 所以它必须留在通知中心里，用户才可能去修（或显式重置布局）。
+            self.notifications.push_at(
+                crate::notifications::NoticeLevel::Warning,
+                format!("布局文件损坏，已用默认布局：{reason}"),
+                ("layout.json".to_owned(), None),
+            );
         }
         self.layout = load.layout();
         self.layout_load = load;
@@ -2134,6 +2275,12 @@ impl EditorApp {
             Ok(()) => self.profiler.bump("layout_auto_saved"),
             Err(error) => {
                 self.profiler.bump("layout_save_failed");
+                // P4：布局保存失败必须**跳出状态栏**——用户此刻正在拖面板，状态栏他看不见，
+                // 直到下次启动发现布局没记住。通知中心会一直留到用户点掉。
+                self.notifications.push(
+                    crate::notifications::NoticeLevel::Error,
+                    format!("布局保存失败（本次改动不会记住）：{error}"),
+                );
                 tracing::warn!(target: "editor", "[layout] auto-save failed: {error}");
             }
         }
@@ -2224,6 +2371,11 @@ impl EditorApp {
             Ok(()) => self.profiler.bump("user_config_saved"),
             Err(error) => {
                 self.profiler.bump("user_config_save_failed");
+                // P4：用户设置写盘失败（密钥/服务商地址）比布局更严重——提示必须留在通知中心。
+                self.notifications.push(
+                    crate::notifications::NoticeLevel::Error,
+                    format!("保存用户级编辑器设置失败：{error}"),
+                );
                 tracing::warn!(target: "editor", "[user-config] save failed: {error}");
                 self.push_console_notice(format!(
                     "保存用户级编辑器设置失败（{}）：{error}",
@@ -2678,7 +2830,9 @@ impl EditorApp {
         let undo_len = self.history.undo_len() as f64;
         let redo_len = self.history.redo_len() as f64;
         let dropped = self.history.dropped_entries() as f64;
-        let log_lines = self.log_sink.snapshot().len() as f64;
+        // `len()` 而不是 `snapshot().len()`：后者每帧把整条日志缓冲（上限 1 万行）clone 一遍，
+        // 只为取一个数字——这是帧路径上最贵的一次纯浪费，profiler 默认开启所以每帧都付。
+        let log_lines = self.log_sink.len() as f64;
         let notices = self.console_notices.len() as f64;
         let console_rows = self.console_rows_cache.len() as f64;
         let resource_entries = self.resources.entries().len() as f64;
@@ -2870,6 +3024,22 @@ impl eframe::App for EditorApp {
             }
         }
         self.draw_frame(context);
+        // C8：调试器每帧轮询命中（窗口关着也要冻结 Play）+ 画面板（打开时）。
+        self.poll_lua_debugger();
+        self.draw_lua_debugger(context);
+        // P4：通知中心画在**所有面板之后**（右下角浮层），点击可跳到相关位置。
+        // 借用拆分：跳转要 `&mut self`，所以先由闭包收集目标、出来再执行。
+        let mut jump: Option<(String, Option<u32>)> = None;
+        crate::notifications::draw_notifications(context, &mut self.notifications, |path, line| {
+            jump = Some((path.to_owned(), line))
+        });
+        if let Some((path, line)) = jump {
+            self.jump_to_diagnostic(&editor::DiagnosticLocation {
+                path: Some(std::path::PathBuf::from(path)),
+                line,
+                entity: None,
+            });
+        }
     }
 
     /// 关窗时归还 2D/3D Scene 视图注册的原生 egui 纹理 ID。

@@ -185,8 +185,11 @@ pub struct SchemaFieldRow {
     pub unit: FieldUnit,
     /// 候选值来源（静态 choices 还是项目资源）。
     pub choices_source: ChoiceSource,
-    /// **多选混合值**：其它选中实体的同一字段取值不同（视图显示"混合"，提交仍写全部目标）。
+    /// **多选混合值**：其它选中实体的同一字段取值不同（视图显示"——"，提交仍写全部目标）。
     pub mixed: bool,
+    /// 混合时的**全部不同取值**（含主选中，按选中顺序，去重，上限 8 条）：
+    /// Unity 只显示一个不定的占位符，但"到底差在哪"必须能看见，否则用户只能挨个点过去对。
+    pub mixed_values: Vec<String>,
     /// 该字段是**资源引用**（带 `ProjectPath`/`OptionalProjectPath` 规则）：视图据此做
     /// "工程里找不到这个资源"的**上下文诊断**（规则本身是纯字段校验，查不了资源库）。
     pub path_rule: bool,
@@ -383,6 +386,7 @@ pub fn rows_for_component(entity: &SceneEntity, component: &str) -> Option<Vec<S
             unit: field_unit(component, field.name),
             choices_source,
             mixed: false,
+            mixed_values: Vec::new(),
             path_rule: field.rules.iter().any(|rule| {
                 matches!(
                     rule,
@@ -398,32 +402,42 @@ pub fn rows_for_component(entity: &SceneEntity, component: &str) -> Option<Vec<S
 }
 
 /// **多选**的通用字段行：以第一个实体（主选中）的取值为准，`mixed=true` 表示其它选中实体的
-/// 同一字段取值不同。
+/// 同一字段取值不同，`mixed_values` 收集全部不同取值（供悬停提示说明"差在哪"）。
 ///
 /// "哪些实体会被写"由调用方决定（与旧手写面板一致：只写**确实有这个组件**的选中实体），
 /// 因此缺少组件的实体不参与 mixed 判定。
 #[must_use]
 pub fn rows_for_selection(entities: &[&SceneEntity]) -> Vec<SchemaFieldRow> {
+    /// 提示里最多列几种取值：再多用户也不会读，反而把 tooltip 撑成一屏。
+    const MAX_LISTED_VALUES: usize = 8;
+
     let Some(primary) = entities.first() else {
         return Vec::new();
     };
     let registry = builtin_registry();
     let mut rows = rows_for_entity(primary);
     for row in &mut rows {
-        row.mixed = entities.iter().skip(1).any(|entity| {
-            entity
+        let path = PropertyPath::new(row.component, row.field);
+        let mut values: Vec<String> = vec![row.text.clone()];
+        for entity in entities.iter().skip(1) {
+            let Some(text) = entity
                 .components
                 .get(row.component)
-                .and_then(|payload| {
-                    read_field_display_text(
-                        &registry,
-                        payload,
-                        &PropertyPath::new(row.component, row.field),
-                    )
-                    .ok()
-                })
-                .is_some_and(|text| text != row.text)
-        });
+                .and_then(|payload| read_field_display_text(&registry, payload, &path).ok())
+            else {
+                // 没有该组件的实体不参与判定（见上面的文档）。
+                continue;
+            };
+            if text != row.text {
+                row.mixed = true;
+            }
+            if !values.contains(&text) && values.len() < MAX_LISTED_VALUES {
+                values.push(text);
+            }
+        }
+        if row.mixed {
+            row.mixed_values = values;
+        }
     }
     rows
 }

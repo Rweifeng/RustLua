@@ -99,6 +99,14 @@ impl EditorApp {
             self.status = format!("{text}{}", drop.notes());
         }
 
+        // Unity 的 Frame Selected：指针在视口内、没有文本输入焦点时按 F 把选中对象装进画面。
+        // 与 2D 视口、层级面板的 F 走同一个入口（`frame_selection_in_scene_view`）。
+        if response.contains_pointer()
+            && !ui.ctx().wants_keyboard_input()
+            && ui.input(|input| input.key_pressed(egui::Key::F))
+        {
+            self.status = self.frame_selection_in_scene_view();
+        }
         // 导航：滚轮缩放 / 中键轨道 / 右键平移（编辑器相机，与游戏相机分离）。
         // 滚轮缩放仅当鼠标悬停在视图内才响应。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
@@ -174,15 +182,14 @@ impl EditorApp {
             .iter()
             .filter(|entity| filter.matches_name(&entity.name.to_lowercase()))
             .map(|entity| {
-                let bounds = rustlua_math::math3d::Aabb3 {
-                    min: Vec3::new(-0.5, -0.5, -0.5),
-                    max: Vec3::new(0.5, 0.5, 0.5),
-                };
                 // docs/54 §8-⑦：标记 / 点选 / Gizmo 初值必须与**3D 画面同源**（世界变换）。
                 // 用文档里的局部值会让父链下的实体"手柄在人不在的地方"。
                 let transform = self
                     .scene_view_3d_world_transform(entity.id)
                     .unwrap_or(entity.transform);
+                // S3/S4：包围盒按**网格规格 × 世界缩放**算（`bounds_3d`），不再写死 ±0.5。
+                // 点选精度、Center 轴心与大网格的选中范围都从这里来。
+                let bounds = entity_local_bounds(&entity.mesh_path, transform.scale);
                 (entity.id, entity.name.clone(), transform, bounds)
             })
             .collect();

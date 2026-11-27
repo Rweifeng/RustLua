@@ -463,13 +463,12 @@ impl EditorApp {
                     .clicked()
                     {
                         let was_3d = self.scene_view_mode == SceneViewMode::View3D;
-                        self.scene_view_mode = if was_3d {
+                        // 单一入口：换模式与工具收敛在 `set_scene_view_mode` 里一起做。
+                        self.set_scene_view_mode(if was_3d {
                             SceneViewMode::View2D
                         } else {
                             SceneViewMode::View3D
-                        };
-                        // docs/55 阶段 2：换模式后重新校验工具（Tile 画笔在 3D 里没有落点）。
-                        self.revalidate_scene_tool_for_view_mode();
+                        });
                         // 从 3D 切回 2D：把视图适配到设计分辨率包围框。
                         if was_3d {
                             self.scene_view_fit_pending = true;

@@ -53,8 +53,14 @@ impl EditorApp {
                 self.resource_new_folder = Some((self.resource_folder_target(), String::new()));
             }
             ui.label(format!("{} 项", self.resources.visible_entries().len()));
+            if self.resource_selection.len() > 1 {
+                ui.label(format!("（已选 {} 项）", self.resource_selection.len()));
+            }
         });
-        ui.text_edit_singleline(&mut self.resources_filter);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.resources_filter)
+                .hint_text("过滤：路径词；t:texture / t:png 按类型；多个词是 AND"),
+        );
         self.draw_pending_delete_row(ui);
         // 扫描层把 `assets/` 视为可选：缺目录不再让工程打不开（scenes/scripts/ui 照
         // 扫），但"没有资源目录"仍是要处理的状态——给一行警告和一个就地修复的按钮。
@@ -606,7 +612,14 @@ impl EditorApp {
                 }
                 let response = ui.selectable_label(is_selected, &file_name);
                 if response.clicked() {
-                    self.select_resource(entry.path.clone());
+                    // A4：Ctrl 加减选 / Shift 范围选 / 无修饰键单选。
+                    let (additive, range) = ui.input(|input| {
+                        (
+                            input.modifiers.command || input.modifiers.ctrl,
+                            input.modifiers.shift,
+                        )
+                    });
+                    self.select_resource_with_modifiers(entry.path.clone(), additive, range);
                 }
                 if response.double_clicked() && entry.kind == ResourceKind::Prefab {
                     open.scene = Some(entry.path.clone());
@@ -679,7 +692,14 @@ impl EditorApp {
                 }
                 let response = ui.selectable_label(is_selected, &file_name);
                 if response.clicked() {
-                    self.select_resource(entry.path.clone());
+                    // A4：Ctrl 加减选 / Shift 范围选 / 无修饰键单选。
+                    let (additive, range) = ui.input(|input| {
+                        (
+                            input.modifiers.command || input.modifiers.ctrl,
+                            input.modifiers.shift,
+                        )
+                    });
+                    self.select_resource_with_modifiers(entry.path.clone(), additive, range);
                 }
                 if response.double_clicked()
                     && matches!(entry.kind, ResourceKind::Scene | ResourceKind::Prefab)
@@ -1455,6 +1475,20 @@ mod tests {
         app.document.current_scene.as_mut().unwrap().mark_dirty();
         let undo_before = app.history.undo_len();
 
+        // A1：导入设置以工程相对路径为键，改名必须把键一起搬（否则 filter/wrap 静默回默认）。
+        {
+            use rustlua_assets::import_settings::{
+                ResourceMeta, TextureFilter, TextureImportSettings, TextureWrap,
+            };
+            let mut meta = ResourceMeta::open(&root).unwrap();
+            meta.set_texture_settings(
+                "assets/player.png",
+                TextureImportSettings::new(TextureFilter::Linear, TextureWrap::Repeat),
+            )
+            .unwrap();
+            meta.save().unwrap();
+        }
+
         // 越界目标（绝对路径）与已存在的目标都必须被拒绝，且不产生任何副作用。
         assert!(
             app.perform_resource_move(
@@ -1505,6 +1539,23 @@ mod tests {
             app.selected_resource,
             Some(PathBuf::from("assets/hero.png"))
         );
+        // A1：设置键跟着搬到新路径，旧键不再留。
+        {
+            use rustlua_assets::import_settings::{
+                ResourceMeta, TextureFilter, TextureImportSettings, TextureWrap,
+            };
+            let meta = ResourceMeta::open(&root).unwrap();
+            assert_eq!(
+                meta.texture_settings("assets/hero.png"),
+                TextureImportSettings::new(TextureFilter::Linear, TextureWrap::Repeat),
+                "导入设置必须跟着新路径走（否则改名等于静默重置采样）"
+            );
+            assert_eq!(
+                meta.texture_settings("assets/player.png"),
+                TextureImportSettings::default(),
+                "旧路径的设置必须消失"
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 

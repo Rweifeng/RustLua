@@ -174,6 +174,29 @@ AI 驱动开发模式的任务承载目录，与[项目章程](../docs/00-projec
   （趋势红线修复 + `selftest` 10 例、10 条 golden 入门、对外符号面基线入仓、台账回写、`docs/82` G01–G10）。
   批次证据、逐 job CI 结论与三项待负责人决策（体积基线重签 / 12-31 双到期 / history 当月样本）见各文件
   §归档记录。归档后 `plan/` 为空；P1/P2 候选仍以 `done/M85-00` §四/§五 作下一批输入，**未开包**。
+- **2026-11-27 M87-00 编辑器 Unity 对标（第 1 批）当日开、当日验收归档**：先对六个子系统做只读审计，
+  把 53 条缺口（每条带 `file:line` 证据）写成 `docs/85`，再落地 8 条：Console 真虚拟化
+  （`console_panel_frame_100k` p95 **120.960 → 0.376 ms**、每帧绘制 **10000 → 9** 行，并把
+  "只画视口行"从注释变成 `perf_baseline` 真断言）、sink 文本按 `LogSink::generation` 缓存、
+  profiler gauge 不再每帧 clone 日志缓冲、视口内 F 聚焦（新增 `scene_view/frame.rs` 纯几何，
+  层级与 2D/3D 视口同一入口，顺手修掉 2D pan 的 Y 符号）、多选 Ctrl+D 与「移动到根节点」批量化
+  （与拖放共用 `commit_reparent_batch`）、Inspector 搜索框常驻 + 混合值差异列表。
+  读数：`cargo test -p editor` **796 passed / 0 failed / 2 ignored**、`--gui-smoke` **cases=43 failed=0**、
+  `--perf-baseline` 37 场景 `failed=0`、fmt/clippy 0 告警、`check-docs.ps1` 通过。
+  **未收口项 7 组**（断点调试 UI、层级揭示选中、锁定语义、资源改名丢 meta/引用图同源、
+  控制台折叠与级别多选、场景视图网格与真实包围盒、预制体重名静默覆盖）按「只登记，不开新包」
+  记在 `docs/85` §5，作下一批输入。
+- **2026-11-27 M88-00 编辑器优先项 1–9（当日开、当日验收归档）**：把 `docs/85` §5 的九条全部落地——
+  Lua 断点调试 v1（`panels/lua_debugger.rs` + `PreviewSession::DebugControl`，帧边界冻结 + 单步一帧，
+  无断点时不装回调、Stop 时卸载）、资源改名迁移 `resources.meta` 键、删除守卫/依赖视图补扫
+  `material`/`atlas`/`spine`（与依赖图同一台 `extract_refs`）、层级揭示选中 + 锁定语义定为"只挡场景拾取"、
+  3D 包围盒按网格规格×缩放（`scene_view/bounds_3d.rs`，Center 轴心真正生效）+ 2D 轮廓跟旋转、
+  Console 折叠与级别多选与崩溃栈帧可点、通知中心 + 命令面板面板开关、资源 `t:` 类型筛选与多选批量删除、
+  预制体重名取后缀。读数：`cargo test -p editor` **816 passed / 0 failed / 2 ignored**、
+  `--gui-smoke` **43/0**、`--perf-baseline` 37 场景 `failed=0`（100k Console p95 0.354 ms）、
+  fmt/clippy 0 告警、`check-docs.ps1` 通过。**未收口 7 条**记在 `docs/85` §8.10
+  （断点端到端实机、断点持久化、真·按行步进/条件断点/watch、资源批量移动、Console 正则/清晰屏、
+  任务型通知、工作台页签/视图模式进面板）。
 - `plan/` 曾于 2026-10-07 为空（`M65-UI预设化收口-工作包` 已归档，此前随 `68ffcde` 移入 `done/` 的 M34 六份见下）。
   已归档的 M34 一批（《江湖有田》内容 Alpha，2026-10-03 立账，共 6 份）：
   `M34-00-存档版本门与长跑基线`（前置止血，含 `jhyt_m17_shop` 的待裁定）、

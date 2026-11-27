@@ -4,39 +4,55 @@ use super::*;
 impl EditorApp {
     // `set_ui_root` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）。
 
-    pub(super) fn focus_selected_scene_view(&mut self) {
-        let Some(id) = self.selection.primary() else {
-            self.status = "请先在层级面板中选择实体".to_owned();
+    /// `F`：聚焦选中（Unity `Frame Selected`）。
+    ///
+    /// 统一走 `EditorApp::frame_selection_in_scene_view`：面板里的旧实现只改相机 `target`
+    /// （3D 不调距离、2D 只改 pan，还把 Y 的符号写反），点了 F 画面几乎不动。现在 2D/3D
+    /// 都按选中集合的并集包围盒适配，视口内的 F 与这里是同一个入口。
+    /// H3：揭示当前主选中——展开它的祖先并请求把那一行滚进视口（Unity 的 ping）。
+    ///
+    /// 只在**主选中变化**时做：场景视图点选、粘贴、撤销恢复都会换主选中，于是"选了看不见的
+    /// 东西"这件事自动消失；而用户手动折叠一个正在选中的节点时主选中没变，不会被抢回去。
+    pub(super) fn maybe_reveal_primary_selection(&mut self) {
+        let Some(primary) = self.selection.primary() else {
+            self.hierarchy_last_revealed = None;
             return;
         };
-        let Some(entity) = self
-            .current_scene()
-            .and_then(|scene| scene.scene.entities.get(&id))
-        else {
-            self.status = "当前实体不存在".to_owned();
-            return;
-        };
-        if self.scene_view_mode == crate::SceneViewMode::View3D {
-            let target = entity
-                .components
-                .get("Transform")
-                .and_then(|value| Transform3D::from_component_str(value).ok())
-                .map(|transform| transform.position)
-                .unwrap_or(rustlua_math::math3d::Vec3::ZERO);
-            self.editor_camera.target = target;
-            self.status = "3D 场景视图已聚焦实体".to_owned();
+        if self.hierarchy_last_revealed == Some(primary) {
             return;
         }
-        let transform = entity
-            .components
-            .get("Transform")
-            .and_then(|value| crate::geometry::parse_transform(value))
-            .unwrap_or_default();
-        self.scene_state.pan = egui::vec2(
-            -transform.position_x * self.scene_zoom,
-            transform.position_y * self.scene_zoom,
-        );
-        self.status = "场景视图已聚焦实体".to_owned();
+        self.hierarchy_last_revealed = Some(primary);
+        let mut ancestors = Vec::new();
+        if let Some(scene) = self.current_scene() {
+            let mut cursor = scene
+                .scene
+                .entities
+                .get(&primary)
+                .and_then(|entity| entity.parent);
+            while let Some(parent) = cursor {
+                ancestors.push(parent);
+                cursor = scene
+                    .scene
+                    .entities
+                    .get(&parent)
+                    .and_then(|entity| entity.parent);
+            }
+        }
+        // 只展开**祖先**（当前节点自身的折叠是用户的选择，不动）。
+        let mut changed = false;
+        for id in ancestors {
+            changed |= self.scene_state.collapsed.remove(&id);
+        }
+        if changed {
+            self.save_hierarchy_collapsed();
+        }
+        if self.current_scene().is_some() {
+            self.hierarchy_scroll_target = Some(primary);
+        }
+    }
+
+    pub(super) fn focus_selected_scene_view(&mut self) {
+        self.status = self.frame_selection_in_scene_view();
     }
 
     pub(crate) fn copy_selected_entity(&mut self) {

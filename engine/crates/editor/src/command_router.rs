@@ -213,7 +213,7 @@ impl EditorApp {
                 })
             }
             EditorCommand::DuplicateSelection => {
-                self.document_edit(EditorApp::duplicate_selected_entity)
+                self.document_edit(EditorApp::duplicate_selected_entities)
             }
             EditorCommand::DeleteSelection => self.document_edit(EditorApp::delete_selected_entity),
             EditorCommand::ReparentSelection { target, position } => {

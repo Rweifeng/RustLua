@@ -737,7 +737,8 @@ pub(crate) fn run_baseline() -> BaselineReport {
         for line in &lines {
             app.log_sink.push(line.clone());
         }
-        app.console_log_level_filter = ConsoleLogLevelFilter::All;
+        app.console_log_level_filter = ConsoleLogLevelFilter::ALL;
+        app.console_collapse = false;
         app.console_tab = ConsoleTab::Editor;
         let retained = app.log_sink.snapshot().len();
         let context = eframe::egui::Context::default();
@@ -762,6 +763,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
         let mut indexed = 0;
         let mut hits = 0_u64;
         let mut misses = 0_u64;
+        let mut drawn_rows = 0;
         for _ in 0..frames {
             let before_hits = app.profiler.counter("console_index_cache_hit");
             let before_misses = app.profiler.counter("console_index_cache_miss");
@@ -769,6 +771,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
             run_frame(&mut app, &context);
             samples.push(started.elapsed().as_secs_f32() * 1000.0);
             indexed = app.console_rows_cache.len();
+            drawn_rows = app.console_row_probe.rows();
             hits += app.profiler.counter("console_index_cache_hit") - before_hits;
             misses += app.profiler.counter("console_index_cache_miss") - before_misses;
         }
@@ -782,11 +785,13 @@ pub(crate) fn run_baseline() -> BaselineReport {
                     lines.len()
                 ),
                 format!("indexed_rows={indexed}"),
+                format!("rows_drawn_per_frame={drawn_rows} (virtualized)"),
                 format!("index_cache hits={hits} misses={misses} over {frames} frames"),
                 format!("frame_time_p95={:.3}ms panel=900x260", stats.p95),
             ],
-            // 稳态帧不得重建索引，且索引行数受存储上限约束。
-            indexed > 0 && indexed <= 10_000 && misses == 0,
+            // 稳态帧不得重建索引，索引行数受存储上限约束，且**只画视口内的行**
+            // （这条以前只是注释里的话，现在由绘制行数读数钉住）。
+            indexed > 0 && indexed <= 10_000 && misses == 0 && drawn_rows > 0 && drawn_rows < 200,
         ));
 
         // 过滤词改变必须重建索引，且过滤后行数严格变小。
@@ -904,7 +909,8 @@ pub(crate) fn run_baseline() -> BaselineReport {
                         // （docs/55 §8 的"新 UI 不得重叠/裁字"覆盖两个虚拟列表）。
                         let mut console_app =
                             baseline_app(SceneDocument::new_scene("console_gate"));
-                        console_app.console_log_level_filter = ConsoleLogLevelFilter::All;
+                        console_app.console_log_level_filter = ConsoleLogLevelFilter::ALL;
+                        console_app.console_collapse = false;
                         console_app.console_tab = ConsoleTab::Editor;
                         for line in build_console_fixture(200) {
                             console_app.log_sink.push(line);

@@ -152,7 +152,13 @@ impl EditorApp {
             .get(&selected)
             .map(|entity| entity.name.clone())
             .unwrap_or_else(|| "Prefab".to_owned());
-        let relative = format!("assets/prefabs/{name}.prefab");
+        let root = strip_verbatim_prefix(&self.project.root);
+        let dir = root.join("assets").join("prefabs");
+        // **不静默覆盖**：同名预制体已存在时按 Unity 的语义取 `Name_1`、`Name_2`…，
+        // 而不是把别人的预制体按当前选中实体整份重写（那是 Apply 的职责，且有专门的确认路径）。
+        // 旧实现直接以实体名落盘，选错一次实体再点"创建预制体"就会毁掉原文件。
+        let stem = unique_prefab_stem(&dir, &name);
+        let relative = format!("assets/prefabs/{stem}.prefab");
         if let Some(problem) =
             nesting_problem_at_creation(&self.project.root, &scene.scene, selected, &relative)
         {
@@ -162,8 +168,8 @@ impl EditorApp {
         let prefab = Prefab::from_scene(
             &scene.scene,
             selected,
-            AssetId::from_seed(&name),
-            name.clone(),
+            AssetId::from_seed(&stem),
+            stem.clone(),
         );
         match prefab {
             Ok(mut prefab) => {
@@ -175,22 +181,51 @@ impl EditorApp {
                     self.status = error;
                     return;
                 }
-                let root = strip_verbatim_prefix(&self.project.root);
-                let dir = root.join("assets").join("prefabs");
                 if std::fs::create_dir_all(&dir).is_err() {
                     self.status = "无法创建 prefabs 目录".to_owned();
                     return;
                 }
-                if let Err(error) = prefab.save(dir.join(format!("{name}.prefab"))) {
+                if let Err(error) = prefab.save(dir.join(format!("{stem}.prefab"))) {
                     self.status = format!("预制体保存失败：{error}");
                     return;
                 }
-                self.status = format!("已创建预制体 {name}");
+                // 状态里报**最终路径**：名字被去重时用户必须知道写到哪去了。
+                // 同时写一条 Console 记录：`refresh_resources()` 会覆盖状态栏，而"写到了哪个
+                // 文件"是事后还要能查的事实（去重后缀尤其需要）。
+                let message = if stem == name {
+                    format!("已创建预制体 {relative}")
+                } else {
+                    format!("已创建预制体 {relative}（同名已存在，改用了 {stem}）")
+                };
+                self.push_console_notice(format!("[prefab] {message}"));
+                self.status = message;
                 self.refresh_resources();
             }
             Err(error) => self.status = format!("创建预制体失败：{error}"),
         }
     }
+}
+
+/// 同名预制体已存在时给出不冲突的文件名主干：`Hero` → `Hero_1` → `Hero_2`…
+///
+/// 与"新建场景避重名"（`next_new_scene_name`）同一思路：编辑器不该因为用户手上恰好有
+/// 两个同名实体就毁掉磁盘上的资产。上限之后退到毫秒时间戳，保证一定拿得到唯一名。
+pub(crate) fn unique_prefab_stem(dir: &std::path::Path, stem: &str) -> String {
+    let taken = |candidate: &str| dir.join(format!("{candidate}.prefab")).exists();
+    if !taken(stem) {
+        return stem.to_owned();
+    }
+    for index in 1..=9_999_u32 {
+        let candidate = format!("{stem}_{index}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    format!("{stem}_{stamp}")
 }
 
 /// 创建**嵌套**预制体时要拒绝的两类坏数据，返回给用户的一句话；`None` = 可以创建。

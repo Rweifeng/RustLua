@@ -156,6 +156,80 @@ fn a_script_reference_is_reported_with_its_file_and_line() {
     );
 }
 
+/// A2：只被**材质**引用的贴图也必须拦住删除。
+///
+/// 材质/图集/Spine 清单以前不在守卫的扫描面里，而依赖图早已连上它们的边——
+/// 结果是"依赖视图说有引用、删除守卫说没人用"，点一下删除就把图删了。
+#[test]
+fn a_texture_referenced_only_by_a_material_blocks_deletion() {
+    let (mut app, root) = fixture("delete-material");
+    fs::create_dir_all(root.join("assets/materials")).unwrap();
+    fs::write(
+        root.join("assets/materials/steel.material"),
+        "shader=pbr\nbase_color=assets/hero/player.png\nmetallic=1\nroughness=0.4\n",
+    )
+    .unwrap();
+    // 把场景里的 Sprite 引用清空，让"只被材质引用"这一条件真的成立。
+    write_scene(&root.join("scenes/main.scene"), &[]);
+    app.select_resource(PathBuf::from(PLAYER));
+
+    app.delete_selected_resource();
+
+    let guard = app
+        .pending_delete
+        .as_ref()
+        .expect("材质引用必须拦住删除（只登记了 .lua/.toml/.json 就漏了）");
+    assert!(
+        guard
+            .references
+            .iter()
+            .any(|reference| reference.contains("assets/materials/steel.material")),
+        "要报出是哪份材质在引用：{:?}",
+        guard.references
+    );
+    assert!(root.join(PLAYER).is_file(), "被引用时不能一次删掉");
+}
+
+/// 图集与 Spine 清单同理：它们是资源描述文档，不是"普通文本"。
+#[test]
+fn atlas_and_spine_descriptors_are_scanned_too() {
+    let (mut app, root) = fixture("delete-descriptors");
+    fs::create_dir_all(root.join("assets/atlas")).unwrap();
+    fs::create_dir_all(root.join("assets/spine")).unwrap();
+    fs::write(
+        root.join("assets/atlas/hero.atlas"),
+        "texture=assets/hero/player.png\nregion hero\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("assets/spine/hero.spine"),
+        "skeleton=assets/models/hero.json\natlas=assets/spine/hero.atlas\npage=assets/hero/player.png\n",
+    )
+    .unwrap();
+    write_scene(&root.join("scenes/main.scene"), &[]);
+    app.select_resource(PathBuf::from(PLAYER));
+
+    app.delete_selected_resource();
+
+    let guard = app.pending_delete.as_ref().expect("图集/清单都引用它");
+    assert!(
+        guard
+            .references
+            .iter()
+            .any(|reference| reference.contains("hero.atlas")),
+        "图集引用要报出来：{:?}",
+        guard.references
+    );
+    assert!(
+        guard
+            .references
+            .iter()
+            .any(|reference| reference.contains("hero.spine")),
+        "Spine 清单引用要报出来：{:?}",
+        guard.references
+    );
+}
+
 #[test]
 fn an_audio_reference_is_reported_by_its_file_name() {
     let (mut app, root) = fixture("delete-audio");
@@ -205,6 +279,75 @@ fn the_guard_counts_exactly_what_a_rewrite_would_change() {
         report.rewritten_references
     );
     assert_eq!(report.rewritten_references, 1, "场景里只有一条引用");
+}
+
+/// A4：**多选批量删除**——没引用的直接删，被引用的跳过并汇总点名。
+#[test]
+fn batch_delete_removes_only_unreferenced_resources_and_reports_the_rest() {
+    let (mut app, root) = fixture("delete-batch");
+    // 再加两张没人用的贴图，凑成"3 个可删 + 1 个被引用"。
+    for extra in ["assets/hero/a.png", "assets/hero/b.png"] {
+        fs::write(root.join(extra), b"png").unwrap();
+    }
+    app.resources.refresh(&root).expect("扫描临时工程");
+    app.select_resource(PathBuf::from(SPARE));
+    app.select_resource_with_modifiers(PathBuf::from("assets/hero/a.png"), true, false);
+    app.select_resource_with_modifiers(PathBuf::from("assets/hero/b.png"), true, false);
+    // 把场景里引用的那张也加进选区：它必须被跳过。
+    app.select_resource_with_modifiers(PathBuf::from(PLAYER), true, false);
+    assert_eq!(app.resource_selection.len(), 4);
+
+    app.delete_selected_resource();
+
+    assert!(!root.join(SPARE).exists(), "没引用的必须删掉");
+    assert!(!root.join("assets/hero/a.png").exists());
+    assert!(!root.join("assets/hero/b.png").exists());
+    assert!(
+        root.join(PLAYER).is_file(),
+        "被场景引用的那张必须留下（批量不等于强制删除）"
+    );
+    assert!(
+        app.status.contains("已删除 3 个资源") && app.status.contains(PLAYER),
+        "状态要同时给出删除数与未删名单：{}",
+        app.status
+    );
+    assert!(app.resource_selection.is_empty(), "删完清空多选");
+    assert!(app.pending_delete.is_none(), "批量路径不进入单文件确认态");
+}
+
+/// A4：Shift 范围选按**可见顺序**取区间；Ctrl 再点一次取消该行。
+#[test]
+fn resource_selection_range_and_toggle_follow_the_visible_order() {
+    let (mut app, root) = fixture("delete-range");
+    for extra in ["assets/hero/a.png", "assets/hero/b.png"] {
+        fs::write(root.join(extra), b"png").unwrap();
+    }
+    app.resources.refresh(&root).expect("扫描临时工程");
+    app.resources_filter = "t:png".to_owned();
+    app.resources.set_filter("t:png".to_owned());
+    // 单选一个再 Shift 选另一个：区间内的所有可见项都进集合。
+    app.select_resource(PathBuf::from("assets/hero/a.png"));
+    let visible: Vec<PathBuf> = app
+        .resources
+        .visible_entries()
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    let last = visible.last().cloned().expect("至少有可见项");
+    app.select_resource_with_modifiers(last.clone(), false, true);
+    assert_eq!(
+        app.resource_selection.len(),
+        visible.len(),
+        "Shift 范围选应覆盖全部可见项：{:?}",
+        app.resource_selection
+    );
+    assert_eq!(app.selected_resource, Some(last));
+    // Ctrl 点掉一个：集合变小，主选中让给剩下的最后一个。
+    let removed = visible[0].clone();
+    app.select_resource_with_modifiers(removed.clone(), true, false);
+    assert!(!app.resource_selection.contains(&removed));
+    assert_eq!(app.resource_selection.len(), visible.len() - 1);
+    let _ = fs::remove_dir_all(root);
 }
 
 /// 读不动的文档不能被悄悄当成"没有引用"：它要出现在状态栏里。

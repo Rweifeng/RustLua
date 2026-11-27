@@ -75,6 +75,23 @@ impl EditorApp {
                 incoming.push(relative_label(&root, &path));
             }
         }
+        // 材质 / 图集 / Spine 清单：与删除守卫共用同一份枚举与同一台扫描器，
+        // 否则"依赖视图说有引用、删除守卫说没人用"会自相矛盾。
+        for path in super::delete_guard::descriptor_documents(&root) {
+            if open_document
+                .as_ref()
+                .is_some_and(|open| editor::paths_match(open, &path))
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let kind = ResourceKind::from_path(&path);
+            if references_target(&text, kind, &target) {
+                incoming.push(relative_label(&root, &path));
+            }
+        }
         if let Some(scene) = self.document.current_scene.as_ref() {
             let label = open_document
                 .as_ref()
@@ -117,7 +134,10 @@ impl EditorApp {
 }
 
 /// 文本里是否有一处引用正好指向 `target`（工程内相对路径）。
-fn references_target(
+///
+/// 删除守卫也调它：守卫与依赖视图必须用**同一台**扫描器（A2），否则同一条引用会在
+/// 两个面板里得到不同答案。
+pub(crate) fn references_target(
     text: &str,
     kind: rustlua_assets::resource_kind::ResourceKind,
     target: &str,

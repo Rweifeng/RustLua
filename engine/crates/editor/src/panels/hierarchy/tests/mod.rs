@@ -266,6 +266,165 @@ fn make_app(document: SceneDocument) -> crate::EditorApp {
     app
 }
 
+/// **创建预制体不静默覆盖**：第二个同名实体再创建一次，必须落到 `Hero_1.prefab`，
+/// 且原 `Hero.prefab` 的文件内容一字不变（Unity 的"同名取后缀"语义）。
+#[test]
+fn creating_a_prefab_with_an_existing_name_never_overwrites() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-prefab-dedupe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("assets/prefabs")).unwrap();
+    std::fs::create_dir_all(root.join("scenes")).unwrap();
+    std::fs::create_dir_all(root.join("scripts")).unwrap();
+    std::fs::write(
+        root.join("project.toml"),
+        "[project]\nname = \"t\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();
+    let project = editor::open_project(&root).expect("project opens");
+    let mut app = crate::EditorApp::new(project, None, LogSink::new(64));
+    let scene = app.document.new_scene("main");
+    let first = app.tree.create_entity(scene, "Hero", None).unwrap();
+    app.selection
+        .set_single(first, editor::SelectionSource::Hierarchy);
+    app.create_prefab_from_selected();
+    let original = root.join("assets/prefabs/Hero.prefab");
+    assert!(original.exists(), "第一份必须落盘：{}", app.status);
+    let before = std::fs::read(&original).unwrap();
+
+    // 第二个**同名**实体：再来一次。
+    let second = {
+        let scene = app.document.current_scene.as_mut().unwrap();
+        app.tree.create_entity(scene, "Hero", None).unwrap()
+    };
+    app.selection
+        .set_single(second, editor::SelectionSource::Hierarchy);
+    app.create_prefab_from_selected();
+    let deduped = root.join("assets/prefabs/Hero_1.prefab");
+    assert!(
+        deduped.exists(),
+        "同名时必须改名而不是覆盖（status={}）",
+        app.status
+    );
+    assert_eq!(
+        std::fs::read(&original).unwrap(),
+        before,
+        "原预制体文件不得被改写"
+    );
+    // 状态栏会被随后的"正在后台刷新资源…"覆盖（既有行为），落盘路径记在 Console 里。
+    assert!(
+        app.console_notices
+            .iter()
+            .any(|line| line.contains("Hero_1.prefab")),
+        "必须报出真正的落盘路径：{:?}",
+        app.console_notices
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 去重命名本身：`Hero` → `Hero_1` → `Hero_2`，空目录保留原名。
+#[test]
+fn unique_prefab_stem_appends_the_first_free_suffix() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-prefab-stem-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        super::scene_ops::unique_prefab_stem(&root, "Hero"),
+        "Hero",
+        "无冲突时保留原名"
+    );
+    std::fs::write(root.join("Hero.prefab"), b"x").unwrap();
+    assert_eq!(
+        super::scene_ops::unique_prefab_stem(&root, "Hero"),
+        "Hero_1"
+    );
+    std::fs::write(root.join("Hero_1.prefab"), b"x").unwrap();
+    assert_eq!(
+        super::scene_ops::unique_prefab_stem(&root, "Hero"),
+        "Hero_2"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// H3：主选中变化时揭示——展开祖先并请求滚动；同一选中不重复抢滚动位置。
+#[test]
+fn selecting_an_entity_reveals_its_ancestors_and_requests_one_scroll() {
+    let mut app = make_app(sample_document());
+    let root = SceneEntityId(1);
+    let child = SceneEntityId(2);
+    // 用户先把 Root 折叠起来，再从别处（场景视图/撤销）选中 Root 下的 A。
+    app.scene_state.collapsed.insert(root);
+    app.select_single_hierarchy(child);
+
+    app.maybe_reveal_primary_selection();
+    assert!(
+        !app.scene_state.collapsed.contains(&root),
+        "祖先必须被展开，否则选中了也看不见"
+    );
+    assert_eq!(
+        app.hierarchy_scroll_target,
+        Some(child),
+        "要请求把目标行滚进视口"
+    );
+
+    // 滚动请求被面板消费掉之后，同一主选中不再产生新的请求：
+    // 用户手动折叠正在选中的节点时，不许被下一帧抢回去。
+    app.hierarchy_scroll_target = None;
+    app.scene_state.collapsed.insert(root);
+    app.maybe_reveal_primary_selection();
+    assert_eq!(app.hierarchy_scroll_target, None);
+    assert!(
+        app.scene_state.collapsed.contains(&root),
+        "同一选中期间不得重新展开"
+    );
+
+    // 换一个主选中 → 再次揭示。
+    app.selection
+        .set_single(SceneEntityId(3), editor::SelectionSource::SceneView2D);
+    app.maybe_reveal_primary_selection();
+    assert_eq!(app.hierarchy_scroll_target, Some(SceneEntityId(3)));
+    assert!(!app.scene_state.collapsed.contains(&root));
+}
+
+/// H4：锁定语义 = **只挡场景拾取**。层级里仍然可选中、可删除
+///（场景视图里的命中与拖动跳过硬定已有 `pick_scene_2d_entity_uses_topmost_unlocked_hit` 覆盖）。
+#[test]
+fn a_locked_entity_stays_selectable_and_deletable_in_the_hierarchy() {
+    let mut app = make_app(sample_document());
+    app.scene_state.locked.insert(SceneEntityId(2));
+
+    app.select_single_hierarchy(SceneEntityId(2));
+    assert_eq!(
+        app.selection.primary(),
+        Some(SceneEntityId(2)),
+        "锁定不该让层级行点不中"
+    );
+
+    app.delete_selected_entity();
+    assert!(
+        !app.document
+            .current_scene
+            .as_ref()
+            .unwrap()
+            .scene
+            .entities
+            .contains_key(&SceneEntityId(2)),
+        "显式删除动作对锁定实体同样生效（锁不是写保护）"
+    );
+}
+
 /// ER-04 的"类型过滤"（第 41 轮）：`type:` / `component:` 按**组件名**过滤（子串、
 /// 大小写不敏感），与名称词是 AND 关系；`type:` 只输入到一半不算过滤。
 #[test]
@@ -609,12 +768,104 @@ fn hierarchy_collapsed_state_roundtrips_per_scene_and_drops_stale_ids() {
     );
 }
 
+/// 多选 Ctrl+D：复制**整个选中集合的顶层根**，复制体各随其源、整体成为新选中集合，
+/// 且一步 Undo 全部回滚（Unity 的 Ctrl+D 语义）。
+#[test]
+fn multi_selection_duplicate_copies_every_top_level_entity_in_one_undo() {
+    let mut app = make_app(sample_document());
+    // A（Root 下）与 Solo（根下）分属两个父级：批量复制不能只挑一个。
+    app.selection.set_many(
+        [SceneEntityId(2), SceneEntityId(4)],
+        Some(SceneEntityId(4)),
+        editor::SelectionSource::Hierarchy,
+    );
+    app.duplicate_selected_entities();
+    let scene = &app.document.current_scene.as_ref().unwrap().scene;
+    // Root -> [A, A_copy, Leaf]；Solo -> [Solo, Solo_copy]。
+    assert_eq!(
+        scene.entities[&SceneEntityId(1)].children,
+        vec![SceneEntityId(2), SceneEntityId(5), SceneEntityId(3)]
+    );
+    assert_eq!(scene.entities[&SceneEntityId(5)].name, "A");
+    assert_eq!(
+        scene.entities[&SceneEntityId(5)].parent,
+        Some(SceneEntityId(1))
+    );
+    assert_eq!(scene.entities[&SceneEntityId(6)].name, "Solo");
+    assert_eq!(scene.entities[&SceneEntityId(6)].parent, None);
+    // 复制体成为新的选中集合（继续按 Ctrl+D 会复制复制体，与 Unity 一致）。
+    assert_eq!(app.selection.len(), 2);
+    assert!(app.selection.contains(SceneEntityId(5)));
+    assert!(app.selection.contains(SceneEntityId(6)));
+    assert_eq!(app.selection.primary(), Some(SceneEntityId(6)));
+
+    app.undo_with_transaction_guard();
+    let scene = &app.document.current_scene.as_ref().unwrap().scene;
+    assert_eq!(
+        scene.entities[&SceneEntityId(1)].children,
+        vec![SceneEntityId(2), SceneEntityId(3)]
+    );
+    assert!(!scene.entities.contains_key(&SceneEntityId(5)));
+    assert!(!scene.entities.contains_key(&SceneEntityId(6)));
+}
+
+/// 多选右键「移动到此实体下」/「移动到根节点」：整批移动，一条 Undo。
+/// （以前这里只搬 `primary`，多选后与拖拽的行为不一致。）
+#[test]
+fn multi_selection_reparent_moves_the_whole_selection_in_one_undo() {
+    let mut app = make_app(sample_document());
+    app.selection.set_many(
+        [SceneEntityId(2), SceneEntityId(4)],
+        Some(SceneEntityId(4)),
+        editor::SelectionSource::Hierarchy,
+    );
+    app.reparent_selected(Some(SceneEntityId(3)));
+    let scene = &app.document.current_scene.as_ref().unwrap().scene;
+    assert_eq!(
+        scene.entities[&SceneEntityId(2)].parent,
+        Some(SceneEntityId(3))
+    );
+    assert_eq!(
+        scene.entities[&SceneEntityId(4)].parent,
+        Some(SceneEntityId(3))
+    );
+    assert!(
+        !scene.entities[&SceneEntityId(1)]
+            .children
+            .contains(&SceneEntityId(2))
+    );
+
+    app.undo_with_transaction_guard();
+    let scene = &app.document.current_scene.as_ref().unwrap().scene;
+    assert_eq!(
+        scene.entities[&SceneEntityId(2)].parent,
+        Some(SceneEntityId(1))
+    );
+    assert_eq!(scene.entities[&SceneEntityId(4)].parent, None);
+}
+
+/// 多选「移动到根节点」：两个原本在不同父级下的实体都被搬到根下。
+#[test]
+fn multi_selection_move_to_root_uses_the_batch_path() {
+    let mut app = make_app(sample_document());
+    app.selection.set_many(
+        [SceneEntityId(2), SceneEntityId(3)],
+        Some(SceneEntityId(3)),
+        editor::SelectionSource::Hierarchy,
+    );
+    app.reparent_selected(None);
+    let scene = &app.document.current_scene.as_ref().unwrap().scene;
+    assert_eq!(scene.entities[&SceneEntityId(2)].parent, None);
+    assert_eq!(scene.entities[&SceneEntityId(3)].parent, None);
+    assert!(scene.entities[&SceneEntityId(1)].children.is_empty());
+}
+
 #[test]
 fn duplicate_in_place_sits_right_after_source_and_undo_restores() {
     let mut app = make_app(sample_document());
     app.selection
         .set_single(SceneEntityId(2), editor::SelectionSource::Hierarchy);
-    app.duplicate_selected_entity();
+    app.duplicate_selected_entities();
     let scene = &app.document.current_scene.as_ref().unwrap().scene;
     // 复制体紧随源节点之后：Root -> [A, A, Leaf]，Solo 保持在后。
     assert_eq!(

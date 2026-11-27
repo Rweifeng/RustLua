@@ -123,6 +123,10 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // P2：快捷键窗只调 `EditorApp` 的改键入口（用户配置），不碰文档与历史。
     ("shortcut_settings.rs", 0),
     ("scene_view/mod.rs", 0),
+    ("scene_view/bounds_3d.rs", 0),
+    ("scene_view/frame.rs", 0),
+    // C8：调试面板只发 typed action / 改自己的状态，不直接写文档。
+    ("lua_debugger.rs", 0),
     ("scene_view/draw.rs", 0),
     ("scene_view/pointer.rs", 0),
     ("scene_view/scene_geometry.rs", 0),

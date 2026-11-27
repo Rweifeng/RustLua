@@ -11,6 +11,18 @@ use editor::{CommandKind, ReparentPosition, SelectionSource};
 use rustlua_ecs::transform::Transform3D;
 use rustlua_scene::scene::SceneEntityId;
 
+/// 换父的落点：拖放（相对目标的前/后/内）或直接指定父级（「移动到根节点」/命令层）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ReparentTarget {
+    /// 只指定新父级（`None` = 根）。
+    Parent(Option<SceneEntityId>),
+    /// 相对某个目标的落点（拖放语义，见 `SceneTree::reparent_at`）。
+    At {
+        target: SceneEntityId,
+        position: ReparentPosition,
+    },
+}
+
 impl EditorApp {
     pub(crate) fn paste_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
@@ -57,10 +69,7 @@ impl EditorApp {
         target_id: SceneEntityId,
         position: ReparentPosition,
     ) {
-        let Some(scene) = self.document.current_scene.as_ref() else {
-            self.status = "请先创建场景".to_owned();
-            return;
-        };
+        // 拖的是选中集合里的一员 ⇒ 整批移动顶层根；否则只移动这一行。
         let batch: Vec<SceneEntityId> =
             if self.selection.len() > 1 && self.selection.contains(dropped_id) {
                 self.top_most_selected_ids()
@@ -69,23 +78,54 @@ impl EditorApp {
             };
         // Before/After 的有效父级是目标的父级；「目标不是移动方后代」检查同时
         // 覆盖两种情况（若目标的父级在移动方子树内，目标本身也在其中）。
-        for moving_id in &batch {
-            if let Err(error) = self.validate_reparent_target(scene, *moving_id, Some(target_id)) {
-                self.status = error;
-                return;
+        match self.commit_reparent_batch(
+            batch,
+            ReparentTarget::At {
+                target: target_id,
+                position,
+            },
+        ) {
+            Ok(moved) => {
+                self.status = if moved > 1 {
+                    format!("已移动 {moved} 个实体")
+                } else {
+                    "已通过拖拽更改父实体".to_owned()
+                };
             }
+            Err(error) => self.status = error,
+        }
+    }
+
+    /// 批量换父的提交内核：**整批校验 → 一条事务 → keep-world → 提交或整体回滚**。
+    ///
+    /// 拖放与「移动到根节点」共用这一份：两条路径以前各写一遍，结果 `reparent_selected`
+    /// 只搬主选中，而拖拽会搬整批——同一个"移动"动作出现两种语义。
+    pub(crate) fn commit_reparent_batch(
+        &mut self,
+        batch: Vec<SceneEntityId>,
+        target: ReparentTarget,
+    ) -> Result<usize, String> {
+        if batch.is_empty() {
+            return Err("请先选择实体".to_owned());
+        }
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return Err("请先创建场景".to_owned());
+        };
+        let validated_against = match target {
+            ReparentTarget::Parent(parent) => parent,
+            ReparentTarget::At { target, .. } => Some(target),
+        };
+        for moving_id in &batch {
+            self.validate_reparent_target(scene, *moving_id, validated_against)?;
         }
         let primary = batch[0];
         if !self.begin_edit_transaction("更改父实体", CommandKind::Reparent, Some(primary)) {
-            self.status = "重挂载事务已激活，无法重复开始".to_owned();
-            return;
+            return Err("重挂载事务已激活，无法重复开始".to_owned());
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.cancel_edit_transaction();
-            self.status = "请先创建场景".to_owned();
-            return;
+            return Err("请先创建场景".to_owned());
         };
-        let mut error = None;
         // docs/54 §8-⑦（§4.1）：换父提供 **keep-world** 语义——先记下移动方的世界矩阵，改完父
         // 再按新父反解局部值，因此"拖进新父"不会让实体在画面上跳走。反解不了（剪切/镜像/退化）
         // 时整笔事务取消，绝不静默近似。
@@ -96,12 +136,20 @@ impl EditorApp {
                 .filter_map(|id| matrices.get(id).map(|matrix| (*id, *matrix)))
                 .collect()
         };
+        let mut error = None;
         for moving_id in &batch {
-            if let Err(failure) = self
-                .tree
-                .reparent_at(scene, *moving_id, target_id, position)
-            {
-                error = Some(failure.to_string());
+            let placed = match target {
+                ReparentTarget::Parent(parent) => self
+                    .tree
+                    .reparent(scene, *moving_id, parent)
+                    .map_err(|error| error.to_string()),
+                ReparentTarget::At { target, position } => self
+                    .tree
+                    .reparent_at(scene, *moving_id, target, position)
+                    .map_err(|error| error.to_string()),
+            };
+            if let Err(failure) = placed {
+                error = Some(failure);
                 break;
             }
         }
@@ -119,15 +167,11 @@ impl EditorApp {
         }
         if let Some(error) = error {
             self.cancel_edit_transaction();
-            self.status = error;
+            Err(error)
         } else {
             self.commit_edit_transaction();
             self.on_document_changed(crate::actions::DocumentChange::EntityReparented);
-            self.status = if batch.len() > 1 {
-                format!("已移动 {} 个实体", batch.len())
-            } else {
-                "已通过拖拽更改父实体".to_owned()
-            };
+            Ok(batch.len())
         }
     }
 
@@ -277,26 +321,36 @@ impl EditorApp {
 
     /// H04：Ctrl+D 原地复制 —— 复制到原父节点并紧随源节点之后，名称与源一致，
     /// 一个 Create 事务（Undo 一步整体回滚）。
-    pub(crate) fn duplicate_selected_entity(&mut self) {
+    ///
+    /// 多选时复制**整个选中集合的顶层根**，复制体紧随各自源节点，并成为新的选中集合
+    /// （Unity 的 Ctrl+D 语义）；以前只复制 `primary`，多选后按 Ctrl+D 会悄悄只多一个。
+    pub(crate) fn duplicate_selected_entities(&mut self) {
         if self.is_playing() {
             self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
-        let Some(source_id) = self.selection.primary() else {
+        if self.selection.primary().is_none() {
             self.status = "请先在层级面板中选择实体".to_owned();
             return;
-        };
-        let Some(source) = self
-            .current_scene()
-            .and_then(|scene| scene.scene.entities.get(&source_id))
-            .cloned()
-        else {
+        }
+        // 按可见顺序取顶层根：先复制上层再复制下层，落点位置才能"紧随源节点"。
+        let order = self
+            .top_most_selected_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let entity = self
+                    .current_scene()
+                    .and_then(|scene| scene.scene.entities.get(&id))?
+                    .clone();
+                Some((id, entity))
+            })
+            .collect::<Vec<_>>();
+        if order.is_empty() {
             self.status = "当前实体不存在".to_owned();
             return;
-        };
-        let parent = source.parent;
+        }
         let tree = self.tree.clone();
-        let created = std::cell::Cell::new(None::<SceneEntityId>);
+        let created: std::cell::RefCell<Vec<SceneEntityId>> = std::cell::RefCell::new(Vec::new());
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.status = "请先创建场景".to_owned();
             return;
@@ -304,22 +358,30 @@ impl EditorApp {
         let result = self
             .history
             .execute(scene, "复制实体", CommandKind::Create, |scene| {
-                let copy_id = tree
-                    .duplicate_subtree(scene, &source, parent)
-                    .map_err(|error| error.to_string())?;
-                tree.reparent_at(scene, copy_id, source_id, ReparentPosition::After)
-                    .map_err(|error| error.to_string())?;
-                created.set(Some(copy_id));
+                for (source_id, source) in &order {
+                    let copy_id = tree
+                        .duplicate_subtree(scene, source, source.parent)
+                        .map_err(|error| error.to_string())?;
+                    tree.reparent_at(scene, copy_id, *source_id, ReparentPosition::After)
+                        .map_err(|error| error.to_string())?;
+                    created.borrow_mut().push(copy_id);
+                }
                 Ok::<(), String>(())
             });
         match result {
             Ok(true) => {
-                if let Some(id) = created.get() {
-                    self.selection.add(id, SelectionSource::Command);
-                    self.selection_anchor = Some(id);
-                    self.sync_inspector(id);
+                let created = created.into_inner();
+                if let Some(last) = created.last().copied() {
+                    self.selection
+                        .set_many(created.clone(), Some(last), SelectionSource::Command);
+                    self.selection_anchor = Some(last);
+                    self.sync_inspector(last);
                 }
-                self.status = "实体已复制".to_owned();
+                self.status = if created.len() > 1 {
+                    format!("已复制 {} 个实体", created.len())
+                } else {
+                    "实体已复制".to_owned()
+                };
             }
             Ok(false) => self.status = "没有变化".to_owned(),
             Err(error) => self.status = error,

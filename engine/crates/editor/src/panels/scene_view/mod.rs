@@ -84,7 +84,9 @@ pub(crate) fn sync_native_scene_texture(
     }
 }
 
+mod bounds_3d;
 mod draw;
+mod frame;
 mod pointer;
 mod projection;
 mod render;
@@ -100,6 +102,8 @@ mod view_state;
 pub(crate) use view_state::{SCENE_ZOOM_MAX, SCENE_ZOOM_MIN};
 
 // 子模块的纯函数在本面板内共享（`tests` 也经 `use super::*` 取用）。
+pub(crate) use bounds_3d::*;
+pub(crate) use frame::*;
 pub(crate) use projection::*;
 pub(crate) use scene_geometry::*;
 pub(crate) use tilemap::*;

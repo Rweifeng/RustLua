@@ -37,16 +37,25 @@ enum ConsoleSource {
 }
 
 /// 一行控制台内容：来源 + 源行号 + 该源行内的子行号（源行含换行时按物理行拆开）。
+///
+/// `repeat` 是**折叠计数**：连续重复的同一行只保留第一条，后续的只把计数加一
+/// （Unity Console 的 Collapse）。关掉折叠时恒为 1。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ConsoleRowRef {
     source: ConsoleSource,
     index: usize,
     sub: usize,
+    repeat: u32,
 }
 
 impl ConsoleRowRef {
     fn new(source: ConsoleSource, index: usize, sub: usize) -> Self {
-        Self { source, index, sub }
+        Self {
+            source,
+            index,
+            sub,
+            repeat: 1,
+        }
     }
 }
 
@@ -56,6 +65,7 @@ struct ConsoleRowKey {
     tab: Option<ConsoleTab>,
     filter: String,
     level: Option<ConsoleLogLevelFilter>,
+    collapse: bool,
     sink_generation: u64,
     notice_len: usize,
     preview_len: usize,
@@ -63,17 +73,37 @@ struct ConsoleRowKey {
 }
 
 /// 缓存的行索引。文本本身仍留在各自的有界缓冲里，这里只持有 (来源, 序号)。
+///
+/// `sink_lines` 是 **sink 行文本的快照缓存**：`LogSink` 的内容按 `generation` 失效，
+/// 因此稳态帧（没有新日志）不再每帧 clone 上万条字符串——100k 行场景下这是本面板
+/// 最大的单笔每帧成本，比索引重建还贵（索引本来就按 key 缓存）。
 #[derive(Default)]
 pub(crate) struct ConsoleRowCache {
     key: ConsoleRowKey,
     rows: Vec<ConsoleRowRef>,
     valid: bool,
+    sink_lines: Vec<String>,
+    /// `None` = 还没缓存过（`generation` 初值 0，不能用 0 当"已缓存"哨兵）。
+    sink_generation: Option<u64>,
 }
 
 impl ConsoleRowCache {
     /// 上次构建的行数（远端行数为 0 表示还没构建过）。
     pub(crate) fn len(&self) -> usize {
         if self.valid { self.rows.len() } else { 0 }
+    }
+
+    /// 按 `LogSink` 的代数刷新 sink 文本快照，并把所有权交出去（`mem::take`，O(1)）。
+    ///
+    /// 调用方绘制结束后要把取走的 `Vec` 放回 [`Self::sink_lines`]；代数没变时不会重新
+    /// 截图，这是"稳态帧不 clone 上万条日志"的唯一机制（有单测钉住）。
+    fn take_sink_lines(&mut self, sink: &rustlua_infra::logging::LogSink) -> Vec<String> {
+        let generation = sink.generation();
+        if self.sink_generation != Some(generation) {
+            self.sink_lines = sink.snapshot();
+            self.sink_generation = Some(generation);
+        }
+        std::mem::take(&mut self.sink_lines)
     }
 }
 
@@ -154,43 +184,37 @@ impl EditorApp {
                             .desired_width(160.0)
                             .hint_text("过滤日志…"),
                     );
+                    // 折叠（Unity 的 Collapse）：连续重复的同一行合并成一条并显示 `×N`。
+                    ui.checkbox(&mut self.console_collapse, "折叠")
+                        .on_hover_text("连续的相同日志合并成一条，行尾显示重复次数");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("清空").clicked() {
                             self.log_sink.clear();
                             self.console_notices.clear();
                         }
-                        ui.selectable_value(
-                            &mut self.console_log_level_filter,
-                            ConsoleLogLevelFilter::Error,
-                            "错误",
-                        );
-                        ui.selectable_value(
-                            &mut self.console_log_level_filter,
-                            ConsoleLogLevelFilter::Warning,
-                            "警告",
-                        );
-                        ui.selectable_value(
-                            &mut self.console_log_level_filter,
-                            ConsoleLogLevelFilter::Info,
-                            "信息",
-                        );
-                        ui.selectable_value(
-                            &mut self.console_log_level_filter,
-                            ConsoleLogLevelFilter::All,
-                            "全部",
-                        );
+                        // 级别是**三个可多选开关**（信息/警告/错误），外加"全部"快捷位；
+                        // 旧的四选一枚举表达不了"只看警告+错误"。
+                        for (label, flag) in self.console_log_level_filter.toggles() {
+                            ui.toggle_value(flag, label);
+                        }
+                        let all = self.console_log_level_filter.is_all();
+                        if ui
+                            .selectable_label(all, "全部")
+                            .on_hover_text("三个级别全部打开")
+                            .clicked()
+                        {
+                            self.console_log_level_filter = ConsoleLogLevelFilter::ALL;
+                        }
+                        if !self.console_log_level_filter.any() {
+                            // 三个都关 = 面板空白、且看起来像"没有日志"：给一句话，别让用户以为坏掉。
+                            ui.weak("未选择任何级别");
+                        }
                     });
                 });
-                // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
+                // 滚动体自己拥有滚动区（`show_rows` 需要行高与行数），面板高度保持固定。
                 let log_height = ui.available_height();
-                egui::ScrollArea::vertical()
-                    .id_salt("console_log_body")
-                    .auto_shrink([false; 2])
-                    .hscroll(false)
-                    .max_height(log_height)
-                    .show(ui, |ui| {
-                        self.draw_console_log_body(ui);
-                    });
+                ui.set_max_height(log_height);
+                self.draw_console_log_body(ui);
             });
         });
     }
@@ -216,8 +240,9 @@ impl EditorApp {
     /// 按左侧分类绘制日志主体。
     ///
     /// 做法与 Hierarchy 一致：先算出**行索引**（按来源+序号，不复制文本），再按固定行高
-    /// 虚拟滚动，只绘制视口内的行。索引按 (分类, 过滤词, 级别, 各来源代数/长度) 缓存，
-    /// 因此 100k 级日志下滚动与过滤都不会每帧重建整表。
+    /// 虚拟滚动（`show_rows` 只画视口内的行）。索引按 (分类, 过滤词, 级别, 各来源代数/长度)
+    /// 缓存，sink 文本快照按 `LogSink::generation` 缓存：100k 级日志下滚动、过滤与稳态帧
+    /// 都不重建整表、也不 clone 文本。
     fn draw_console_log_body(&mut self, ui: &mut egui::Ui) {
         let filter = self.console_filter.trim().to_lowercase();
         let tab = self.console_tab;
@@ -238,8 +263,11 @@ impl EditorApp {
                 (diagnostic.summary(), level)
             })
             .collect();
+        // sink 快照只在代数变化时重建（`mem::take` 是 O(1)，绘制结束再放回去）。
+        let sink_generation = self.log_sink.generation();
+        let sink_lines = self.console_rows_cache.take_sink_lines(&self.log_sink);
         let sources = ConsoleSources {
-            sink: self.log_sink.snapshot(),
+            sink: sink_lines,
             notices: self.console_notices.clone(),
             preview: preview_diagnostics,
             script: self.script_console_lines(),
@@ -248,42 +276,62 @@ impl EditorApp {
             tab: Some(tab),
             filter: filter.clone(),
             level: Some(level_filter),
-            sink_generation: self.log_sink.generation(),
+            collapse: self.console_collapse,
+            sink_generation,
             notice_len: sources.notices.len(),
             preview_len: sources.preview.len(),
             script_len: sources.script.len(),
         };
-        let row_count =
-            self.rebuild_console_rows_if_needed(&key, &sources, tab, &filter, level_filter);
+        let row_count = self.rebuild_console_rows_if_needed(
+            &key,
+            &sources,
+            tab,
+            &filter,
+            level_filter,
+            self.console_collapse,
+        );
         // 取出（而非借用）行索引：绘制期间还需要不可变借用各来源文本。
         let rows = std::mem::take(&mut self.console_rows_cache.rows);
         self.console_row_probe.reset();
         // 点击跳转在帧末统一执行：跳转可能切换文档，不能在绘制中途改状态。
         let mut pending_jump: Option<editor::DiagnosticLocation> = None;
-        for index in 0..row_count {
-            if pending_jump.is_some() {
-                break;
-            }
-            let Some(row) = rows.get(index).copied() else {
-                continue;
-            };
-            let Some(text) = console_row_text(&sources, tab, row) else {
-                continue;
-            };
-            let level = sources.level(row.source, row.index);
-            let response = draw_log_line(ui, text, level);
-            self.console_row_probe.observe(response.rect.height());
-            if let Some(location) = editor::parse_location(text) {
-                let response = response.interact(egui::Sense::click());
-                if response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        let row_height = console_row_height(ui);
+        let body_height = ui.available_height().max(row_height);
+        egui::ScrollArea::vertical()
+            .id_salt("console_log_body")
+            .auto_shrink([false; 2])
+            .hscroll(false)
+            .max_height(body_height)
+            // 跟随尾部（Unity 的 Console 行为）：新日志到达时视图贴着最后一行；
+            // 用户主动往上滚后不再抢滚动位置，回到底部则恢复跟随。
+            .stick_to_bottom(true)
+            .show_rows(ui, row_height, row_count, |ui, visible| {
+                for index in visible {
+                    if pending_jump.is_some() {
+                        break;
+                    }
+                    let Some(row) = rows.get(index).copied() else {
+                        continue;
+                    };
+                    let Some(display) = console_row_line(&sources, tab, row) else {
+                        continue;
+                    };
+                    let level = sources.level(row.source, row.index);
+                    let response = draw_log_line(ui, &display, level);
+                    self.console_row_probe.observe(response.rect.height());
+                    if let Some(location) = editor::parse_location(&display) {
+                        let response = response.interact(egui::Sense::click());
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() {
+                            pending_jump = Some(location);
+                        }
+                    }
                 }
-                if response.clicked() {
-                    pending_jump = Some(location);
-                }
-            }
-        }
+            });
         self.console_rows_cache.rows = rows;
+        self.console_rows_cache.sink_lines = sources.sink;
         if let Some(location) = pending_jump {
             self.profiler.bump("console_diagnostic_jump");
             self.jump_to_diagnostic(&location);
@@ -316,7 +364,7 @@ impl EditorApp {
             .collect()
     }
 
-    /// 当索引键变化时重建控制台行索引（过滤 + 级别 + 分类 + 物理行拆分）。
+    /// 当索引键变化时重建控制台行索引（过滤 + 级别 + 分类 + 物理行拆分 + 折叠）。
     fn rebuild_console_rows_if_needed(
         &mut self,
         key: &ConsoleRowKey,
@@ -324,13 +372,14 @@ impl EditorApp {
         tab: ConsoleTab,
         filter: &str,
         level_filter: ConsoleLogLevelFilter,
+        collapse: bool,
     ) -> usize {
         if self.console_rows_cache.valid && self.console_rows_cache.key == *key {
             self.profiler.bump("console_index_cache_hit");
             return self.console_rows_cache.rows.len();
         }
         self.profiler.bump("console_index_cache_miss");
-        let rows = build_console_rows(sources, tab, filter, level_filter);
+        let rows = build_console_rows(sources, tab, filter, level_filter, collapse);
         let row_count = rows.len();
         self.console_rows_cache.key = key.clone();
         self.console_rows_cache.rows = rows;
@@ -348,11 +397,10 @@ enum ConsoleLogLevel {
 
 impl ConsoleLogLevelFilter {
     fn matches(self, level: ConsoleLogLevel) -> bool {
-        match self {
-            Self::All => true,
-            Self::Info => level == ConsoleLogLevel::Info,
-            Self::Warning => level == ConsoleLogLevel::Warning,
-            Self::Error => level == ConsoleLogLevel::Error,
+        match level {
+            ConsoleLogLevel::Info => self.info,
+            ConsoleLogLevel::Warning => self.warning,
+            ConsoleLogLevel::Error => self.error,
         }
     }
 }
@@ -385,6 +433,8 @@ fn log_level(line: &str) -> ConsoleLogLevel {
 
 /// 构建控制台行索引：按分类与级别筛选来源行，按过滤词匹配，并把多行源行拆成物理行。
 ///
+/// `collapse=true` 时把**连续重复**的同一行合并成一条（`repeat` 计数），与 Unity Console 的
+/// Collapse 一致：只在可见顺序上相邻才合并，跨来源/跨过滤结果不合并（否则"×N"会撒谎）。
 /// 生产路径（`rebuild_console_rows_if_needed`）与单元测试共用这一个实现，
 /// 避免"测试里复刻一份索引逻辑"造成的假绿灯。
 fn build_console_rows(
@@ -392,8 +442,9 @@ fn build_console_rows(
     tab: ConsoleTab,
     filter: &str,
     level_filter: ConsoleLogLevelFilter,
+    collapse: bool,
 ) -> Vec<ConsoleRowRef> {
-    let mut rows = Vec::new();
+    let mut rows: Vec<ConsoleRowRef> = Vec::new();
     for (source, count) in [
         (ConsoleSource::Sink, sources.sink.len()),
         (ConsoleSource::Notice, sources.notices.len()),
@@ -436,7 +487,17 @@ fn build_console_rows(
                 if multiline && physical.trim().is_empty() {
                     continue;
                 }
-                rows.push(ConsoleRowRef::new(source, index, sub));
+                let row = ConsoleRowRef::new(source, index, sub);
+                if collapse
+                    && let Some(last) = rows.last_mut()
+                    && console_row_text(sources, tab, *last) == Some(physical)
+                    && last.repeat < u32::MAX
+                {
+                    // 连续重复：只累加计数，不再进索引（Unity Collapse 的语义）。
+                    last.repeat += 1;
+                    continue;
+                }
+                rows.push(row);
             }
         }
     }
@@ -452,6 +513,23 @@ fn console_row_text(sources: &ConsoleSources, tab: ConsoleTab, row: ConsoleRowRe
         line
     };
     text.split('\n').nth(row.sub)
+}
+
+/// 一行控制台的**显示文本**：折叠时在行尾补 `×N`（`repeat == 1` 时不加噪声）。
+///
+/// 单独一层而不是改 `console_row_text`：后者返回借用的原文，是索引/过滤/跳转的共同口径；
+/// 计数只是呈现，不该污染"这一行到底是什么"。
+fn console_row_line(
+    sources: &ConsoleSources,
+    tab: ConsoleTab,
+    row: ConsoleRowRef,
+) -> Option<String> {
+    let text = console_row_text(sources, tab, row)?;
+    Some(if row.repeat > 1 {
+        format!("{text} (×{})", row.repeat)
+    } else {
+        text.to_owned()
+    })
 }
 
 fn text_matches_filter(line: &str, filter: &str) -> bool {
@@ -527,8 +605,13 @@ mod tests {
         };
 
         // 编辑器分类 + 全部级别：sink 的非 Lua 行（首行多行拆 2 物理行）+ notice + 预览诊断 + 脚本诊断。
-        let editor =
-            build_console_rows(&sources, ConsoleTab::Editor, "", ConsoleLogLevelFilter::All);
+        let editor = build_console_rows(
+            &sources,
+            ConsoleTab::Editor,
+            "",
+            ConsoleLogLevelFilter::ALL,
+            false,
+        );
         assert_eq!(
             editor.len(),
             6,
@@ -547,7 +630,13 @@ mod tests {
         );
 
         // Lua 分类：Lua target 的 sink 行 + 脚本诊断（提示与预览诊断只进编辑器分类）。
-        let lua = build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::All);
+        let lua = build_console_rows(
+            &sources,
+            ConsoleTab::Lua,
+            "",
+            ConsoleLogLevelFilter::ALL,
+            false,
+        );
         assert_eq!(lua.len(), 2, "lua tab: 1 sink + 1 script");
         assert_eq!(lua[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
         assert_eq!(lua[1], ConsoleRowRef::new(ConsoleSource::Script, 0, 0));
@@ -558,8 +647,13 @@ mod tests {
         );
 
         // 级别过滤：Lua 分类只看 Error → ERROR sink 行 + 脚本诊断（该路恒定按错误定级）。
-        let errors =
-            build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::Error);
+        let errors = build_console_rows(
+            &sources,
+            ConsoleTab::Lua,
+            "",
+            ConsoleLogLevelFilter::ERRORS_ONLY,
+            false,
+        );
         assert_eq!(errors.len(), 2);
         assert_eq!(errors[0].source, ConsoleSource::Sink);
         assert_eq!(errors[1].source, ConsoleSource::Script);
@@ -574,10 +668,101 @@ mod tests {
             &sources,
             ConsoleTab::Lua,
             "health",
-            ConsoleLogLevelFilter::All,
+            ConsoleLogLevelFilter::ALL,
+            false,
         );
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
+    }
+
+    /// **级别多选**（C5）：警告+错误能同时显示——旧的四选一枚举表达不了这一档。
+    #[test]
+    fn console_level_filter_shows_warnings_and_errors_together() {
+        let sources = ConsoleSources {
+            sink: vec![
+                "2026-01-01T00:00:00Z  INFO editor: info line".to_owned(),
+                "2026-01-01T00:00:00Z  WARN editor: warn line".to_owned(),
+                "2026-01-01T00:00:00Z ERROR editor: error line".to_owned(),
+            ],
+            ..Default::default()
+        };
+        let rows = build_console_rows(
+            &sources,
+            ConsoleTab::Editor,
+            "",
+            ConsoleLogLevelFilter::WARNINGS_AND_ERRORS,
+            false,
+        );
+        assert_eq!(rows.len(), 2, "警告+错误两行都在，信息行被过滤");
+        assert_eq!(
+            console_row_text(&sources, ConsoleTab::Editor, rows[0]),
+            Some("2026-01-01T00:00:00Z  WARN editor: warn line")
+        );
+        assert_eq!(
+            console_row_text(&sources, ConsoleTab::Editor, rows[1]),
+            Some("2026-01-01T00:00:00Z ERROR editor: error line")
+        );
+        // 三个开关都关：一条都不显示（面板同时给"未选择任何级别"的提示，不允许静默空白）。
+        let none = ConsoleLogLevelFilter {
+            info: false,
+            warning: false,
+            error: false,
+        };
+        assert!(
+            build_console_rows(&sources, ConsoleTab::Editor, "", none, false).is_empty(),
+            "全部关掉必须是空集合，而不是回落成某个默认档"
+        );
+    }
+
+    /// **折叠**（C4）：连续重复行只留一条并计数，`×N` 只进显示文本；
+    /// 关掉折叠则逐行保留（旧行为）。
+    #[test]
+    fn console_collapse_merges_consecutive_duplicates_and_reports_repeat_count() {
+        let spam = "2026-01-01T00:00:00Z  INFO editor: same line";
+        let sources = ConsoleSources {
+            sink: vec![
+                spam.to_owned(),
+                spam.to_owned(),
+                spam.to_owned(),
+                "2026-01-01T00:00:01Z  INFO editor: other line".to_owned(),
+            ],
+            ..Default::default()
+        };
+        let collapsed = build_console_rows(
+            &sources,
+            ConsoleTab::Editor,
+            "",
+            ConsoleLogLevelFilter::ALL,
+            true,
+        );
+        assert_eq!(collapsed.len(), 2, "三条相同合并成一条");
+        assert_eq!(collapsed[0].repeat, 3);
+        assert_eq!(
+            console_row_line(&sources, ConsoleTab::Editor, collapsed[0]).as_deref(),
+            Some("2026-01-01T00:00:00Z  INFO editor: same line (×3)"),
+            "重复次数只加在显示文本上"
+        );
+        assert_eq!(
+            console_row_text(&sources, ConsoleTab::Editor, collapsed[0]),
+            Some(spam),
+            "索引里的原文不带计数（过滤/跳转仍按原文）"
+        );
+        assert_eq!(collapsed[1].repeat, 1);
+        assert_eq!(
+            console_row_line(&sources, ConsoleTab::Editor, collapsed[1]).as_deref(),
+            Some("2026-01-01T00:00:01Z  INFO editor: other line"),
+            "只出现一次时不加 ×1 噪声"
+        );
+
+        let flat = build_console_rows(
+            &sources,
+            ConsoleTab::Editor,
+            "",
+            ConsoleLogLevelFilter::ALL,
+            false,
+        );
+        assert_eq!(flat.len(), 4, "关掉折叠回到逐行");
+        assert!(flat.iter().all(|row| row.repeat == 1));
     }
 
     /// 缓存键覆盖所有影响可见集合的输入。
@@ -586,7 +771,8 @@ mod tests {
         let base = ConsoleRowKey {
             tab: Some(ConsoleTab::Editor),
             filter: String::new(),
-            level: Some(ConsoleLogLevelFilter::All),
+            level: Some(ConsoleLogLevelFilter::ALL),
+            collapse: false,
             sink_generation: 1,
             notice_len: 0,
             preview_len: 0,
@@ -613,7 +799,11 @@ mod tests {
                 ..base.clone()
             },
             ConsoleRowKey {
-                level: Some(ConsoleLogLevelFilter::Error),
+                level: Some(ConsoleLogLevelFilter::ERRORS_ONLY),
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                collapse: true,
                 ..base.clone()
             },
             ConsoleRowKey {
@@ -674,6 +864,42 @@ mod tests {
         assert!(
             content_height <= row_height + 0.01,
             "窄宽日志行折行了：内容 {content_height:.2} > 行高 {row_height:.2}"
+        );
+    }
+
+    /// sink 文本快照按代数缓存：代数不变时不再 clone，代数变了（写入/清空）才重取。
+    ///
+    /// 反面对照（第三段）是关键：把缓存清空后代数仍然不变，再取必须得到空——这证明
+    /// 实现走的是缓存而不是"又 snapshot 了一次"（否则会拿回两行，测试看起来照样绿）。
+    #[test]
+    fn console_sink_snapshot_is_cached_by_generation() {
+        let sink = rustlua_infra::logging::LogSink::new(16);
+        let mut cache = ConsoleRowCache::default();
+        assert!(
+            cache.take_sink_lines(&sink).is_empty(),
+            "空 sink 首次取到空"
+        );
+        sink.push("a");
+        sink.push("b");
+        let lines = cache.take_sink_lines(&sink);
+        assert_eq!(lines, vec!["a".to_owned(), "b".to_owned()]);
+        // 生产路径的用法：绘制完把 Vec 放回缓存。
+        cache.sink_lines = lines;
+        assert_eq!(cache.take_sink_lines(&sink).len(), 2, "代数未变，复用缓存");
+        assert_eq!(cache.sink_generation, Some(sink.generation()));
+        cache.sink_lines.clear();
+        assert!(
+            cache.take_sink_lines(&sink).is_empty(),
+            "代数不变时必须复用缓存；这里拿到两行说明每帧仍在 clone 整条日志缓冲"
+        );
+        // 写入让代数前进 → 重新截图。
+        sink.push("c");
+        assert_eq!(cache.take_sink_lines(&sink).len(), 3, "新日志必须立刻可见");
+        // 清空同样让代数前进。
+        sink.clear();
+        assert!(
+            cache.take_sink_lines(&sink).is_empty(),
+            "清空后不得留着旧行"
         );
     }
 

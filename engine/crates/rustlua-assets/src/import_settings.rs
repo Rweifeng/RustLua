@@ -321,6 +321,42 @@ impl ResourceMeta {
         self.fonts.get(&key).copied().unwrap_or_default()
     }
 
+    /// 资源改名/移动后**迁移它的设置键**（A1）。
+    ///
+    /// `resources.meta` 以工程相对路径为键；文件一改名，键就再也对不上，贴图的 filter/wrap、
+    /// 模型缩放、音频增益、字重覆盖会全部静默回到默认——图还是那张图，产出却变了。
+    /// 这里四张表一起搬；目标键已存在时**以源为准**（用户刚把文件挪到那个路径，
+    /// 新路径上的设置就该是它的）。返回是否真的动了表。
+    pub fn rename_path(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> Result<bool, ResourceMetaError> {
+        let from_key = normalize_key(&self.root, from.as_ref())?;
+        let to_key = normalize_key(&self.root, to.as_ref())?;
+        if from_key == to_key {
+            return Ok(false);
+        }
+        let mut changed = false;
+        if let Some(value) = self.textures.remove(&from_key) {
+            self.textures.insert(to_key.clone(), value);
+            changed = true;
+        }
+        if let Some(value) = self.models.remove(&from_key) {
+            self.models.insert(to_key.clone(), value);
+            changed = true;
+        }
+        if let Some(value) = self.audio.remove(&from_key) {
+            self.audio.insert(to_key.clone(), value);
+            changed = true;
+        }
+        if let Some(value) = self.fonts.remove(&from_key) {
+            self.fonts.insert(to_key, value);
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     /// 登记/改一张图的设置。写回默认值 = 从表里删掉这一行（默认不该占 diff）。
     ///
     /// 返回是否**改变**了表内容——面板据此决定要不要标脏、要不要重传纹理。
@@ -682,6 +718,55 @@ mod tests {
             TextureImportSettings::new(TextureFilter::Nearest, TextureWrap::ClampToEdge)
         );
         assert!(TextureImportSettings::default().is_default());
+    }
+
+    /// A1：改名迁移设置键——四张表都要跟着走，且落盘后按新键读得到。
+    #[test]
+    fn renaming_a_path_moves_every_settings_row_and_persists() {
+        let root = temp_root("rename");
+        let mut meta = ResourceMeta::open(&root).expect("open");
+        meta.set_texture_settings(
+            "assets/art/grass.png",
+            TextureImportSettings::new(TextureFilter::Linear, TextureWrap::Repeat),
+        )
+        .expect("texture");
+        meta.set_model_settings("assets/models/tree.glb", ModelImportSettings::new(0.5))
+            .expect("model");
+        meta.set_audio_settings("assets/audio/hit.ogg", AudioImportSettings::new(0.25))
+            .expect("audio");
+        meta.save().expect("save");
+
+        let mut meta = ResourceMeta::open(&root).expect("reopen");
+        assert!(
+            meta.rename_path("assets/art/grass.png", "assets/art/grass_moved.png")
+                .expect("rename"),
+            "有设置行时必须报告改变"
+        );
+        assert!(
+            !meta
+                .rename_path("assets/art/missing.png", "assets/art/other.png")
+                .expect("rename"),
+            "没登记过的路径不算改变"
+        );
+        meta.save().expect("save");
+
+        let reloaded = ResourceMeta::open(&root).expect("reload");
+        assert_eq!(
+            reloaded.texture_settings("assets/art/grass_moved.png"),
+            TextureImportSettings::new(TextureFilter::Linear, TextureWrap::Repeat),
+            "贴图设置必须跟着新路径走"
+        );
+        assert_eq!(
+            reloaded.texture_settings("assets/art/grass.png"),
+            TextureImportSettings::default(),
+            "旧键必须消失，不能两条都留着"
+        );
+        assert_eq!(
+            reloaded.len(),
+            3,
+            "三行设置都还在（贴图那行只是换了键，模型/音频两行原样）"
+        );
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

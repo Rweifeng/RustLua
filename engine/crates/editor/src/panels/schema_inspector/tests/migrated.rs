@@ -57,6 +57,7 @@ fn font_fields_use_project_choices_and_units_show_up_in_hints() {
         unit: editor::field_unit("Camera", fov.name),
         choices_source: editor::field_choice_source(fov.name),
         mixed: false,
+        mixed_values: Vec::new(),
         path_rule: false,
         missing_asset: false,
         path_extensions: &[],
@@ -996,6 +997,12 @@ fn multi_selection_edit_writes_all_targets_in_one_undo() {
         .find(|row| row.component == "Quad" && row.field == "size")
         .expect("Quad.size 行");
     assert!(size.mixed, "a(64,32) 与 b(8,8) 的 size 不同 → 必须显示混合");
+    // 混合时**全部不同取值**都要能看见（Unity 只有一个不定占位符，这里补上"差在哪"）。
+    assert_eq!(
+        size.mixed_values,
+        vec!["64,32".to_owned(), "8,8".to_owned()],
+        "混合值的悬停提示要列出主选中与其它目标的全部不同取值"
+    );
     let color = rows
         .iter()
         .find(|row| row.component == "Quad" && row.field == "color")

@@ -121,12 +121,17 @@ impl EditorApp {
         ui.separator();
         // 预制体徽标（嵌套 / 覆盖）与行模型同一次修订触发：编辑一次算一次，命中缓存时不碰磁盘。
         self.ensure_prefab_badges();
+        // H3：从场景视图点选 / 粘贴 / 撤销恢复过来的实体，若被折叠挡在树里就**自动揭示**：
+        // 展开祖先并请求滚动到它所在的行。只在"主选中真的换了"时触发，
+        // 因此用户手动折叠正在选中的节点不会被下一帧抢回去。
+        self.maybe_reveal_primary_selection();
         // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
         // 行模型按 (修订, 实体数, 过滤词, 折叠集合) 缓存，绘制不再递归、不再克隆文档。
         let rows = self.hierarchy_rows();
         let row_count = rows.len();
         let body_height = ui.available_height().max(48.0);
         let row_height = hierarchy_row_height(ui);
+        let mut reveal_target = self.hierarchy_scroll_target;
         self.hierarchy_row_probe.reset();
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
@@ -135,9 +140,17 @@ impl EditorApp {
                 for index in visible {
                     if let Some(row) = rows.get(index).copied() {
                         self.draw_entity_row(ui, row, row_height);
+                        // 目标行落在视口里：把它滚到中间（只请求一次）。
+                        if reveal_target == Some(row.id) {
+                            ui.scroll_to_cursor(Some(egui::Align::Center));
+                            reveal_target = None;
+                        }
                     }
                 }
             });
+        if self.hierarchy_scroll_target.is_some() && reveal_target.is_none() {
+            self.hierarchy_scroll_target = None;
+        }
         if self.current_scene().is_none() {
             ui.label("请先新建场景");
         }
@@ -706,8 +719,17 @@ impl EditorApp {
                         if self_matches {
                             text = text.color(egui::Color32::from_rgb(255, 200, 100));
                         }
+                        // H4：**锁定只挡场景拾取**（2D/3D 命中与 Gizmo 拖动都跳过锁定实体），
+                        // 层级里仍然可以点选、改名、重挂、删除——这些都是用户按下的显式动作。
+                        // 旧实现把锁当成"整行禁用"，于是锁住的实体在层级里点不中，
+                        // 与"锁"应有的语义正好相反。
                         let name_response =
-                            tree::label_button(ui, selected, !locked, egui::Sense::click(), text);
+                            tree::label_button(ui, selected, true, egui::Sense::click(), text);
+                        if locked {
+                            name_response.clone().on_hover_text(
+                                "已锁定：场景视图里不可拾取、不能用 Gizmo 拖动；层级里仍可选中",
+                            );
+                        }
                         // H02：双击进入行内重命名。
                         // P1-4：预制体**根实例**的双击改道给 in-context 编辑（Unity 同手势），
                         // 根实例改名因此只剩 F2 与右键菜单——代价已写进 docs/25 §23。

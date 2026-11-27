@@ -163,6 +163,25 @@ pub(crate) struct PreviewSession {
     /// 一键复现：命中断点时由 VM 回调填进来（`Rc` 让回调与宿主共享）。
     /// VM 回调里不能借编辑器状态，所以"停住 Play"由宿主在帧边界做。
     replay_hit: Rc<RefCell<Option<PauseSnapshot>>>,
+    /// C8：Lua 调试器的控制块（与 VM 回调共享；见 [`DebugControl`]）。
+    debug_ctl: Rc<RefCell<DebugControl>>,
+}
+
+/// 编辑器侧调试器的共享控制块（C8）。
+///
+/// **线程模型**：Lua 与 egui 在同一个线程上跑，VM 回调（`set_debug_handler`）在 Lua 执行流里
+/// 同步执行，不能借编辑器状态、也不能阻塞等 UI（阻塞会冻死整个窗口）。所以回调只做两件事：
+/// 把暂停现场放进 `pause`、把"下一步做什么"从 `pending` 取走（取不到就 `Continue`）。
+/// 真正的"停住画面"由宿主在**帧边界**完成（`play.pause()`），因此一次命中会让当前帧跑完、
+/// 下一帧起冻结——这就是"暂停"的语义，也是为什么"单步"按**一帧**推进（与 Unity 的 Step 一致）。
+#[derive(Default)]
+pub(crate) struct DebugControl {
+    /// 下一次命中后要继续执行的动作；`None` = Continue。
+    pending: Option<DebugAction>,
+    /// 最近一次命中的现场（宿主取走后为空）。
+    pause: Option<PauseSnapshot>,
+    /// 累计命中次数。
+    hits: u64,
 }
 
 enum PreviewTexture {
@@ -327,6 +346,7 @@ impl PreviewSession {
             crash_seen: crash_seen_at_start,
             pending_crashes: Vec::new(),
             replay_hit: Rc::new(RefCell::new(None)),
+            debug_ctl: Rc::new(RefCell::new(DebugControl::default())),
             effect_overlay_slots: None,
             effect_clock_start: std::time::Instant::now(),
         };
@@ -555,8 +575,65 @@ impl PreviewSession {
         self.replay_hit.borrow_mut().take()
     }
 
-    /// 为一键复现装断点：重跑时在出错行之前停住。
+    /// C8：装上 Lua 调试器回调（幂等；重复装只是换一个新闭包）。
     ///
+    /// 回调共享 `debug_ctl`：命中时存快照 + 消费一次 `pending` 动作。断点由
+    /// [`Self::set_lua_breakpoints`] 单独设置，两者都能在 Play 进行中改。
+    pub(crate) fn arm_lua_debugger(&mut self) -> Result<(), String> {
+        let control = Rc::clone(&self.debug_ctl);
+        self.runtime.with_script(move |runtime| {
+            runtime
+                .set_debug_handler(move |snapshot| {
+                    let mut control = control.borrow_mut();
+                    control.hits += 1;
+                    control.pause = Some(snapshot);
+                    control.pending.take().unwrap_or(DebugAction::Continue)
+                })
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// C8：设置断点集合（覆盖式）。传空集合等于关掉断点。
+    pub(crate) fn set_lua_breakpoints(&mut self, breakpoints: &[Breakpoint]) -> Result<(), String> {
+        let breakpoints = breakpoints.to_vec();
+        self.runtime.with_script(move |runtime| {
+            runtime
+                .set_debug_breakpoints(breakpoints)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// C8：排队一个调试动作，**下一次**命中时由回调取走（见 [`DebugControl`] 的线程模型）。
+    pub(crate) fn request_debug_action(&mut self, action: DebugAction) {
+        self.debug_ctl.borrow_mut().pending = Some(action);
+    }
+
+    /// C8：取走最近一次命中的现场（没有就是 `None`）。
+    pub(crate) fn take_lua_pause(&mut self) -> Option<PauseSnapshot> {
+        self.debug_ctl.borrow_mut().pause.take()
+    }
+
+    /// C8：累计命中次数（UI 显示与测试用）。
+    #[allow(dead_code)]
+    pub(crate) fn debug_hits(&self) -> u64 {
+        self.debug_ctl.borrow().hits
+    }
+
+    /// C8：卸载调试器——清空断点并装一个恒 `Continue` 的回调。
+    ///
+    /// Stop 时必须调用：断点与回调住在 Lua 侧的 thread_local 里，不随预览会话释放；
+    /// 不清的话下一次 Play 的启动脚本会带着旧断点一起跑（甚至停在上一局的某一行）。
+    pub(crate) fn clear_lua_debugger(&mut self) {
+        self.runtime.with_script(|runtime| {
+            let _ = runtime.set_debug_breakpoints(std::iter::empty::<Breakpoint>());
+            let _ = runtime.set_debug_handler(|_| DebugAction::Continue);
+        });
+        let mut control = self.debug_ctl.borrow_mut();
+        control.pending = None;
+        control.pause = None;
+    }
+
+    /// 为一键复现装断点：重跑时在出错行之前停住。    ///
     /// 调试回调运行在 Lua 执行流里（同步、不能借编辑器状态），所以它只把暂停现场放进
     /// `replay_hit` 并 `Continue`；真正的"冻结 Play"由宿主在帧边界完成（见
     /// `panels::crash_report::EditorApp::poll_crash_events`）。断点保留：再次继续/单步命中时

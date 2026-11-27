@@ -88,11 +88,16 @@ impl EditorApp {
         let Some(selected) = self.selection.primary() else {
             return;
         };
-        let rows =
-            editor::filter_field_rows(&self.schema_field_rows(), &self.inspector_field_filter);
-        if rows.is_empty() {
+        let all_rows = self.schema_field_rows();
+        // 搜索框**常驻**：0 命中时也必须还能改/清过滤词。
+        //
+        // 旧实现先判 `rows.is_empty()` 再画搜索框，于是"搜了一个搜不到的词"会把搜索框
+        // 连同清除按钮一起藏掉——面板里没有任何可操作控件，用户只能去改代码或重启。
+        // 没有 schema 组件且没有过滤词时仍然整段不画（保持原来的空面板外观）。
+        if all_rows.is_empty() && self.inspector_field_filter.trim().is_empty() {
             return;
         }
+        let rows = editor::filter_field_rows(&all_rows, &self.inspector_field_filter);
         let playing = self.is_playing();
         ui.separator();
         // P1：字段搜索（多词 AND，匹配组件名/字段名/路径/当前值）。过滤词只影响本面板的
@@ -118,8 +123,11 @@ impl EditorApp {
             );
         });
         if !self.inspector_field_filter.trim().is_empty() {
-            let total = self.schema_field_rows().len();
-            if rows.len() < total {
+            let total = all_rows.len();
+            if rows.is_empty() {
+                // 0 命中给一条明确的空状态 + 下一步（而不是把搜索框一起藏掉）。
+                ui.small("没有匹配的字段：换个关键词，或用右侧 × 清除过滤");
+            } else if rows.len() < total {
                 ui.small(format!("匹配 {} / {} 行字段", rows.len(), total));
             } else {
                 ui.small(format!("匹配 {} 行字段", rows.len()));
@@ -460,9 +468,32 @@ impl EditorApp {
                 if !row.required {
                     ui.weak(egui::RichText::new("可选").small());
                 }
-                // 多选混合值：显示提示，但输入框仍以主选中的值为基准（提交写全部目标）。
+                // 多选混合值：占位显示"——"（Unity 语义），悬停列出**各目标的不同取值**。
+                // 输入框仍以主选中的值为基准，提交写全部目标；把差异列出来是为了让用户
+                // 不用挨个点选就能判断"要不要统一"。
                 if row.mixed {
-                    ui.weak(egui::RichText::new("混合").small());
+                    let detail = if row.mixed_values.is_empty() {
+                        "多选：该字段在各目标上取值不同（提交会写入全部目标）".to_owned()
+                    } else {
+                        format!(
+                            "多选：该字段有 {} 种取值\n{}\n（提交会写入全部目标）",
+                            row.mixed_values.len(),
+                            row.mixed_values
+                                .iter()
+                                .map(|value| {
+                                    let shown = if value.is_empty() {
+                                        "（空）".to_owned()
+                                    } else {
+                                        value.clone()
+                                    };
+                                    format!("· {shown}")
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    };
+                    ui.weak(egui::RichText::new("——").small())
+                        .on_hover_text(detail);
                 }
                 // 引用必须存在：资源索引里找不到时给醒目提示（仍允许写入）。
                 if row.missing_asset {

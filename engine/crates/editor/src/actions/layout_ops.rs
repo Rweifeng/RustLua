@@ -227,6 +227,23 @@ impl EditorApp {
         std::fs::rename(&from_absolute, &to_absolute)
             .map_err(|error| format!("移动资源失败：{error}"))?;
 
+        // 导入设置以工程相对路径为键（`resources.meta`）：改名必须把键一起搬。
+        // 不搬的话 filter/wrap/模型缩放/音频增益会静默回到默认——图还是那张图，产出变了。
+        // 迁移失败**不阻断**改名（文件已经搬完，回退更糟），但要如实写进状态。
+        let mut meta_note = String::new();
+        match rustlua_assets::import_settings::ResourceMeta::open(&root) {
+            Ok(mut meta) => match meta.rename_path(&from_relative, &to_relative) {
+                Ok(true) => {
+                    if let Err(error) = meta.save() {
+                        meta_note = format!("；导入设置迁移后写盘失败：{error}");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => meta_note = format!("；导入设置未迁移：{error}"),
+            },
+            Err(error) => meta_note = format!("；导入设置未迁移：{error}"),
+        }
+
         let from_text = from_relative.to_string_lossy().replace('\\', "/");
         let to_text = to_relative.to_string_lossy().replace('\\', "/");
         let report = editor::rewrite_project_references(
@@ -282,6 +299,7 @@ impl EditorApp {
                 report.failures.join("、")
             ));
         }
+        status.push_str(&meta_note);
         Ok(status)
     }
 

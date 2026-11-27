@@ -56,20 +56,22 @@ impl EditorApp {
 
     /// 把 2D 场景视图适配到设计分辨率包围框：计算使包围框完整显示在面板内并
     /// 居中的 zoom 与 pan（世界相机中心落在面板中心）。
+    ///
+    /// 与「聚焦选中」共用 `framed_zoom_2d` / `pan_centered_on`：两条路径给同一套
+    /// 边距与同一份 pan 符号约定，不会出现"适配一次、聚焦一次"就漂移的手感。
     pub(crate) fn fit_scene_view_to_design(&mut self, rect: egui::Rect) {
         let (w, h) = self.preview_resolution;
         if w == 0 || h == 0 {
             return;
         }
-        let margin = 48.0;
-        let avail_w = (rect.width() - margin * 2.0).max(50.0);
-        let avail_h = (rect.height() - margin * 2.0).max(50.0);
-        let zoom = (avail_w / w as f32)
-            .min(avail_h / h as f32)
-            .clamp(SCENE_ZOOM_MIN, SCENE_ZOOM_MAX);
+        let zoom = framed_zoom_2d(
+            egui::vec2(w as f32, h as f32),
+            egui::vec2(rect.width(), rect.height()),
+            FRAME_2D_MARGIN,
+        );
         let center = egui::vec2(self.game_camera_2d_center.x, self.game_camera_2d_center.y);
         self.scene_zoom = zoom;
-        self.scene_state.pan = egui::vec2(-center.x * zoom, -center.y * zoom);
+        self.scene_state.pan = pan_centered_on(center, zoom);
     }
 
     /// 以视口中心为锚点调整 Scene 缩放：pan 按新旧 zoom 比例缩放，使当前

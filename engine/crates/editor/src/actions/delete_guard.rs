@@ -71,6 +71,21 @@ pub(crate) fn scan_references(root: &Path, target: &str) -> DeleteGuard {
             Err(error) => guard.unreadable.push(format!("{label}（{error}）")),
         }
     }
+    // 1b) 材质 / 图集 / Spine 清单：与**依赖图同一台扫描器**（`extract_refs`）。
+    //     这三类以前不在守卫的扫描面里，而资源数据库早已连上它们的依赖边，
+    //     于是"只被材质引用的贴图"可以被静默删掉（A2）。
+    for path in descriptor_documents(root) {
+        let label = relative_text(root, &path);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            guard.unreadable.push(format!("{label}（读不动）"));
+            continue;
+        };
+        guard.scanned_documents += 1;
+        let kind = rustlua_assets::resource_kind::ResourceKind::from_path(&path);
+        if super::dependency_ops::references_target(&text, kind, target) {
+            guard.references.push(format!("{label} ▸ 引用 {target}"));
+        }
+    }
     // 2) 脚本与配置：引号整段匹配（`"assets/art/a.png"`），不做子串猜测。
     let needles = text_needles(target);
     let stems = audio_stems(target);
@@ -144,15 +159,31 @@ fn audio_stems(target: &str) -> Vec<String> {
     vec![stem]
 }
 
-/// 工程里会被文本扫描的文件（脚本 + 配置 + 资源描述 JSON）。
-fn project_text_files(root: &Path) -> Vec<PathBuf> {
+/// 工程里除场景/预制体之外、**也会持有资源引用**的描述文档：材质 / 图集 / Spine 清单。
+///
+/// 依赖视图与删除守卫共用这一份枚举：任何一边漏掉一类文件，同一份工程就会出现
+/// "依赖视图说有引用、删除守卫说没人用"这种自相矛盾的结论。
+pub(crate) fn descriptor_documents(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_text_files(root, &mut files, 0);
+    collect_files_with_extensions(root, &mut files, 0, &["material", "atlas", "spine"]);
     files.sort();
     files
 }
 
-fn collect_text_files(directory: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+/// 工程里会被文本扫描的文件（脚本 + 配置 + 资源描述 JSON）。
+fn project_text_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_files_with_extensions(root, &mut files, 0, &["lua", "toml", "json"]);
+    files.sort();
+    files
+}
+
+fn collect_files_with_extensions(
+    directory: &Path,
+    out: &mut Vec<PathBuf>,
+    depth: usize,
+    extensions: &[&str],
+) {
     if depth > 16 {
         return;
     }
@@ -169,17 +200,15 @@ fn collect_text_files(directory: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             ) {
                 continue;
             }
-            collect_text_files(&path, out, depth + 1);
+            collect_files_with_extensions(&path, out, depth + 1, extensions);
             continue;
         }
         let is_text = path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "lua" | "toml" | "json"
-                )
+                let extension = extension.to_ascii_lowercase();
+                extensions.iter().any(|wanted| *wanted == extension)
             });
         if is_text {
             out.push(path);
@@ -195,6 +224,11 @@ impl EditorApp {
     pub(crate) fn delete_selected_resource(&mut self) {
         if self.is_playing() {
             self.status = "播放模式下不能删除资源，请先点击停止".to_owned();
+            return;
+        }
+        // A4：多选走批量路径——不弹单文件确认框，被引用的逐个跳过并汇总报出。
+        if self.resource_selection.len() > 1 {
+            self.delete_selected_resources();
             return;
         }
         let Some(relative_path) = self.selected_resource.clone() else {
@@ -308,5 +342,69 @@ impl EditorApp {
                 false
             }
         }
+    }
+
+    /// A4：**批量删除**多选资源。被引用的不删（跳过并汇总报出），没引用的直接删。
+    ///
+    /// 与单文件路径的差别只在交互：批量不弹确认框（一次删几十个还要逐个点"强制删除"
+    /// 等于没有批量），把关口放在引用扫描上——**有引用就一个都不动**，用户看到清单后
+    /// 仍可逐个处理。失败与跳过都进状态栏 + Console，不留"删了但没人知道"的灰区。
+    pub(crate) fn delete_selected_resources(&mut self) {
+        if self.is_playing() {
+            self.status = "播放模式下不能删除资源，请先点击停止".to_owned();
+            return;
+        }
+        let root = crate::util::strip_verbatim_prefix(&self.project.root);
+        let targets: Vec<PathBuf> = self.resource_selection.iter().cloned().collect();
+        if targets.is_empty() {
+            self.status = "请先在资源面板选中资源".to_owned();
+            return;
+        }
+        let mut deleted = Vec::new();
+        let mut blocked = Vec::new();
+        let mut failed = Vec::new();
+        for relative in &targets {
+            let target_text = relative.to_string_lossy().replace('\\', "/");
+            let absolute = self.project.root.join(relative);
+            if absolute.is_dir() {
+                // 多选批量只处理文件：目录删除牵动整棵引用树，留给单文件流程。
+                continue;
+            }
+            let guard = scan_references(&root, &target_text);
+            if guard.reference_count() > 0 {
+                blocked.push(format!("{target_text}（{}）", guard.block_reason()));
+                continue;
+            }
+            match std::fs::remove_file(&absolute) {
+                Ok(()) => {
+                    self.thumbnails.remove(&target_text);
+                    deleted.push(target_text);
+                }
+                Err(error) => failed.push(format!("{target_text}（{error}）")),
+            }
+        }
+        self.resource_selection.clear();
+        self.resource_selection_anchor = None;
+        self.selected_resource = None;
+        self.delete_target = crate::DeleteTarget::None;
+        self.refresh_resources();
+        let mut status = format!("已删除 {} 个资源", deleted.len());
+        if !blocked.is_empty() {
+            status.push_str(&format!(
+                "；{} 个仍被引用未删除：{}",
+                blocked.len(),
+                blocked.join("、")
+            ));
+        }
+        if !failed.is_empty() {
+            status.push_str(&format!(
+                "；{} 个删除失败：{}",
+                failed.len(),
+                failed.join("、")
+            ));
+        }
+        // 状态栏会被下一次刷新覆盖，Console 里留一份可回查的记录。
+        self.push_console_notice(format!("[资源] {status}"));
+        self.status = status;
     }
 }

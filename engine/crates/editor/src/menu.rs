@@ -202,6 +202,60 @@ pub(crate) fn filter_palette_items<'a>(
         .collect()
 }
 
+/// 命令面板里"运行时数据"的那批条目：面板开关（`窗口 ▸ 面板` 的十项）。
+///
+/// 这批条目的标签在菜单里是**勾选框**而不是叶子，因此静态摊平时被跳过；这里把同一批
+/// `MenuAction` 直接放进面板——动作通道不变，面板只是多了一条到达同一动作的路。
+pub(crate) fn dynamic_palette_items() -> Vec<PaletteItem> {
+    let mut items: Vec<PaletteItem> = [
+        ("资源浏览器", MenuAction::ToggleResources),
+        ("层级", MenuAction::ToggleHierarchy),
+        ("场景", MenuAction::ToggleSceneView),
+        ("游戏", MenuAction::ToggleGameView),
+        ("属性", MenuAction::ToggleInspector),
+        ("AI 助手", MenuAction::ToggleAssistant),
+        ("控制台", MenuAction::ToggleConsole),
+        ("时间线", MenuAction::ToggleTimeline),
+        ("可视化脚本", MenuAction::ToggleGraph),
+        ("UI 工作室", MenuAction::ToggleUiStudio),
+    ]
+    .into_iter()
+    .map(|(label, action)| dynamic_item(&format!("窗口 / 面板 / {label}"), action))
+    .collect();
+    // 工作台页签与视图模式：菜单里同样是运行时数据（当前值决定勾选态），静态摊平时被跳过。
+    items.push(dynamic_item(
+        "窗口 / 工作台 / 场景",
+        MenuAction::FocusSceneTab,
+    ));
+    items.push(dynamic_item(
+        "窗口 / 工作台 / 游戏",
+        MenuAction::FocusGameTab,
+    ));
+    items.push(dynamic_item(
+        "窗口 / 视图模式 / 2D",
+        MenuAction::SetViewMode2D,
+    ));
+    items.push(dynamic_item(
+        "窗口 / 视图模式 / 3D",
+        MenuAction::SetViewMode3D,
+    ));
+    items.push(dynamic_item(
+        "窗口 / 视图模式 / 预制体",
+        MenuAction::SetViewModePrefab,
+    ));
+    items
+}
+
+/// 动态条目：面包屑 + 动作，没有快捷键、恒可用。
+fn dynamic_item(path: &str, action: MenuAction) -> PaletteItem {
+    PaletteItem {
+        path: path.to_owned(),
+        shortcut: None,
+        action: PaletteAction::Menu(action),
+        gate: MenuGate::Always,
+    }
+}
+
 /// 菜单条目的动作。渲染层不写文档，只把它交给 [`EditorApp::run_menu_action`]。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuAction {
@@ -280,6 +334,15 @@ pub(crate) enum MenuAction {
     TogglePluginDiagnostics,
     /// 运行期错误现场（栈 + 局部变量 + 实体摘要，可一键复现）。
     ToggleCrashReport,
+    /// C8：Lua 调试面板（断点/继续/单帧步进）。
+    ToggleLuaDebugger,
+    /// P5：工作台页签（命令面板里的动态行）。
+    FocusSceneTab,
+    FocusGameTab,
+    /// P5：场景视图模式（命令面板里的动态行）。
+    SetViewMode2D,
+    SetViewMode3D,
+    SetViewModePrefab,
     TogglePixelGrid,
     ToggleSceneGuides,
     ToggleSafeArea,
@@ -488,6 +551,7 @@ const WINDOW_MENU: &[MenuRow] = &[
         MenuAction::TogglePluginDiagnostics,
     )),
     MenuRow::Item(MenuItem::new("崩溃现场", MenuAction::ToggleCrashReport)),
+    MenuRow::Item(MenuItem::new("Lua 调试", MenuAction::ToggleLuaDebugger)),
     MenuRow::Separator,
     MenuRow::WorkspaceTabs,
     MenuRow::ViewModes,
@@ -551,6 +615,10 @@ impl EditorApp {
     /// 注册表不再报它，面板里立刻消失——和菜单栏是同一份运行时事实。
     pub(crate) fn palette_candidates(&self) -> Vec<PaletteItem> {
         let mut items = palette_items();
+        // P5：**动态行**也要进面板。面板开关、工作台页签、视图模式在菜单里是运行时数据，
+        // `palette_items()` 摊平静态树时按设计跳过它们，于是"命令面板搜不到'控制台'"——
+        // 而"打开某个面板"恰好是面板最常用的用途。
+        items.extend(dynamic_palette_items());
         items.extend(self.plugin_palette_items());
         items
     }
@@ -697,9 +765,7 @@ impl EditorApp {
                             .selectable_label(self.scene_view_mode == mode, label)
                             .clicked()
                         {
-                            self.scene_view_mode = mode;
-                            // docs/55 阶段 2：换模式后重新校验工具能力（见 `scene_tools`）。
-                            self.revalidate_scene_tool_for_view_mode();
+                            self.set_scene_view_mode(mode);
                             ui.close();
                         }
                     }
@@ -933,6 +999,12 @@ impl EditorApp {
                 self.show_plugin_diagnostics = !self.show_plugin_diagnostics;
             }
             MenuAction::ToggleCrashReport => self.crash_panel.show = !self.crash_panel.show,
+            MenuAction::ToggleLuaDebugger => self.lua_debug.open = !self.lua_debug.open,
+            MenuAction::FocusSceneTab => self.focus_workspace_tab(WorkspaceTab::Scene),
+            MenuAction::FocusGameTab => self.focus_workspace_tab(WorkspaceTab::Game),
+            MenuAction::SetViewMode2D => self.set_scene_view_mode(crate::SceneViewMode::View2D),
+            MenuAction::SetViewMode3D => self.set_scene_view_mode(crate::SceneViewMode::View3D),
+            MenuAction::SetViewModePrefab => self.set_scene_view_mode(crate::SceneViewMode::Prefab),
             MenuAction::TogglePixelGrid => self.show_pixel_grid = !self.show_pixel_grid,
             MenuAction::ToggleSceneGuides => self.show_scene_guides = !self.show_scene_guides,
             MenuAction::ToggleSafeArea => self.show_safe_area = !self.show_safe_area,
@@ -1043,8 +1115,9 @@ mod tests {
         );
     }
 
-    /// 命令面板 = 菜单树的拍平视图：叶子一个不少、动态行（最近工程 / 组件注册表 /
-    /// 面板开关…）不出现；过滤是多词 AND 且大小写不敏感；Gate 原样带过来。
+    /// 命令面板 = 菜单树的拍平视图：叶子一个不少；**面板开关**（动态行）另由
+    /// [`dynamic_palette_items`] 补上（P5），其余动态行仍不出现；
+    /// 过滤是多词 AND 且大小写不敏感；Gate 原样带过来。
     #[test]
     fn command_palette_flattens_menu_leaves_and_filters_by_all_terms() {
         let items = palette_items();
@@ -1072,6 +1145,27 @@ mod tests {
         );
         assert!(filter_palette_items(&items, "不存在的命令").is_empty());
 
+        // P5：面板开关进面板，且面包屑与菜单路径同形（从菜单学到的路径能搜到）。
+        let dynamic = dynamic_palette_items();
+        assert_eq!(
+            dynamic.len(),
+            15,
+            "10 个面板开关 + 2 个工作台页签 + 3 个视图模式"
+        );
+        let console = filter_palette_items(&dynamic, "面板 控制台");
+        assert_eq!(console.len(), 1, "{console:?}");
+        assert_eq!(console[0].path, "窗口 / 面板 / 控制台");
+        assert_eq!(
+            console[0].action,
+            PaletteAction::Menu(MenuAction::ToggleConsole),
+            "面板只多一条到达同一动作的路，不新增命令通道"
+        );
+        // 其余动态行（最近工程 / 工具栏勾选）仍然不进面板。
+        assert!(
+            !palette_items()
+                .iter()
+                .any(|item| item.path.contains("工具栏 / "))
+        );
         let save = filter_palette_items(&items, "保存场景")
             .into_iter()
             .find(|item| item.path == "文件 / 保存场景")

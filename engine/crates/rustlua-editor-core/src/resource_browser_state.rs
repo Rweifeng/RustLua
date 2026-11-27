@@ -26,6 +26,39 @@ impl ResourceEntry {
     }
 }
 
+/// 一个过滤词是否命中条目：`t:`/`type:` 看类型，其余看路径子串。
+fn entry_matches_word(entry: &ResourceEntry, word: &str) -> bool {
+    if let Some(kind_word) = word
+        .strip_prefix("t:")
+        .or_else(|| word.strip_prefix("type:"))
+    {
+        return kind_matches(entry, kind_word);
+    }
+    entry.path_string().to_ascii_lowercase().contains(word)
+}
+
+/// 类型词：先按稳定 token / 中文家族名，再按扩展名（`t:png`、`t:lua`）。
+///
+/// 三种写法都认是有意的：token 是持久化口径（`t:texture`），中文名是面板里看到的名
+/// （`t:纹理`），扩展名是用户手上最熟的（`t:png`）。
+fn kind_matches(entry: &ResourceEntry, word: &str) -> bool {
+    let word = word.trim_start_matches('.');
+    if word.is_empty() {
+        return true;
+    }
+    if entry.kind.token().eq_ignore_ascii_case(word)
+        || entry.kind.label().to_lowercase() == word
+        || ResourceKind::parse(word).is_some_and(|kind| kind == entry.kind)
+    {
+        return true;
+    }
+    entry
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(word))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceBrowserError {
     #[error("扫描资源失败：{}：{message}", path.display())]
@@ -81,13 +114,20 @@ impl ResourceBrowserState {
         &self.entries
     }
 
+    /// 可见条目：过滤词按**空白分词**，词之间是 AND。
+    ///
+    /// 词有两种：`t:`/`type:` 前缀按**资源类型**过滤（`t:texture`、`t:png`、`t:纹理` 都认），
+    /// 其余按路径子串（大小写不敏感）。这套语法与 Unity Project 窗口的 `t:` 一致，
+    /// 让"只看图集""只看预制体"不必靠记目录。
     pub fn visible_entries(&self) -> Vec<&ResourceEntry> {
         let filter = self.filter.trim().to_ascii_lowercase();
+        if filter.is_empty() {
+            return self.entries.iter().collect();
+        }
+        let words: Vec<&str> = filter.split_whitespace().collect();
         self.entries
             .iter()
-            .filter(|entry| {
-                filter.is_empty() || entry.path_string().to_ascii_lowercase().contains(&filter)
-            })
+            .filter(|entry| words.iter().all(|word| entry_matches_word(entry, word)))
             .collect()
     }
 
@@ -616,6 +656,48 @@ mod tests {
             .map(|entry| entry.path_string())
             .collect();
         assert_eq!(lua, vec!["scripts/main.lua", "scripts/ui/hud.lua"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A3：类型过滤词（`t:` / `type:`）三种写法都认，且与路径词是 AND。
+    #[test]
+    fn type_filter_accepts_token_label_and_extension_and_ands_with_path_words() {
+        let root = temp_root("type-filter");
+        file(&root, "assets/UI/Button.PNG", b"png");
+        file(&root, "assets/hero.png", b"png");
+        file(&root, "assets/heroes.lua", b"return {}");
+        file(&root, "assets/hero.atlas", b"texture=assets/hero.png");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+
+        browser.set_filter("t:png");
+        let textures: Vec<String> = browser
+            .visible_entries()
+            .iter()
+            .map(|entry| entry.path_string())
+            .collect();
+        assert_eq!(textures.len(), 2, "两个 PNG：{textures:?}");
+        assert!(
+            textures
+                .iter()
+                .all(|path| path.ends_with(".PNG") || path.ends_with(".png"))
+        );
+
+        // 稳定 token 与中文家族名同样有效。
+        browser.set_filter("t:texture");
+        assert_eq!(browser.visible_entries().len(), 2);
+        browser.set_filter("t:纹理");
+        assert_eq!(browser.visible_entries().len(), 2);
+
+        // 与路径词 AND：只剩符合两者的那一个。
+        browser.set_filter("hero t:png");
+        let both = browser.visible_entries();
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].path_string(), "assets/hero.png");
+
+        // 不认识的类型词 ⇒ 空集合（而不是"忽略这一词"造成假命中）。
+        browser.set_filter("t:nonexistent");
+        assert!(browser.visible_entries().is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

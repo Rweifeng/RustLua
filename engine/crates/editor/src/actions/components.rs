@@ -905,45 +905,36 @@ impl EditorApp {
         }
     }
 
-    /// 把**当前选中**实体重挂到 `parent` 下（Hierarchy 拖放与命令层共用）。
+    /// 把**当前选中集合**的顶层根重挂到 `parent` 下（Hierarchy 右键菜单「移动到根节点」
+    /// /「移到此实体下」与命令层共用）。
+    ///
+    /// 与拖放走同一个提交内核（[`crate::EditorApp::commit_reparent_batch`]）：整批校验、
+    /// 一条 Undo、keep-world。以前这里只搬 `primary`，于是"多选后移动到根节点"只动一个。
     pub(crate) fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
             self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
-        let Some(selected) = self.selection.primary() else {
+        if self.selection.primary().is_none() {
             self.status = "请先在层级中选择实体".into();
             return;
-        };
-        let Some(scene) = self.document.current_scene.as_ref() else {
-            self.status = "请先创建场景".into();
-            return;
-        };
-        if let Err(error) = self.validate_reparent_target(scene, selected, parent) {
-            self.status = error;
-            return;
         }
-
-        if !self.begin_edit_transaction("更改父实体", CommandKind::Reparent, Some(selected)) {
-            self.status = "重挂载事务已激活，无法重复开始".into();
-            return;
-        }
-        let Some(scene) = self.document.current_scene.as_mut() else {
-            self.cancel_edit_transaction();
-            self.status = "请先创建场景".into();
-            return;
+        let batch = if self.selection.len() > 1 {
+            self.top_most_selected_ids()
+        } else {
+            self.selection.primary().into_iter().collect()
         };
-        let result = self.tree.reparent(scene, selected, parent);
-        match result {
-            Ok(()) => {
-                self.commit_edit_transaction();
-                self.on_document_changed(DocumentChange::EntityReparented);
-                self.status = "父实体已更新".into();
+        match self
+            .commit_reparent_batch(batch, crate::hierarchy_ops::ReparentTarget::Parent(parent))
+        {
+            Ok(moved) => {
+                self.status = if moved > 1 {
+                    format!("已移动 {moved} 个实体")
+                } else {
+                    "父实体已更新".into()
+                };
             }
-            Err(e) => {
-                self.cancel_edit_transaction();
-                self.status = e.to_string();
-            }
+            Err(error) => self.status = error,
         }
     }
 

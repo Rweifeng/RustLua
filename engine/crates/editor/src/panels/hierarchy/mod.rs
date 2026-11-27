@@ -5,7 +5,6 @@ use crate::util::{display_path, strip_verbatim_prefix};
 use editor::{ReparentPosition, SelectionSource, prefab_graph};
 use eframe::egui;
 use rustlua_assets::resource_db::AssetId;
-use rustlua_ecs::transform::Transform3D;
 use rustlua_scene::prefab::Prefab;
 use rustlua_scene::scene::SceneEntityId;
 use std::path::PathBuf;

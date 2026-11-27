@@ -18,6 +18,12 @@ impl EditorApp {
             self.status = error.to_string();
             return;
         }
+        // C8：Stop 时**先**卸载 Lua 调试器：断点与回调住在 Lua 侧 thread_local 里，
+        // 不随预览会话释放；不清的话下一次 Play 的启动脚本会带着旧断点跑。
+        if let Some(preview) = self.preview.as_mut() {
+            preview.clear_lua_debugger();
+        }
+        self.lua_debug.armed = false;
         self.preview = None;
         self.set_current_scene_document(session.stop());
         // Play/Stop 清空输入状态，避免下一轮 Play 残留边沿（M11-02）。

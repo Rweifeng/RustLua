@@ -362,13 +362,30 @@ impl EditorApp {
                 if snapshot.frames.is_empty() {
                     ui.weak("没有可用的栈帧");
                 }
+                if !snapshot.frames.is_empty() {
+                    ui.weak("点击任一帧跳到对应源码行");
+                }
                 for (index, frame) in snapshot.frames.iter().enumerate() {
-                    ui.monospace(format!(
-                        "{index:>2} {}  {}:{}",
-                        frame.function,
-                        frame.location.path.display(),
-                        frame.location.line
-                    ));
+                    // **可点击的栈帧**（C6）：以前整段是纯文本，用户只能照着路径手抄；
+                    // 现在每一帧就是一个按钮，与顶部"查看源码"走同一个 `CrashAction::OpenSource`。
+                    let label = frame_label(
+                        index,
+                        &frame.function,
+                        &frame.location.path.display().to_string(),
+                        frame.location.line,
+                    );
+                    let response = ui.add(
+                        egui::Button::new(egui::RichText::new(label).monospace()).frame(false),
+                    );
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.on_hover_text("跳到这一帧的源码行").clicked() {
+                        action = Some(CrashAction::OpenSource(
+                            frame.location.path.clone(),
+                            frame.location.line,
+                        ));
+                    }
                 }
             });
         egui::CollapsingHeader::new(format!("局部变量（{} 个）", snapshot.locals.len()))
@@ -495,9 +512,17 @@ fn format_capture_ms(ms: u64) -> String {
     )
 }
 
+/// 一帧调用栈的显示文本：`序号 函数  路径:行`。
+///
+/// 单独成函数是为了能无头断言"路径与行号确实进了标签"——点击跳转本身走的是
+/// `CrashAction::OpenSource(path, line)`（与顶部「查看源码」同一条通道），不靠解析这段文本。
+fn frame_label(index: usize, function: &str, path: &str, line: u32) -> String {
+    format!("{index:>2} {function}  {path}:{line}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ReplayTarget, format_capture_ms};
+    use super::{ReplayTarget, format_capture_ms, frame_label};
     use crate::preview_session::CrashReport;
     use rustlua_scripting::script::{CrashSnapshot, EntitySummary, SourceLocation, StackFrame};
     use std::path::PathBuf;
@@ -558,6 +583,17 @@ mod tests {
             },
         }];
         assert_eq!(snap.frames[0].function, "deep");
+    }
+
+    /// C6：栈帧标签必须**自带路径与行号**，点击才能精确落到那一行
+    /// （点击走 `OpenSource(path, line)`，不依赖从文本里反解析）。
+    #[test]
+    fn stack_frame_labels_carry_the_jump_target() {
+        let label = frame_label(3, "on_frame", "scripts/player.lua", 12);
+        assert_eq!(label, " 3 on_frame  scripts/player.lua:12");
+        assert!(label.contains("scripts/player.lua:12"));
+        // 序号右对齐两位，十位以上不截断。
+        assert!(frame_label(12, "f", "a.lua", 1).starts_with("12 "));
     }
 
     #[test]

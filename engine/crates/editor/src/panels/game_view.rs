@@ -144,6 +144,9 @@ impl EditorApp {
                 }
                 self.preview = Some(preview);
                 self.play_session = Some(PlaySession::start(&document));
+                // C8：把编辑器侧的断点集合装进这一局（空集合也会装回调，
+                // 这样用户在 Play 中加断点时不需要重开一局）。
+                self.arm_lua_debugger_for_play();
                 if let Err(error) = self.play.mark_running() {
                     tracing::warn!(target: "editor", "[preview] state machine: {error}");
                 }

@@ -52,6 +52,14 @@ impl EditorApp {
             rect,
             ui.input(|input| input.pointer.hover_pos()),
         );
+        // Unity 的 Frame Selected：指针在视口内、没有文本输入焦点时按 F 把选中对象装进画面。
+        // 与层级面板的 F 走同一个入口（`frame_selection_in_scene_view`）。
+        if response.contains_pointer()
+            && !ui.ctx().wants_keyboard_input()
+            && ui.input(|input| input.key_pressed(egui::Key::F))
+        {
+            self.status = self.frame_selection_in_scene_view();
+        }
         // 仅当鼠标悬停在 Scene 视图内时才响应滚轮缩放（避免在其它面板滚动误触发）。
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if response.contains_pointer() && scroll.abs() > 0.0 {
@@ -209,16 +217,17 @@ impl EditorApp {
             }
         }
         for entity in entities.iter() {
-            let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
+            // S3：选中轮廓必须**跟旋转**——命中判定（`pick_scene_2d_entity`）用的是
+            // `rotated_contains`，轮廓却画成轴对齐矩形，于是"看着在框外"的地方能点中、
+            // "看着在框内"的角落点不中。两者共用同一组旋转角点。
+            let outline = rotated_corners(entity.center, entity.size, entity.transform.rotation);
             let selected = self.selection.contains(entity.id);
             // 场景已实时渲染（含实际 UI 覆盖层），实体只画选中轮廓 + 名称。
             if selected {
-                painter.rect_stroke(
-                    box_rect,
-                    0.0,
+                painter.add(egui::Shape::closed_line(
+                    outline.to_vec(),
                     egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(230, 170, 60)),
-                    egui::StrokeKind::Outside,
-                );
+                ));
                 painter.text(
                     entity.center + egui::vec2(0.0, -entity.size.y * 0.5 - 6.0),
                     egui::Align2::CENTER_BOTTOM,
@@ -247,9 +256,10 @@ impl EditorApp {
                 );
             }
             if response.clicked()
-                && response
-                    .interact_pointer_pos()
-                    .is_some_and(|pos| box_rect.contains(pos))
+                && response.interact_pointer_pos().is_some_and(|pos| {
+                    // 与选中轮廓、命中测试同一套旋转判定（UI 实体旋转恒为 0）。
+                    rotated_contains(entity.center, entity.size, entity.transform.rotation, pos)
+                })
             {
                 let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
                 let source = SelectionSource::SceneView2D;
